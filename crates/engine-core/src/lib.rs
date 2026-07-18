@@ -1,0 +1,20 @@
+//! Deterministic measurement kernel for the takeoff engine.
+//!
+//! All geometry is stored in base units = **PDF points (1/72 paper inch),
+//! page-local, top-left origin** (addendum §A0 invariant 4). Zoom, DPR, tile
+//! resolution, and export resolution are display transforms only and never
+//! touch stored data.
+//!
+//! This crate contains zero browser APIs (final spec §0 Rule 1). All platform
+//! I/O goes through the traits in [`traits`], implemented by `engine-web`.
+
+pub mod error;
+pub mod geom;
+pub mod scale;
+pub mod traits;
+pub mod units;
+
+pub use error::ScaleError;
+pub use geom::{distance, polygon_area, polyline_length, simplify, Point};
+pub use scale::{Scale, ScalePreset, POINTS_PER_INCH, POINTS_SQ_PER_SQ_INCH, SCALE_PRESETS};
+pub use units::{format_feet_inches, InchPrecision};
