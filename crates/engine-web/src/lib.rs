@@ -48,6 +48,9 @@ impl WebError {
             },
             WebError::Scale(e) => match e {
                 ScaleError::InvalidFpi(_) => "INVALID_SCALE",
+                ScaleError::InvalidKnownLength(_) | ScaleError::DegenerateSpan => {
+                    "INVALID_CALIBRATION"
+                }
             },
         }
     }
@@ -145,6 +148,26 @@ fn detect(
     })
 }
 
+fn calibrate(x1: f64, y1: f64, x2: f64, y2: f64, known_feet: f64) -> Result<f64, WebError> {
+    let scale =
+        engine_core::calibrate_two_point(Point::new(x1, y1), Point::new(x2, y2), known_feet)?;
+    Ok(scale.fpi())
+}
+
+fn presets_json() -> String {
+    let entries: Vec<String> = engine_core::SCALE_PRESETS
+        .iter()
+        .map(|p| {
+            format!(
+                "{{\"label\":{:?},\"fpi\":{}}}",
+                p.label,
+                p.fpi
+            )
+        })
+        .collect();
+    format!("[{}]", entries.join(","))
+}
+
 // ---------- wasm exports (3-line wrappers) ----------
 
 /// Length of an OPEN polyline in real feet. `points`: flat [x0,y0,…] in
@@ -159,6 +182,27 @@ pub fn measure_polyline(points: &[f64], fpi: f64) -> Result<f64, JsValue> {
 #[wasm_bindgen]
 pub fn measure_polygon_area(points: &[f64], fpi: f64) -> Result<f64, JsValue> {
     polygon_square_feet(points, fpi).map_err(to_js)
+}
+
+/// Two-point calibration: the span (x1,y1)–(x2,y2) in BASE UNITS covers
+/// `known_feet` real feet; returns the derived fpi. Throws
+/// `{ code: "INVALID_CALIBRATION" | "INVALID_SCALE", message }`.
+#[wasm_bindgen]
+pub fn calibrate_two_point(
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    known_feet: f64,
+) -> Result<f64, JsValue> {
+    calibrate(x1, y1, x2, y2, known_feet).map_err(to_js)
+}
+
+/// The canonical named-scale preset table as JSON
+/// `[{label, fpi}, …]` — display labels only; fpi is the representation.
+#[wasm_bindgen]
+pub fn scale_presets_json() -> String {
+    presets_json()
 }
 
 #[wasm_bindgen]
@@ -253,6 +297,28 @@ mod tests {
         let err = polyline_feet(&[0.0, 0.0, 1.0, 1.0], 0.0).unwrap_err();
         assert_eq!(err.code(), "INVALID_SCALE");
         assert!(err.message().contains("finite"));
+    }
+
+    #[test]
+    fn calibrate_works_and_maps_codes() {
+        // 72-pt span over 4 ft → fpi 4.0.
+        assert_eq!(calibrate(0.0, 0.0, 72.0, 0.0, 4.0).unwrap(), 4.0);
+        assert_eq!(
+            calibrate(0.0, 0.0, 72.0, 0.0, -1.0).unwrap_err().code(),
+            "INVALID_CALIBRATION"
+        );
+        assert_eq!(
+            calibrate(0.0, 0.0, 0.1, 0.0, 4.0).unwrap_err().code(),
+            "INVALID_CALIBRATION"
+        );
+    }
+
+    #[test]
+    fn presets_json_is_valid_and_anchored() {
+        let json = presets_json();
+        assert!(json.starts_with('[') && json.ends_with(']'));
+        assert!(json.contains("\"label\":\"1/4\\\" = 1'-0\\\"\",\"fpi\":4"));
+        assert!(json.contains("\"fpi\":20"));
     }
 
     /// 200×200 px synthetic: white field, black wall ring enclosing a

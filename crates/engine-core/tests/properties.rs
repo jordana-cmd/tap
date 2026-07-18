@@ -4,8 +4,8 @@ mod common;
 
 use common::{assert_close, parse_feet_inches, polyline_distance};
 use engine_core::{
-    distance, format_feet_inches, polygon_area, polygon_perimeter, polyline_length, simplify,
-    InchPrecision, Point, Scale,
+    calibrate_two_point, distance, format_feet_inches, polygon_area, polygon_perimeter,
+    polyline_length, simplify, InchPrecision, Point, Scale,
 };
 use proptest::prelude::*;
 
@@ -151,6 +151,20 @@ proptest! {
         let s = Scale::from_fpi(fpi).unwrap();
         let linear = s.points_to_feet(d);
         assert_close(s.points_sq_to_square_feet(d * d), linear * linear, 1e-9, 1e-9);
+    }
+
+    #[test]
+    fn prop_calibrate_roundtrip(
+        ax in -1.0e5..1.0e5f64, ay in -1.0e5..1.0e5f64,
+        dx in 1.0..5000.0f64, dy in 0.0..5000.0f64,
+        feet in 0.1..1000.0f64,
+    ) {
+        let a = Point::new(ax, ay);
+        let b = Point::new(ax + dx, ay + dy); // span ≥ 1 pt guaranteed by dx
+        let scale = calibrate_two_point(a, b, feet).unwrap();
+        // Measuring the calibration span through the derived scale returns
+        // the known length.
+        assert_close(scale.points_to_feet(distance(a, b)), feet, 1e-9, 1e-12);
     }
 
     // ---- feet-inches formatting ----
