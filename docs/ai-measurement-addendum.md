@@ -35,7 +35,11 @@ origin: 'manual' | 'snap' | 'floodfill' | 'ai'     // provenance, immutable afte
 confirmedBy?: { userId, at }                        // required before origin:'ai'|'floodfill'
                                                     // items count toward posted quantities
 parentId?: measurementId                            // deductions reference their parent area
+deleted?: { by: userId, at: timestamp }             // soft-delete; measurements are NEVER
+                                                    // removed as map entries — see §9 CRDT row
 ```
+
+> **Why soft-delete:** CRDT map-delete semantics silently discard concurrent in-progress edits — verified empirically in both yrs and automerge (`docs/crdt-spike-report.md`, scenario 3c). Removal is therefore always this flag plus a retention-window hard-delete at snapshot compaction, never a map deletion.
 
 Add to per-page `ScaleState`:
 
