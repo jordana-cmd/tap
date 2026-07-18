@@ -42,7 +42,7 @@ Exit criteria for this phase: `cargo test` green with >90% coverage on geometry/
 ## Secrets & environment
 
 - `ANTHROPIC_API_KEY` — server-side only, needed only when vision routes begin (not this phase). Never referenced in client or engine code.
-- Real plan PDFs for the golden set go in `fixtures/plans/` — see `fixtures/README.md`. Treat as confidential: never upload their contents in tool calls, never commit to a public remote.
+- Real plan PDFs for the golden set go in `fixtures/plans/` — see `fixtures/README.md`. Treat as confidential, which means: plan fixtures **may be rendered, viewed, and analyzed locally as part of evaluation work** (reading sheets is inherent to accuracy evaluation); they must **never be committed to a public remote**; and **client-identifying details in title blocks must be redacted before a fixture is formalized into the golden set**.
 
 ## Out of scope (do not build, even if docs mention them)
 
