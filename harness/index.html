@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>engine-core wasm harness</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; background: #f5f5f4; color: #1c1917; }
+  h1 { font-size: 1.1rem; }
+  #status { font-family: ui-monospace, monospace; white-space: pre-line; background: #fff;
+            border: 1px solid #d6d3d1; padding: 8px 12px; min-height: 4.5em; margin-top: 8px; }
+  canvas { border: 1px solid #a8a29e; background: #fff; cursor: crosshair; display: block; }
+  label { font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<h1>Throwaway harness — click inside a room to flood-fill it (engine-core via wasm)</h1>
+<p>Scale 1/4″ = 1′-0″ (fpi 4.0) at 10 px/ft. Left room has a 3′ door; the two right rooms share an 8′ opening —
+raise the slider past 8 to seal it and re-click. Clicking outside the building demonstrates the
+<code>REGION_NOT_ENCLOSED</code> fall-back-to-manual-trace branch.</p>
+<label>door_gap_ft: <input id="doorGap" type="range" min="1" max="15" step="0.5" value="3.5">
+<span id="doorGapVal">3.5</span> ft</label>
+<canvas id="plan" width="900" height="650"></canvas>
+<div id="status">loading wasm…</div>
+
+<script type="module">
+import init, { detect_room, measure_polyline } from './pkg/engine_web.js';
+
+const FPI = 4.0, PPF = 10.0, THRESHOLD = 200;
+const PTS_PER_PX = 72 / (FPI * PPF); // 1.8 base units per pixel
+
+const canvas = document.getElementById('plan');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
+const status = document.getElementById('status');
+const doorGap = document.getElementById('doorGap');
+const doorGapVal = document.getElementById('doorGapVal');
+let lastResult = null; // { contourPx, seed } — redrawn over the plan
+
+const ft = v => v * PPF; // feet → px
+
+function drawPlan() {
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#000';
+  // Outer building: interior (5,5)–(85,60) ft behind 0.5 ft walls.
+  ctx.fillRect(ft(4.5), ft(4.5), ft(81), ft(56));
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(ft(5), ft(5), ft(80), ft(55));
+  ctx.fillStyle = '#000';
+  // Vertical partition at x = 50 with a 3 ft door at y 20–23.
+  ctx.fillRect(ft(50), ft(4.5), ft(0.5), ft(56));
+  // Horizontal partition in the right half at y = 35 with an 8 ft opening at x 60–68.
+  ctx.fillRect(ft(50.5), ft(35), ft(35), ft(0.5));
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(ft(50), ft(20), ft(0.5), ft(3));   // 3 ft door
+  ctx.fillRect(ft(60), ft(35), ft(8), ft(0.5));   // 8 ft equipment opening
+}
+
+function grayscale() {
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const gray = new Uint8Array(canvas.width * canvas.height);
+  for (let i = 0; i < gray.length; i++) gray[i] = img[4 * i]; // pure b/w plan: r == luminance
+  return gray;
+}
+
+function overlay(result) {
+  const c = result.contour; // Float64Array, flat base-unit pairs — JS owns this copy
+  ctx.beginPath();
+  ctx.moveTo(c[0] / PTS_PER_PX, c[1] / PTS_PER_PX);
+  for (let i = 2; i < c.length; i += 2) ctx.lineTo(c[i] / PTS_PER_PX, c[i + 1] / PTS_PER_PX);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(37, 99, 235, 0.25)'; // if it's colored, it's counted
+  ctx.strokeStyle = '#1d4ed8';
+  ctx.lineWidth = 2;
+  ctx.fill();
+  ctx.stroke();
+}
+
+function redraw() {
+  drawPlan();
+  if (lastResult) overlay(lastResult);
+}
+
+canvas.addEventListener('click', ev => {
+  const rect = canvas.getBoundingClientRect();
+  runDetect(Math.round(ev.clientX - rect.left), Math.round(ev.clientY - rect.top));
+});
+
+function runDetect(x, y) {
+  drawPlan(); // detect against the clean plan, not a previous overlay
+  const gray = grayscale(); // copied into wasm per call; this buffer stays ours
+  try {
+    const result = detect_room(gray, canvas.width, canvas.height, x, y,
+                               FPI, PPF, THRESHOLD, parseFloat(doorGap.value));
+    lastResult = result;
+    redraw();
+    // Cross-check both exit-criterion exports in one interaction:
+    // close the ring (repeat first vertex) and measure it as a polyline.
+    const c = result.contour;
+    const closed = new Float64Array(c.length + 2);
+    closed.set(c); closed[c.length] = c[0]; closed[c.length + 1] = c[1];
+    const viaPolyline = measure_polyline(closed, FPI);
+    status.textContent =
+      `click (${x}, ${y}) px, door_gap_ft = ${doorGap.value}\n` +
+      `area_sf       = ${result.area_sf.toFixed(1)} SF\n` +
+      `perimeter_lf  = ${result.perimeter_lf.toFixed(1)} LF\n` +
+      `measure_polyline(closed contour) = ${viaPolyline.toFixed(1)} LF  (cross-check: ` +
+      `${Math.abs(viaPolyline - result.perimeter_lf) < 1e-6 ? 'MATCH' : 'MISMATCH'})\n` +
+      `contour vertices = ${c.length / 2}`;
+  } catch (e) {
+    // Branch on the machine-readable code — never on message text.
+    lastResult = null;
+    redraw();
+    if (e && e.code === 'REGION_NOT_ENCLOSED') {
+      status.textContent = `[${e.code}] Region not enclosed — falling back to manual trace.\n(${e.message})`;
+    } else if (e && e.code) {
+      status.textContent = `[${e.code}] ${e.message}`;
+    } else {
+      status.textContent = `unexpected error: ${e}`;
+    }
+  }
+}
+
+doorGap.addEventListener('input', () => { doorGapVal.textContent = doorGap.value; });
+
+await init();
+drawPlan();
+status.textContent = 'wasm loaded — click inside a room.';
+
+// Deep-link/self-test affordance: ?autoclick=x,y&door=N runs a detection
+// on load (also how headless smoke tests drive the harness).
+const qs = new URLSearchParams(location.search);
+if (qs.has('door')) { doorGap.value = qs.get('door'); doorGapVal.textContent = doorGap.value; }
+if (qs.has('autoclick')) {
+  const [ax, ay] = qs.get('autoclick').split(',').map(Number);
+  runDetect(ax, ay);
+}
+</script>
+</body>
+</html>
