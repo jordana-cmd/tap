@@ -12,6 +12,7 @@ pub mod detect;
 pub mod error;
 pub mod geom;
 pub mod scale;
+pub mod snap;
 pub mod traits;
 pub mod units;
 
@@ -22,4 +23,5 @@ pub use detect::{
 pub use error::ScaleError;
 pub use geom::{distance, polygon_area, polygon_perimeter, polyline_length, simplify, Point};
 pub use scale::{Scale, ScalePreset, POINTS_PER_INCH, POINTS_SQ_PER_SQ_INCH, SCALE_PRESETS};
+pub use snap::{Segment, SegmentId, SegmentIndex, Snap, SnapKind};
 pub use units::{format_feet_inches, InchPrecision};

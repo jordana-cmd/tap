@@ -29,6 +29,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features
 
+      - name: Snap budget (release, asserted)
+        run: cargo test --release --test snap_budget -- --nocapture
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 

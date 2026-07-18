@@ -178,6 +178,7 @@ Desktop COM-style live links don't exist in a browser. The web-honest ladder, in
 | Excel | Export → Power Query pull → Office.js add-in ladder | Claiming "live link" at v1 rejected as dishonest |
 | AI inference | Server-side | On-device wasm inference rejected for v1 (bundle size, capability variance) |
 | Frontend framework | Whatever the existing platform uses | New framework rejected — the module must feel native to the product |
+| Snapping spatial index | `rstar` bulk-load R*-tree, wrapped behind `engine-core`'s `SegmentIndex` | Access pattern: built once per page from the full extraction, immutable thereafter, query-heavy (every pointer-down), wasm-compiled, 10⁴–10⁵ segments. Both rstar and a flatbush-style packed static index meet the addendum's ms build budget (enforced by a 200 ms release-mode build+1000-queries test); rstar chosen for crate maturity/maintenance and a 1:1 envelope query. Flatbush-style rejected for now — Rust ports are less maintained, and its advantages (faster build, smaller flat-array wasm footprint) solve problems we haven't measured. Revisit if wasm profiling shows index build time or bundle size hurting; the swap is contained behind `SegmentIndex`. |
 
 ---
 
