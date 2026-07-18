@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["bench", "wasm-baseline", "wasm-yrs", "wasm-automerge"]
+
+# Bench runs use plain release (speed-optimized, fair timing).
+# Wasm size measurements use the dedicated size-optimized profile below,
+# identical for all wasm crates.
+[profile.wasm-size]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"

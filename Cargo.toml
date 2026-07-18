@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/engine-core"]
+# Spike code (evaluation instruments, not production) lives in its own
+# workspace: excluded from builds, tests, and the coverage gate here.
+exclude = ["spikes"]
 
 [workspace.package]
 edition = "2021"

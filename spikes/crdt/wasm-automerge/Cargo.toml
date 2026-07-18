@@ -1,0 +1,13 @@
+[package]
+name = "wasm-automerge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+automerge = "0.10"
+uuid = { version = "1", features = ["v4", "rng-getrandom"] }
+getrandom = "0.3"
