@@ -1,4 +1,14 @@
-use super::Point;
+use super::{distance, polyline_length, Point};
+
+/// Closed-ring perimeter in PDF points: segment lengths plus the closing
+/// segment (auto-closes like [`polygon_area`], so a repeated first point is
+/// harmless). Fewer than 2 points → 0.0.
+pub fn polygon_perimeter(points: &[Point]) -> f64 {
+    if points.len() < 2 {
+        return 0.0;
+    }
+    polyline_length(points) + distance(points[points.len() - 1], points[0])
+}
 
 /// Unsigned shoelace area of a polygon, in PDF points².
 ///
@@ -82,6 +92,23 @@ mod tests {
             Point::new(0.0, 0.0),
         ];
         assert_eq!(polygon_area(&open), polygon_area(&closed));
+    }
+
+    #[test]
+    fn perimeter_rectangle_hand_computed() {
+        let rect = [
+            Point::new(0.0, 0.0),
+            Point::new(4.0, 0.0),
+            Point::new(4.0, 3.0),
+            Point::new(0.0, 3.0),
+        ];
+        assert_eq!(polygon_perimeter(&rect), 14.0);
+    }
+
+    #[test]
+    fn perimeter_under_two_points_is_zero() {
+        assert_eq!(polygon_perimeter(&[]), 0.0);
+        assert_eq!(polygon_perimeter(&[Point::new(1.0, 1.0)]), 0.0);
     }
 
     #[test]

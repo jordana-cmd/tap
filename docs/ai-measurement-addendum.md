@@ -60,6 +60,8 @@ Port PlanTape's algorithms into Rust (they are language-agnostic math); they run
 4. **Contour:** marching squares → polygon → Douglas-Peucker simplify (ε ≈ 1.5 base units). Convert back to base units.
 5. Emit an ordinary `Measurement { kind:'area', origin:'floodfill' }`. Area via shoelace on the **simplified polygon** (never pixel count — dilation inflates it); the polygon's perimeter is the cove-base/wall-base LF for free. The result is editable exactly like a hand-traced shape — invariant A0.4 is what makes that true.
 
+> **Implementation refinement (Engine Foundation step 3):** step 2's dilation closes door gaps but also insets the fillable interior by the dilation radius `r` on every side (≈1.75 ft at defaults — a ~37% area error on a 20'×15' room). The engine therefore completes a **morphological closing**: dilate walls → flood fill → dilate the filled region back by the same `r` → subtract original wall pixels. Rectangular rooms recover their wall-face dimensions exactly (square structuring element); door openings gain only a small bulge at the door plane (bounded by gap × r), smoothed by step 4's simplification. Step 5's "dilation inflates it" caution refers to the pixel count of this closed region.
+
 ### A3.2 Auto-detect candidates — "Level 2"
 Full-page mask → invert → connected-component labeling (two-pass union-find). Filter: area between ~40 SF and ~80% of sheet, discard border-touching components. Output per candidate: centroid, SF, bbox, simplified contour. These become the **region proposals** the AI labeling call annotates (A5.3) and the review queue displays.
 

@@ -4,8 +4,8 @@ mod common;
 
 use common::{assert_close, parse_feet_inches, polyline_distance};
 use engine_core::{
-    distance, format_feet_inches, polygon_area, polyline_length, simplify, InchPrecision, Point,
-    Scale,
+    distance, format_feet_inches, polygon_area, polygon_perimeter, polyline_length, simplify,
+    InchPrecision, Point, Scale,
 };
 use proptest::prelude::*;
 
@@ -84,6 +84,18 @@ proptest! {
         let scaled: Vec<Point> =
             pts.iter().map(|p| Point::new(p.x * k, p.y * k)).collect();
         assert_close(polygon_area(&scaled), k * k * polygon_area(&pts), 1e-6, 1e-9);
+    }
+
+    #[test]
+    fn prop_perimeter_translation_invariant_and_scales_linearly(
+        pts in points(2), dx in coord(), dy in coord(), k in 0.1..10.0f64,
+    ) {
+        let moved: Vec<Point> =
+            pts.iter().map(|p| Point::new(p.x + dx, p.y + dy)).collect();
+        assert_close(polygon_perimeter(&moved), polygon_perimeter(&pts), 1e-4, 1e-9);
+        let scaled: Vec<Point> =
+            pts.iter().map(|p| Point::new(p.x * k, p.y * k)).collect();
+        assert_close(polygon_perimeter(&scaled), k * polygon_perimeter(&pts), 1e-6, 1e-9);
     }
 
     #[test]

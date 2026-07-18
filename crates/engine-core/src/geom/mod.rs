@@ -5,7 +5,7 @@ mod point;
 mod polyline;
 mod simplify;
 
-pub use area::polygon_area;
+pub use area::{polygon_area, polygon_perimeter};
 pub use point::Point;
 pub use polyline::{distance, polyline_length};
 pub use simplify::simplify;
