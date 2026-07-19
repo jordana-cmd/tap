@@ -308,7 +308,8 @@ await run('scale is per page (guard + independent values)', async page => {
   st = await state(page);
   const p2 = st.meas.find(m => m.page === 2);
   assert.ok(p2, 'page-2 measurement committed');
-  assert.ok(near(p2.value, 771.6, 8), `p2 SF ${p2.value} should use fpi 20 (≈771.6)`);
+  // ±3%: at fpi 20 each client-px of pointer rounding is ~0.76 base pts.
+  assert.ok(near(p2.value, 771.6, 25), `p2 SF ${p2.value} should use fpi 20 (≈771.6)`);
   const p1 = st.meas.find(m => m.page === 1);
   assert.ok(near(p1.value, 100, 3), `p1 SF ${p1.value} must keep page-1 scale`);
 });

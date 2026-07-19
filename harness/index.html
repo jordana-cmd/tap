@@ -65,7 +65,9 @@
 </div>
 <div id="workRow">
   <div id="canvasWrap"><canvas id="plan" width="900" height="650"></canvas></div>
-  <div id="measPanel"><b>Measurements</b><div id="measList">(none yet)</div></div>
+  <div id="measPanel"><b>Measurements</b>
+    <label style="float:right;font-weight:normal"><input id="allPages" type="checkbox"> all pages</label>
+    <div id="measList">(none yet)</div></div>
 </div>
 <div id="status">loading wasm…</div>
 
@@ -84,8 +86,13 @@ const status = $('status');
 
 // ---- state ----
 let pdfDoc = null, pageNum = 1;
-let fpi = 4.0;              // synthetic default; PDFs require preset/calibration
-let scaleSet = false;       // true once the user chose/calibrated a scale
+// Scale is PER PAGE (§A2 ScaleState is page-scoped; a 74-page set mixes
+// scales per sheet). Page 0 = the synthetic demo, seeded at fpi 4.0.
+// A page with no entry has NO scale: tools guard until one is set.
+const pageScales = new Map([[0, 4.0]]);
+const currentPage = () => (pdfDoc ? pageNum : 0);
+const scaleOf = page => pageScales.get(page) ?? null;
+const curFpi = () => scaleOf(currentPage()) ?? 4.0; // fallback for display math only
 let s = 10 / 18;            // canvas px per PDF point (synthetic: ppf 10 @ fpi 4)
 let cleanBitmap = null;     // clean render for overlay redraws
 let tool = 'detect';        // 'detect' | 'line' | 'area' | 'wall' | 'calibrate'
@@ -107,7 +114,7 @@ let measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0 };
 let nextMeasId = 1;
 let lastClick = null;       // {t, cx, cy} — double-click debounce
 
-const pxPerFoot = () => (72 / fpi) * s;
+const pxPerFoot = () => (72 / curFpi()) * s;
 const say = t => { status.textContent = t; };
 
 // ---- synthetic fallback plan (unchanged demo) ----
@@ -200,14 +207,15 @@ async function renderPage() {
 let detCache = null; // {pageNum, fpi, sDet, w, h, ppf, gray|null}
 
 async function detectRaster(needGray) {
-  const sDet = Math.min((fpi * TARGET_PPF) / 72,
+  const f = curFpi();
+  const sDet = Math.min((f * TARGET_PPF) / 72,
                         MAX_DIM / pageDims.w, MAX_DIM / pageDims.h);
-  if (!detCache || detCache.pageNum !== pageNum || detCache.fpi !== fpi) {
+  if (!detCache || detCache.pageNum !== pageNum || detCache.fpi !== f) {
     detCache = {
-      pageNum, fpi, sDet,
+      pageNum, fpi: f, sDet,
       w: Math.round(pageDims.w * sDet),
       h: Math.round(pageDims.h * sDet),
-      ppf: (72 / fpi) * sDet,
+      ppf: (72 / f) * sDet,
       gray: null,
     };
   }
@@ -344,6 +352,7 @@ function render() {
     }
   }
   for (const m of measurements) {
+    if (m.page !== currentPage()) continue; // page-scoped rendering
     const hot = m.id === hoverMeas;
     strokeFlat(m.geometry, m.kind === 'area');
     if (m.kind === 'area') {
@@ -428,7 +437,8 @@ function marker(x, y, color = '#dc2626') {
 /// at the target ppf — the visible canvas (user-owned zoom) never
 /// re-renders because of detection or scale changes.
 async function runDetect(baseX, baseY) {
-  if (pdfDoc && !scaleSet) { say('Set a scale first (preset or calibration).'); return; }
+  if (!scaleGuard()) return;
+  const f = curFpi();
   const src = maskSource();
   const threshold = parseInt($('thresh').value, 10);
   const doorGap = parseFloat($('doorGap').value);
@@ -439,10 +449,10 @@ async function runDetect(baseX, baseY) {
       x = Math.round(baseX * det.sDet); y = Math.round(baseY * det.sDet);
       ppfUsed = det.ppf;
       r = src === 'vector'
-        ? pageGeom.detect_room_vector(det.w, det.h, x, y, fpi, det.ppf,
+        ? pageGeom.detect_room_vector(det.w, det.h, x, y, f, det.ppf,
                                       minWidthPts(), $('hideHatch').checked,
                                       doorGap)
-        : detect_room(det.gray, det.w, det.h, x, y, fpi, det.ppf,
+        : detect_room(det.gray, det.w, det.h, x, y, f, det.ppf,
                       threshold, doorGap);
     } else {
       // Synthetic demo: the visible canvas IS the raster.
@@ -451,12 +461,12 @@ async function runDetect(baseX, baseY) {
       x = Math.round(baseX * s); y = Math.round(baseY * s);
       ppfUsed = pxPerFoot();
       r = detect_room(gray, canvas.width, canvas.height, x, y,
-                      fpi, ppfUsed, threshold, doorGap);
+                      f, ppfUsed, threshold, doorGap);
     }
     const c = r.contour;
     const closed = new Float64Array(c.length + 2);
     closed.set(c); closed[c.length] = c[0]; closed[c.length + 1] = c[1];
-    const viaPolyline = measure_polyline(closed, fpi);
+    const viaPolyline = measure_polyline(closed, curFpi());
     // Detected rooms land in the SAME list as manual measurements —
     // interchangeable rows, provenance preserved (origin 'floodfill').
     addMeasurement('area', 'Room', r.area_sf,
@@ -464,7 +474,7 @@ async function runDetect(baseX, baseY) {
     const knobs = src === 'vector'
       ? `min_width ${minWidthPts().toFixed(2)} pts`
       : `threshold ${threshold}`;
-    say(`click (${x}, ${y}) det-px | mask ${src} | fpi ${fpi.toFixed(3)} | ` +
+    say(`click (${x}, ${y}) det-px | mask ${src} | fpi ${curFpi().toFixed(3)} | ` +
         `det ppf ${ppfUsed.toFixed(2)} | ${knobs} | door_gap ${doorGap}\n` +
         `area_sf       = ${r.area_sf.toFixed(1)} SF\n` +
         `perimeter_lf  = ${r.perimeter_lf.toFixed(1)} LF\n` +
@@ -486,11 +496,11 @@ async function runDetect(baseX, baseY) {
 function applyCalibration(feet) {
   try {
     const [a, b] = calibPts;
-    fpi = calibrate_two_point(a.x, a.y, b.x, b.y, feet);
+    const v = calibrate_two_point(a.x, a.y, b.x, b.y, feet);
     $('preset').value = '';
     setTool('detect'); $('calibEntry').hidden = true;
-    applyScaleChange('calibrated'); // view does NOT move; values revalue
-    say(`calibrated: fpi = ${fpi.toFixed(4)}. Click a room.`);
+    applyScaleChange(v, 'calibrated'); // view does NOT move; values revalue
+    say(`calibrated: page ${currentPage()} fpi = ${v.toFixed(4)}. Click a room.`);
   } catch (e) {
     say(e && e.code ? `[${e.code}] ${e.message}` : `unexpected error: ${e}`);
     setTool('detect'); $('calibEntry').hidden = true;
@@ -505,6 +515,7 @@ function addMeasurement(kind, family, value, valueText, origin, geometry) {
     kind,
     name: `${family} ${measSeq[family]}`,
     value, valueText, origin,
+    page: currentPage(), // authoritative at commit time (§A2)
     geometry: Float64Array.from(geometry),
   });
   renderMeasList();
@@ -517,42 +528,58 @@ function addMeasurement(kind, family, value, valueText, origin, geometry) {
 /// screen moves, only the numbers update.
 function revalueMeasurements() {
   for (const m of measurements) {
+    // Values derive from the OWNING page's scale, not the current page's.
+    const f = scaleOf(m.page);
+    if (f == null) continue; // committed under a scale; defensive only
     const flat = Array.from(m.geometry);
     if (m.kind === 'linear') {
-      m.value = measure_polyline(flat, fpi);
+      m.value = measure_polyline(flat, f);
       m.valueText = `${m.value.toFixed(1)} LF`;
     } else {
       const ring = flat.concat(flat.slice(0, 2));
-      m.value = measure_polygon_area(flat, fpi);
-      const lf = measure_polyline(ring, fpi);
+      m.value = measure_polygon_area(flat, f);
+      const lf = measure_polyline(ring, f);
       m.valueText = `${m.value.toFixed(1)} SF (${lf.toFixed(1)} LF)`;
     }
   }
   renderMeasList();
 }
 
-/// A scale (fpi) change: label + revalue + detect-raster invalidation.
-/// Deliberately NO renderPage() — the view must not move (bug 1).
-function applyScaleChange(sourceLabel) {
-  scaleSet = true;
-  $('fpiLabel').textContent = `${fpi.toFixed(4)} (${sourceLabel})`;
+/// A scale change for the CURRENT page: store + label + revalue + detect
+/// cache invalidation. Deliberately NO renderPage() — the view must not
+/// move (invariant 5: values re-derive, geometry stays put).
+function applyScaleChange(newFpi, sourceLabel) {
+  pageScales.set(currentPage(), newFpi);
+  $('fpiLabel').textContent = `${newFpi.toFixed(4)} (${sourceLabel}, p${currentPage()})`;
   detCache = null;
   revalueMeasurements();
   render();
 }
 
+/// Sync the scale chip to the current page (page switches, file loads).
+function refreshScaleUI() {
+  const f = scaleOf(currentPage());
+  $('fpiLabel').textContent = f == null ? '— set scale —' : `${f.toFixed(4)} (p${currentPage()})`;
+  $('preset').value = '';
+}
+
 function renderMeasList() {
   const list = $('measList');
   list.textContent = '';
-  if (!measurements.length) { list.textContent = '(none yet)'; return; }
-  for (const m of measurements) {
+  const all = $('allPages').checked;
+  const visible = measurements.filter(m => all || m.page === currentPage());
+  if (!visible.length) {
+    list.textContent = all ? '(none yet)' : `(none on ${pdfDoc ? `page ${currentPage()}` : 'this sheet'})`;
+    return;
+  }
+  for (const m of visible) {
     const row = document.createElement('div');
     row.className = 'measRow';
     const label = document.createElement('span');
     label.textContent = `${m.name} — ${m.valueText} `;
     const origin = document.createElement('span');
     origin.className = 'origin';
-    origin.textContent = m.origin;
+    origin.textContent = `${m.origin} · ${m.page === 0 ? 'syn' : `p${m.page}`}`;
     const del = document.createElement('button');
     del.textContent = '✕';
     del.addEventListener('click', () => {
@@ -570,7 +597,7 @@ function renderMeasList() {
 // ---- tool interaction ----
 function setTool(next) {
   tool = next;
-  draft = null; chainPreview = null; calibPts = [];
+  cancelTransients(null);
   for (const b of document.querySelectorAll('#tools .tool')) {
     b.classList.toggle('active', b.dataset.tool === next);
   }
@@ -629,13 +656,13 @@ function draftStatus() {
   if (!draft || !draft.verts.length) return;
   const flat = draftFlat(true);
   if (tool === 'line') {
-    const lf = measure_polyline(flat, fpi);
+    const lf = measure_polyline(flat, curFpi());
     say(`line: ${draft.verts.length} vertex(es), running ${lf.toFixed(1)} LF — ` +
         'Enter/double-click finishes, Backspace undoes, Esc cancels.');
   } else {
     const ring = flat.concat(flat.slice(0, 2));
-    const sf = measure_polygon_area(flat, fpi);
-    const lf = measure_polyline(ring, fpi);
+    const sf = measure_polygon_area(flat, curFpi());
+    const lf = measure_polyline(ring, curFpi());
     say(`area: ${draft.verts.length} vertex(es), ${sf.toFixed(1)} SF, perimeter ${lf.toFixed(1)} LF — ` +
         'Enter/double-click closes, Backspace undoes, Esc cancels.');
   }
@@ -648,13 +675,13 @@ function finishDraft() {
   const flat = draftFlat(false);
   const origin = draft.anySnap ? 'snap' : 'manual';
   if (tool === 'line') {
-    const lf = measure_polyline(flat, fpi);
+    const lf = measure_polyline(flat, curFpi());
     const m = addMeasurement('linear', 'Line', lf, `${lf.toFixed(1)} LF`, origin, flat);
     say(`${m.name} committed: ${lf.toFixed(1)} LF — line tool armed, click to start the next one.`);
   } else {
     const ring = flat.concat(flat.slice(0, 2));
-    const sf = measure_polygon_area(flat, fpi);
-    const lf = measure_polyline(ring, fpi);
+    const sf = measure_polygon_area(flat, curFpi());
+    const lf = measure_polyline(ring, curFpi());
     const m = addMeasurement('area', 'Area', sf, `${sf.toFixed(1)} SF (${lf.toFixed(1)} LF)`, origin, flat);
     say(`${m.name} committed: ${sf.toFixed(1)} SF, perimeter ${lf.toFixed(1)} LF — area tool armed, click to start the next one.`);
   }
@@ -666,7 +693,7 @@ function commitChain() {
   if (!chainPreview) return;
   const c = chainPreview;
   const flat = [c.start.x, c.start.y, c.end.x, c.end.y];
-  const lf = measure_polyline(flat, fpi);
+  const lf = measure_polyline(flat, curFpi());
   const m = addMeasurement('linear', 'Wall run', lf, `${lf.toFixed(1)} LF`, 'snap', flat);
   say(`${m.name} committed: ${lf.toFixed(1)} LF (${c.ids.length} segment(s)) — wall tool armed, click the next wall.`);
   chainPreview = null;
@@ -674,7 +701,10 @@ function commitChain() {
 }
 
 function scaleGuard() {
-  if (pdfDoc && !scaleSet) { say('Set a scale first (preset or calibration).'); return false; }
+  if (scaleOf(currentPage()) == null) {
+    say(`Set a scale for page ${currentPage()} first (preset or calibration).`);
+    return false;
+  }
   return true;
 }
 
@@ -729,7 +759,7 @@ canvas.addEventListener('click', ev => {
     if (!hit) { chainPreview = null; render(); say('no wall within tolerance'); return; }
     chainPreview = JSON.parse(hit);
     const lf = measure_polyline(
-      [chainPreview.start.x, chainPreview.start.y, chainPreview.end.x, chainPreview.end.y], fpi);
+      [chainPreview.start.x, chainPreview.start.y, chainPreview.end.x, chainPreview.end.y], curFpi());
     render();
     say(`wall run preview: ${chainPreview.ids.length} segment(s), ${lf.toFixed(1)} LF — ` +
         'Enter/double-click commits, click elsewhere re-previews, Esc clears.');
@@ -774,16 +804,44 @@ $('file').addEventListener('change', async ev => {
   if (!f) return;
   await loadPdf(await f.arrayBuffer(), f.name);
 });
+/// Cancel everything transient (drafts, previews, calibration clicks,
+/// hover, list hover, debounce) — page switches, file loads, and tool
+/// changes must never leak in-progress state across the transition.
+function cancelTransients(reason) {
+  const hadDraft = draft || chainPreview || calibPts.length;
+  draft = null; chainPreview = null; calibPts = [];
+  hover = null; hoverMeas = null; lastClick = null;
+  $('calibEntry').hidden = true;
+  if (hadDraft && reason) say(`draft cancelled (${reason})`);
+}
+
 async function loadPdf(data, name) {
   pdfDoc = await pdfjs.getDocument({ data }).promise;
-  pageNum = 1; scaleSet = false; extractCache.clear(); detCache = null;
+  // A new document: nothing from the old one survives.
+  pageNum = 1; extractCache.clear(); detCache = null;
+  pageScales.clear(); pageScales.set(0, 4.0);
+  measurements = []; nextMeasId = 1;
+  measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0 };
+  cancelTransients(null);
   const base = (await pdfDoc.getPage(1)).getViewport({ scale: 1 });
   pageDims = { w: base.width, h: base.height };
   fitS = fitWidthScale();
   s = fitS;
-  $('fpiLabel').textContent = '— set scale —';
+  refreshScaleUI();
+  renderMeasList();
   await renderPage();
   say(`${name}: ${pdfDoc.numPages} page(s). Pick a preset scale or calibrate on a known dimension.`);
+}
+
+/// The one page-switch path: transients cancel (a polygon spanning two
+/// sheets is meaningless), then view + panel resync to the new page.
+async function changePage(n) {
+  if (!pdfDoc || n < 1 || n > pdfDoc.numPages || n === pageNum) return;
+  cancelTransients('page change');
+  pageNum = n;
+  refreshScaleUI();
+  renderMeasList();
+  await renderPage();
 }
 $('zoomIn').addEventListener('click', () => setZoom(s * 1.25, null));
 $('zoomOut').addEventListener('click', () => setZoom(s / 1.25, null));
@@ -804,17 +862,12 @@ canvas.addEventListener('wheel', ev => {
   };
   setZoom(ev.deltaY < 0 ? s * 1.25 : s / 1.25, anchor);
 }, { passive: false });
-$('prev').addEventListener('click', async () => {
-  if (pdfDoc && pageNum > 1) { pageNum--; await renderPage(); }
-});
-$('next').addEventListener('click', async () => {
-  if (pdfDoc && pageNum < pdfDoc.numPages) { pageNum++; await renderPage(); }
-});
+$('prev').addEventListener('click', () => changePage(pageNum - 1));
+$('next').addEventListener('click', () => changePage(pageNum + 1));
 $('preset').addEventListener('change', ev => {
   if (!ev.target.value) return;
-  fpi = parseFloat(ev.target.value);
-  applyScaleChange('preset'); // view does NOT move; values revalue
-  say('scale set from preset. Click a room.');
+  applyScaleChange(parseFloat(ev.target.value), 'preset'); // view stays put
+  say(`scale set from preset for page ${currentPage()}. Click a room.`);
 });
 $('calibBtn').addEventListener('click', ev => {
   setTool('calibrate');
@@ -832,6 +885,7 @@ $('doorGap').addEventListener('input', () => { $('doorGapVal').textContent = $('
 $('maskRaster').addEventListener('change', render);
 $('maskVector').addEventListener('change', render);
 $('hideHatch').addEventListener('change', render);
+$('allPages').addEventListener('change', renderMeasList);
 $('minWidth').addEventListener('input', () => {
   $('minWidthVal').textContent = minWidthPts().toFixed(2);
   render();
@@ -844,6 +898,9 @@ window.__harness = {
   draft: () => draft,
   chainPreview: () => chainPreview,
   s: () => s,
+  page: () => currentPage(),
+  pageScales: () => Object.fromEntries(pageScales),
+  loadPdf,
 };
 
 // ---- boot ----
@@ -870,8 +927,8 @@ if (qs.has('url')) {
   await loadPdf(await resp.arrayBuffer(), qs.get('url'));
   if (qs.has('page')) { pageNum = parseInt(qs.get('page'), 10); await renderPage(); }
   if (qs.has('fpi')) {
-    fpi = parseFloat(qs.get('fpi'));
-    applyScaleChange('param');
+    // Seeds the CURRENT page's scale only (after any page= param).
+    applyScaleChange(parseFloat(qs.get('fpi')), 'param');
   }
 }
 if (qs.get('mask') === 'raster') { $('maskRaster').checked = true; render(); }
