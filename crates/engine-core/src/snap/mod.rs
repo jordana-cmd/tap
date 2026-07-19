@@ -8,7 +8,10 @@
 //! yield no vectors → empty index → [`SegmentIndex::snap`] returns `None`,
 //! silently. Degrade, don't warn-spam.
 
+mod chain;
 mod intersect;
+
+pub use chain::CollinearChain;
 
 use crate::geom::{distance, Point};
 use intersect::{project_onto_segment, segment_intersection};
