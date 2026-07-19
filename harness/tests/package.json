@@ -1,0 +1,9 @@
+{
+  "name": "harness-interaction-tests",
+  "private": true,
+  "type": "module",
+  "description": "Headless-Chromium interaction test suite for the throwaway harness. Run: npm ci && node run-interactions.mjs",
+  "dependencies": {
+    "puppeteer": "^24.9.0"
+  }
+}

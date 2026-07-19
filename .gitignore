@@ -1,3 +1,4 @@
 /target
 spikes/crdt/target/
 harness/pkg/
+harness/tests/node_modules/
