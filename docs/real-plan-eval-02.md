@@ -47,6 +47,10 @@ Secondary observations:
 
 **Vector extraction did not fix the fragmentation on this sheet.** Stroke-width filtering deterministically removes the hairline annotation layer, door-swing arcs, and fills — real, permanent wins over threshold luck — but on a letter-plotted sheet whose pen table collapsed to effectively one width, *width* carries almost no wall-vs-annotation signal. The measured fragmentation cause is same-width ink: stroked SHX text and furniture at the walls' own 0.24 pt. What vector extraction **did** deliver on day one: CAD-exact snapping (including materially better calibration endpoints), a 77 ms per-page index over 73k segments, a mask whose contents are explainable segment-by-segment (the harness overlay shows exactly which ink became wall), and the infrastructure every future segment-level filter will run on.
 
+### Fixture caveat — this verdict is not settled
+
+Both evals ran against a single fixture that is a **0.31× letter-size plot of a 36"×24" D-sheet** (eval-01 §2). That reduction is a plausible **confound** for the width-filter result, not just background: scaling every pen weight by 0.31 compresses the entire pen table toward the hairline floor (original ~0.39/0.79/1.18/1.57/3.14 pt → 0.12/0.24/0.36/0.48/0.96), and widths that were distinct at full size can collapse into one 0.01-pt bucket after rounding at plot resolution. On a full-size CAD export, walls may well occupy a genuinely distinct width band — in which case the width filter would perform very differently and §4's verdict would not hold. **Do not treat "width carries no wall signal" as settled, and do not build or tune further segment filters (length/collinearity/paired-parallel) against this fixture** — they would risk being tuned to a plot artifact. Re-test on a full-size vector sheet first (the golden-set gap in §5.C.1); this sheet remains valuable precisely as the degraded-plot case, not as the representative one.
+
 ## 5. Work queue
 
 ### A. Engine defects / next engine steps
