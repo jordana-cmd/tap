@@ -558,6 +558,37 @@ await run('project panel: lists, reopens, and deletes via UI', async page => {
   assert.equal(rows, 0, 'project removed from the list after delete');
 });
 
+await run('JSON round-trip: export → clear → import → identical state', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await setTool(page, 'count');
+  for (const [x, y] of [[600, 200], [640, 200]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await page.click('.measRow .measName');
+  await page.click('.measRow .renameInput', { clickCount: 3 });
+  await page.type('.measRow .renameInput', 'Kitchen');
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => window.__harness.flushSave());
+  const json = await page.evaluate(() => window.__harness.exportJson());
+  const before = (await state(page)).meas;
+
+  // Clear: delete the project + reload → empty state.
+  await page.evaluate(() => window.__harness.deleteProject(window.__harness.currentSha()));
+  await page.reload();
+  await waitReady(page);
+  assert.equal((await state(page)).meas.length, 0, 'cleared before import');
+
+  // Import the backup → identical measurements restored.
+  await page.evaluate(j => window.__harness.importJson(j), json);
+  const after = (await state(page)).meas;
+  assert.equal(after.length, before.length, 'same measurement count');
+  const byName = m => `${m.name}|${m.kind}|${m.page}|${m.color}|${m.value.toFixed(2)}`;
+  assert.deepEqual(after.map(byName).sort(), before.map(byName).sort(),
+    'names, kinds, pages, colors, values all round-trip');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();

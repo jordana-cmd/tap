@@ -87,6 +87,9 @@
   <div id="canvasWrap"><canvas id="plan" width="900" height="650"></canvas></div>
   <div id="measPanel"><b>Measurements</b>
     <button id="exportCsv" style="float:right" title="download all measurements as CSV">export CSV</button>
+    <button id="exportJson" style="float:right;margin-right:6px" title="download a JSON backup of this project">export JSON</button>
+    <label id="importJsonLabel" style="float:right;margin-right:6px;cursor:pointer" title="restore a project from a JSON backup">
+      import JSON<input id="importJson" type="file" accept="application/json,.json" hidden></label>
     <label style="float:right;font-weight:normal;margin-right:8px"><input id="allPages" type="checkbox"> all pages</label>
     <div id="measList">(none yet)</div></div>
 </div>
@@ -694,6 +697,28 @@ function reindexAfterRestore() {
   }
 }
 
+/// Portable project backup — the escape hatch if IndexedDB is cleared.
+/// Same §A2-mirroring shape as the stored record (no derived values).
+function exportJson() {
+  return JSON.stringify({
+    version: 1, sha: currentSha, name: currentName,
+    pageScales: scalesToStored(),
+    measurements: measurements.map(toStored),
+    minWidthOverride,
+  }, null, 2);
+}
+function importJson(str) {
+  const data = JSON.parse(str);
+  scalesFromStored(data.pageScales ?? []);
+  measurements = (data.measurements ?? []).map(fromStored);
+  minWidthOverride = data.minWidthOverride ?? null;
+  reindexAfterRestore();
+  refreshScaleUI();
+  renderMeasList();
+  render();
+  markDirty();
+}
+
 function projectRecord() {
   return {
     sha: currentSha, name: currentName,
@@ -1251,6 +1276,27 @@ $('exportCsv').addEventListener('click', () => {
   URL.revokeObjectURL(url);
   say(`exported ${measurements.length} measurement(s) to takeoff.csv`);
 });
+$('exportJson').addEventListener('click', () => {
+  if (!currentSha) { say('open a PDF before exporting a project'); return; }
+  const blob = new Blob([exportJson()], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${(currentName || 'project').replace(/\.pdf$/i, '')}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  say('exported JSON project backup');
+});
+$('importJson').addEventListener('change', async ev => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  try {
+    importJson(await f.text());
+    say(`imported ${measurements.length} measurement(s) from ${f.name}`);
+  } catch (e) {
+    say(`import failed: ${e?.message ?? e}`);
+  }
+  ev.target.value = ''; // allow re-importing the same file
+});
 $('minWidth').addEventListener('input', () => {
   minWidthOverride = minWidthPts(); // sticky for the session
   $('minWidthVal').textContent = minWidthPts().toFixed(2);
@@ -1282,6 +1328,8 @@ window.__harness = {
   flushSave: () => flushSave(),
   listProjects: () => store.listProjects(),
   deleteProject: sha => store.deleteProject(sha),
+  exportJson: () => exportJson(),
+  importJson: str => importJson(str),
 };
 
 // ---- boot ----
