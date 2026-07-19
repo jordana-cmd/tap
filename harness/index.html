@@ -8,13 +8,13 @@
   h1 { font-size: 1.05rem; }
   #status { font-family: ui-monospace, monospace; white-space: pre-line; background: #fff;
             border: 1px solid #d6d3d1; padding: 8px 12px; min-height: 5.5em; margin-top: 8px; }
-  canvas { border: 1px solid #a8a29e; background: #fff; cursor: crosshair; display: block; max-width: 100%; }
+  canvas { border: 1px solid #a8a29e; background: #fff; cursor: crosshair; display: block; }
+  #canvasWrap { overflow: auto; max-height: 70vh; flex: 1 1 auto; min-width: 0; }
   .bar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 6px 0; font-size: 0.9rem; }
   button { font-size: 0.9rem; }
   #calibFeet { width: 5em; }
   .tool.active { background: #1d4ed8; color: #fff; }
   #workRow { display: flex; gap: 12px; align-items: flex-start; }
-  #workRow canvas { flex: 1 1 auto; min-width: 0; }
   #measPanel { flex: 0 0 250px; background: #fff; border: 1px solid #d6d3d1;
                padding: 8px; font-size: 0.85rem; max-height: 655px; overflow-y: auto; }
   .measRow { display: flex; justify-content: space-between; align-items: baseline; gap: 6px;
@@ -32,6 +32,8 @@
 <div class="bar">
   <input id="file" type="file" accept="application/pdf">
   <span><button id="prev">◀</button> page <span id="pageLabel">–</span> <button id="next">▶</button></span>
+  <span>zoom: <button id="zoomOut">−</button> <button id="zoomFit">fit</button>
+    <button id="zoomIn">+</button> <span id="zoomLabel">–</span></span>
   <label>scale: <select id="preset"><option value="">— choose or calibrate —</option></select></label>
   <span id="tools">
     <button class="tool active" data-tool="detect">detect</button>
@@ -61,7 +63,7 @@
   <span id="vecInfo">no vector geometry</span>
 </div>
 <div id="workRow">
-  <canvas id="plan" width="900" height="650"></canvas>
+  <div id="canvasWrap"><canvas id="plan" width="900" height="650"></canvas></div>
   <div id="measPanel"><b>Measurements</b><div id="measList">(none yet)</div></div>
 </div>
 <div id="status">loading wasm…</div>
@@ -122,20 +124,50 @@ function drawSynthetic() {
 
 async function cacheClean() { cleanBitmap = await createImageBitmap(canvas); }
 
+// Display scale `s` is USER-driven only (fit-width default + zoom). Scale
+// (fpi) changes never touch it — invariant 5: geometry is stored in base
+// units; changing fpi only re-derives feet values.
+let fitS = 10 / 18;         // s that fits the page to the wrap width
+let pageDims = null;        // {w, h} in PDF points, current page
+
+function fitWidthScale() {
+  if (!pageDims) return s;
+  const avail = Math.max(200, $('canvasWrap').clientWidth - 2);
+  return Math.min(avail / pageDims.w, MAX_DIM / pageDims.w, MAX_DIM / pageDims.h);
+}
+
+const zoomLabel = () =>
+  { $('zoomLabel').textContent = pageDims ? `${Math.round((s / fitS) * 100)}%` : '–'; };
+
+/// Re-render the page at scale `next`, keeping the base-unit point
+/// `anchor` ({x,y}, or null = viewport center) at the same screen spot.
+async function setZoom(next, anchor) {
+  if (!pdfDoc || !pageDims) return;
+  next = Math.min(next, MAX_DIM / pageDims.w, MAX_DIM / pageDims.h);
+  next = Math.max(next, fitS * 0.25);
+  const wrap = $('canvasWrap');
+  const a = anchor ?? {
+    x: (wrap.scrollLeft + wrap.clientWidth / 2) / s,
+    y: (wrap.scrollTop + wrap.clientHeight / 2) / s,
+  };
+  const keepX = a.x * s - wrap.scrollLeft; // screen offset to preserve
+  const keepY = a.y * s - wrap.scrollTop;
+  s = next;
+  await renderPage();
+  wrap.scrollLeft = a.x * s - keepX;
+  wrap.scrollTop = a.y * s - keepY;
+}
+
 async function renderPage() {
   if (!pdfDoc) { drawSynthetic(); await cacheClean(); setGeometry(null); return; }
   const page = await pdfDoc.getPage(pageNum);
   const base = page.getViewport({ scale: 1 });
-  if (scaleSet) {
-    s = (fpi * TARGET_PPF) / 72;                        // hit ppf target…
-    s = Math.min(s, MAX_DIM / base.width, MAX_DIM / base.height); // …within caps
-  } else {
-    s = Math.min(1100 / base.width, MAX_DIM / base.height);       // preview fit
-  }
+  pageDims = { w: base.width, h: base.height };
   const vp = page.getViewport({ scale: s });
   canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
   await page.render({ canvasContext: ctx, viewport: vp }).promise;
   $('pageLabel').textContent = `${pageNum} / ${pdfDoc.numPages}`;
+  zoomLabel();
   await cacheClean();
   // Vector geometry is per PAGE (base units), independent of render scale.
   if (!extractCache.has(pageNum)) {
@@ -143,6 +175,39 @@ async function renderPage() {
   }
   setGeometry(extractCache.get(pageNum));
   render();
+}
+
+// ---- off-screen detection raster (display never re-renders for detect) ----
+let detCache = null; // {pageNum, fpi, sDet, w, h, ppf, gray|null}
+
+async function detectRaster(needGray) {
+  const sDet = Math.min((fpi * TARGET_PPF) / 72,
+                        MAX_DIM / pageDims.w, MAX_DIM / pageDims.h);
+  if (!detCache || detCache.pageNum !== pageNum || detCache.fpi !== fpi) {
+    detCache = {
+      pageNum, fpi, sDet,
+      w: Math.round(pageDims.w * sDet),
+      h: Math.round(pageDims.h * sDet),
+      ppf: (72 / fpi) * sDet,
+      gray: null,
+    };
+  }
+  if (needGray && !detCache.gray) {
+    const page = await pdfDoc.getPage(pageNum);
+    const vp = page.getViewport({ scale: detCache.sDet });
+    const off = document.createElement('canvas');
+    off.width = detCache.w; off.height = detCache.h;
+    const octx = off.getContext('2d', { willReadFrequently: true });
+    octx.fillStyle = '#fff'; octx.fillRect(0, 0, off.width, off.height);
+    await page.render({ canvasContext: octx, viewport: vp }).promise;
+    const img = octx.getImageData(0, 0, off.width, off.height).data;
+    const gray = new Uint8Array(off.width * off.height);
+    for (let i = 0; i < gray.length; i++) {
+      gray[i] = (0.299 * img[4 * i] + 0.587 * img[4 * i + 1] + 0.114 * img[4 * i + 2]) | 0;
+    }
+    detCache.gray = gray;
+  }
+  return detCache;
 }
 
 /// Swap the PageGeometry handle (freeing the old one) and sync the vector UI.
@@ -260,21 +325,33 @@ function marker(x, y, color = '#dc2626') {
   ctx.stroke();
 }
 
-function runDetect(x, y) {
+/// Click-to-room from a BASE-unit click. Detection rasterizes OFF-SCREEN
+/// at the target ppf — the visible canvas (user-owned zoom) never
+/// re-renders because of detection or scale changes.
+async function runDetect(baseX, baseY) {
   if (pdfDoc && !scaleSet) { say('Set a scale first (preset or calibration).'); return; }
   const src = maskSource();
   const threshold = parseInt($('thresh').value, 10);
   const doorGap = parseFloat($('doorGap').value);
   try {
-    let r;
-    if (src === 'vector') {
-      r = pageGeom.detect_room_vector(canvas.width, canvas.height, x, y,
-                                      fpi, pxPerFoot(), minWidthPts(), doorGap);
+    let r, x, y, ppfUsed;
+    if (pdfDoc) {
+      const det = await detectRaster(src !== 'vector');
+      x = Math.round(baseX * det.sDet); y = Math.round(baseY * det.sDet);
+      ppfUsed = det.ppf;
+      r = src === 'vector'
+        ? pageGeom.detect_room_vector(det.w, det.h, x, y, fpi, det.ppf,
+                                      minWidthPts(), doorGap)
+        : detect_room(det.gray, det.w, det.h, x, y, fpi, det.ppf,
+                      threshold, doorGap);
     } else {
+      // Synthetic demo: the visible canvas IS the raster.
       redraw();
       const gray = grayscale(); // copied into wasm per call; buffer stays ours
+      x = Math.round(baseX * s); y = Math.round(baseY * s);
+      ppfUsed = pxPerFoot();
       r = detect_room(gray, canvas.width, canvas.height, x, y,
-                      fpi, pxPerFoot(), threshold, doorGap);
+                      fpi, ppfUsed, threshold, doorGap);
     }
     const c = r.contour;
     const closed = new Float64Array(c.length + 2);
@@ -287,8 +364,8 @@ function runDetect(x, y) {
     const knobs = src === 'vector'
       ? `min_width ${minWidthPts().toFixed(2)} pts`
       : `threshold ${threshold}`;
-    say(`click (${x}, ${y}) px | mask ${src} | fpi ${fpi.toFixed(3)} | ` +
-        `ppf ${pxPerFoot().toFixed(2)} | ${knobs} | door_gap ${doorGap}\n` +
+    say(`click (${x}, ${y}) det-px | mask ${src} | fpi ${fpi.toFixed(3)} | ` +
+        `det ppf ${ppfUsed.toFixed(2)} | ${knobs} | door_gap ${doorGap}\n` +
         `area_sf       = ${r.area_sf.toFixed(1)} SF\n` +
         `perimeter_lf  = ${r.perimeter_lf.toFixed(1)} LF\n` +
         `measure_polyline(closed contour) = ${viaPolyline.toFixed(1)} LF  (cross-check: ` +
@@ -310,11 +387,10 @@ function applyCalibration(feet) {
   try {
     const [a, b] = calibPts;
     fpi = calibrate_two_point(a.x, a.y, b.x, b.y, feet);
-    scaleSet = true;
-    $('fpiLabel').textContent = `${fpi.toFixed(4)} (calibrated)`;
     $('preset').value = '';
     setTool('detect'); $('calibEntry').hidden = true;
-    renderPage().then(() => say(`calibrated: fpi = ${fpi.toFixed(4)} — re-rendered at ppf ${pxPerFoot().toFixed(2)}. Click a room.`));
+    applyScaleChange('calibrated'); // view does NOT move; values revalue
+    say(`calibrated: fpi = ${fpi.toFixed(4)}. Click a room.`);
   } catch (e) {
     say(e && e.code ? `[${e.code}] ${e.message}` : `unexpected error: ${e}`);
     setTool('detect'); $('calibEntry').hidden = true;
@@ -334,6 +410,35 @@ function addMeasurement(kind, family, value, valueText, origin, geometry) {
   renderMeasList();
   render();
   return measurements[measurements.length - 1];
+}
+
+/// Invariant 5: geometry is base units; feet values are DERIVED. On any
+/// fpi change, recompute every measurement's value in place — nothing on
+/// screen moves, only the numbers update.
+function revalueMeasurements() {
+  for (const m of measurements) {
+    const flat = Array.from(m.geometry);
+    if (m.kind === 'linear') {
+      m.value = measure_polyline(flat, fpi);
+      m.valueText = `${m.value.toFixed(1)} LF`;
+    } else {
+      const ring = flat.concat(flat.slice(0, 2));
+      m.value = measure_polygon_area(flat, fpi);
+      const lf = measure_polyline(ring, fpi);
+      m.valueText = `${m.value.toFixed(1)} SF (${lf.toFixed(1)} LF)`;
+    }
+  }
+  renderMeasList();
+}
+
+/// A scale (fpi) change: label + revalue + detect-raster invalidation.
+/// Deliberately NO renderPage() — the view must not move (bug 1).
+function applyScaleChange(sourceLabel) {
+  scaleSet = true;
+  $('fpiLabel').textContent = `${fpi.toFixed(4)} (${sourceLabel})`;
+  detCache = null;
+  revalueMeasurements();
+  render();
 }
 
 function renderMeasList() {
@@ -513,7 +618,7 @@ canvas.addEventListener('click', ev => {
         'Enter/double-click commits, click elsewhere re-previews, Esc clears.');
     return;
   }
-  runDetect(Math.round(pt.x * s), Math.round(pt.y * s));
+  runDetect(pt.x, pt.y);
 });
 
 canvas.addEventListener('dblclick', () => {
@@ -554,23 +659,45 @@ $('file').addEventListener('change', async ev => {
 });
 async function loadPdf(data, name) {
   pdfDoc = await pdfjs.getDocument({ data }).promise;
-  pageNum = 1; scaleSet = false; extractCache.clear();
+  pageNum = 1; scaleSet = false; extractCache.clear(); detCache = null;
+  const base = (await pdfDoc.getPage(1)).getViewport({ scale: 1 });
+  pageDims = { w: base.width, h: base.height };
+  fitS = fitWidthScale();
+  s = fitS;
   $('fpiLabel').textContent = '— set scale —';
   await renderPage();
   say(`${name}: ${pdfDoc.numPages} page(s). Pick a preset scale or calibrate on a known dimension.`);
 }
+$('zoomIn').addEventListener('click', () => setZoom(s * 1.25, null));
+$('zoomOut').addEventListener('click', () => setZoom(s / 1.25, null));
+$('zoomFit').addEventListener('click', async () => {
+  if (!pdfDoc) return;
+  fitS = fitWidthScale();
+  await setZoom(fitS, null);
+  const wrap = $('canvasWrap');
+  wrap.scrollLeft = 0; wrap.scrollTop = 0;
+});
+canvas.addEventListener('wheel', ev => {
+  if (!ev.ctrlKey || !pdfDoc) return;
+  ev.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const anchor = {
+    x: (ev.clientX - rect.left) * canvas.width / rect.width / s,
+    y: (ev.clientY - rect.top) * canvas.height / rect.height / s,
+  };
+  setZoom(ev.deltaY < 0 ? s * 1.25 : s / 1.25, anchor);
+}, { passive: false });
 $('prev').addEventListener('click', async () => {
   if (pdfDoc && pageNum > 1) { pageNum--; await renderPage(); }
 });
 $('next').addEventListener('click', async () => {
   if (pdfDoc && pageNum < pdfDoc.numPages) { pageNum++; await renderPage(); }
 });
-$('preset').addEventListener('change', async ev => {
+$('preset').addEventListener('change', ev => {
   if (!ev.target.value) return;
-  fpi = parseFloat(ev.target.value); scaleSet = true;
-  $('fpiLabel').textContent = `${fpi.toFixed(4)} (preset)`;
-  await renderPage();
-  say(`scale set from preset — rendered at ppf ${pxPerFoot().toFixed(2)}. Click a room.`);
+  fpi = parseFloat(ev.target.value);
+  applyScaleChange('preset'); // view does NOT move; values revalue
+  say('scale set from preset. Click a room.');
 });
 $('calibBtn').addEventListener('click', ev => {
   setTool('calibrate');
@@ -604,8 +731,10 @@ say('wasm loaded — click inside a room, or load a PDF.');
 
 // Deep-link/self-test affordance (also drives headless smoke tests):
 // ?url=/plans/x.pdf&page=N&fpi=F&threshold=T&door=D&autoclick=x,y
-//   &calib=x1,y1,x2,y2,feet   (canvas px + feet; runs after render)
+//   &calib=x1,y1,x2,y2,feet   (BASE UNITS + feet; runs after render)
 //   &mask=vector|raster&minwidth=W   (applied after geometry loads)
+// autoclick/calib coordinates are BASE UNITS (PDF points): display scale
+// is user-driven and no longer a stable coordinate system.
 const qs = new URLSearchParams(location.search);
 if (qs.has('threshold')) { $('thresh').value = qs.get('threshold'); $('threshVal').textContent = $('thresh').value; }
 if (qs.has('door')) { $('doorGap').value = qs.get('door'); $('doorGapVal').textContent = $('doorGap').value; }
@@ -614,9 +743,8 @@ if (qs.has('url')) {
   await loadPdf(await resp.arrayBuffer(), qs.get('url'));
   if (qs.has('page')) { pageNum = parseInt(qs.get('page'), 10); await renderPage(); }
   if (qs.has('fpi')) {
-    fpi = parseFloat(qs.get('fpi')); scaleSet = true;
-    $('fpiLabel').textContent = `${fpi.toFixed(4)} (param)`;
-    await renderPage();
+    fpi = parseFloat(qs.get('fpi'));
+    applyScaleChange('param');
   }
 }
 if (qs.get('mask') === 'raster') { $('maskRaster').checked = true; render(); }
@@ -630,12 +758,12 @@ if (qs.has('minwidth') && !$('minWidth').disabled) {
 }
 if (qs.has('calib')) {
   const [x1, y1, x2, y2, feet] = qs.get('calib').split(',').map(Number);
-  calibPts = [{ x: x1 / s, y: y1 / s }, { x: x2 / s, y: y2 / s }];
+  calibPts = [{ x: x1, y: y1 }, { x: x2, y: y2 }]; // base units
   applyCalibration(feet);
 }
 if (qs.has('autoclick')) {
-  const [ax, ay] = qs.get('autoclick').split(',').map(Number);
-  runDetect(ax, ay);
+  const [ax, ay] = qs.get('autoclick').split(',').map(Number); // base units
+  await runDetect(ax, ay);
 }
 </script>
 </body>
