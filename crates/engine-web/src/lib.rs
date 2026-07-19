@@ -163,6 +163,10 @@ fn detect(
 /// filter list, and snapping from a single owned copy of the segments.
 struct PageGeom {
     index: SegmentIndex,
+    /// Lazily derived hatch classification (params + per-segment flags) —
+    /// computed once on first use, shared by the overlay id list and the
+    /// exclude_hatch detect path.
+    hatch: std::cell::OnceCell<(engine_core::HatchParams, Vec<bool>)>,
 }
 
 impl PageGeom {
@@ -181,7 +185,46 @@ impl PageGeom {
             .collect();
         Ok(PageGeom {
             index: SegmentIndex::build(segments),
+            hatch: std::cell::OnceCell::new(),
         })
+    }
+
+    fn hatch(&self) -> &(engine_core::HatchParams, Vec<bool>) {
+        self.hatch.get_or_init(|| {
+            let segs = self.index.segments();
+            let params = engine_core::HatchParams::derive(segs);
+            let flags = engine_core::classify_hatch(segs, &params);
+            (params, flags)
+        })
+    }
+
+    /// Ids of hatch-classified segments (the harness's purple overlay).
+    fn hatch_ids(&self) -> Vec<u32> {
+        self.hatch()
+            .1
+            .iter()
+            .enumerate()
+            .filter(|(_, &f)| f)
+            .map(|(i, _)| i as u32)
+            .collect()
+    }
+
+    /// The derived hatch parameters as JSON — transparency for the
+    /// harness info line and the evals.
+    fn hatch_params_json(&self) -> String {
+        let p = &self.hatch().0;
+        format!(
+            "{{\"rail_merge_tol_pts\":{},\"dash_gap_tol_pts\":{},\"min_rails\":{},\
+             \"pitch_cv_max\":{},\"max_pitch_pts\":{},\"min_overlap_frac\":{},\
+             \"extent_outlier_ratio\":{}}}",
+            p.rail_merge_tol_pts,
+            p.dash_gap_tol_pts,
+            p.min_rails,
+            p.pitch_cv_max,
+            p.max_pitch_pts,
+            p.min_overlap_frac,
+            p.extent_outlier_ratio
+        )
     }
 
     fn segment_count(&self) -> u32 {
@@ -213,7 +256,8 @@ impl PageGeom {
     }
 
     /// Vector-mask Level-1 detect: rasterize width-filtered segments onto
-    /// the canvas pixel grid, then run the shared §A3.1 pipeline.
+    /// the canvas pixel grid (optionally excluding hatch-classified
+    /// segments), then run the shared §A3.1 pipeline.
     #[allow(clippy::too_many_arguments)]
     fn detect_vector(
         &self,
@@ -224,18 +268,24 @@ impl PageGeom {
         fpi: f64,
         px_per_foot: f64,
         min_width_pts: f64,
+        exclude_hatch: bool,
         door_gap_ft: f64,
     ) -> Result<RoomOut, WebError> {
         let scale = Scale::from_fpi(fpi)?;
         // Same convention as the raster path: the canvas IS the page.
         let map = PixelMap::new(Point::new(0.0, 0.0), scale, px_per_foot)?;
+        let hatch_flags = if exclude_hatch {
+            Some(self.hatch().1.as_slice())
+        } else {
+            None
+        };
         let mask = engine_core::rasterize_wall_mask(
             self.index.segments(),
             &map,
             width_px,
             height_px,
             min_width_pts,
-            None,
+            hatch_flags,
         )?;
         let params = DetectParams {
             door_gap_ft,
@@ -461,8 +511,9 @@ impl PageGeometry {
     }
 
     /// Click-to-room on the VECTOR wall mask: width-filtered segments
-    /// rasterized onto the canvas grid, then the same dilate/flood/close
-    /// pipeline as the raster path. Same error codes as `detect_room`.
+    /// (minus hatch-classified ones when `exclude_hatch`) rasterized onto
+    /// the canvas grid, then the same dilate/flood/close pipeline as the
+    /// raster path. Same error codes as `detect_room`.
     #[allow(clippy::too_many_arguments)]
     pub fn detect_room_vector(
         &self,
@@ -473,6 +524,7 @@ impl PageGeometry {
         fpi: f64,
         px_per_foot: f64,
         min_width_pts: f64,
+        exclude_hatch: bool,
         door_gap_ft: f64,
     ) -> Result<RoomResult, JsValue> {
         self.inner
@@ -484,6 +536,7 @@ impl PageGeometry {
                 fpi,
                 px_per_foot,
                 min_width_pts,
+                exclude_hatch,
                 door_gap_ft,
             )
             .map(|r| RoomResult {
@@ -492,6 +545,17 @@ impl PageGeometry {
                 perimeter_lf: r.perimeter_lf,
             })
             .map_err(to_js)
+    }
+
+    /// Ids of hatch-classified segments (rail-and-comb structure pass) —
+    /// drives the harness's purple hatch overlay.
+    pub fn hatch_segment_ids(&self) -> Vec<u32> {
+        self.inner.hatch_ids()
+    }
+
+    /// The data-derived hatch parameters as JSON (transparency).
+    pub fn hatch_params_json(&self) -> String {
+        self.inner.hatch_params_json()
     }
 
     /// Snap a base-unit cursor within a base-unit tolerance (JS converts
@@ -684,20 +748,73 @@ mod tests {
         let g = PageGeom::from_flat(&room_flat()).unwrap();
         // 200×200 px canvas at 10 ppf; seed off the (filtered-out) hairline.
         let out = g
-            .detect_vector(200, 200, 100, 75, 4.0, 10.0, 1.86, 3.5)
+            .detect_vector(200, 200, 100, 75, 4.0, 10.0, 1.86, false, 3.5)
             .unwrap();
         // Interior 9.8×9.8 ft (centerline strokes inset one pixel).
         assert!((out.area_sf - 96.04).abs() <= 3.0, "area {}", out.area_sf);
 
         // Unfiltered, the hairline partitions the room: fragment.
         let frag = g
-            .detect_vector(200, 200, 100, 75, 4.0, 10.0, 0.0, 3.5)
+            .detect_vector(200, 200, 100, 75, 4.0, 10.0, 0.0, false, 3.5)
             .unwrap();
         assert!(
             frag.area_sf < 0.6 * out.area_sf,
             "expected fragment, got {}",
             frag.area_sf
         );
+    }
+
+    /// Flat-form room with a dense horizontal hatch field inside: walls at
+    /// 3.6 pts, 23 hatch lines at 7.5-pt pitch (22 gap samples — above the
+    /// derive evidence floor of 20).
+    fn hatched_room_flat() -> Vec<f64> {
+        let (a, b) = (90.0, 270.0);
+        let mut flat = vec![
+            a, a, b, a, 3.6, //
+            b, a, b, b, 3.6, //
+            b, b, a, b, 3.6, //
+            a, b, a, a, 3.6,
+        ];
+        for i in 1..=23 {
+            let y = a + i as f64 * 7.5;
+            flat.extend_from_slice(&[a + 2.0, y, b - 2.0, y, 3.6]);
+        }
+        flat
+    }
+
+    #[test]
+    fn page_geom_hatch_ids_and_exclude_flag() {
+        let g = PageGeom::from_flat(&hatched_room_flat()).unwrap();
+        let ids = g.hatch_ids();
+        // Interior hatch lines classify; the four walls (ids 0..4) never do.
+        assert!(!ids.is_empty());
+        assert!(ids.iter().all(|&i| i >= 4), "{ids:?}");
+        assert!(g.hatch_params_json().contains("\"max_pitch_pts\":"));
+
+        // Hatch at wall stroke traps/fragments without exclusion…
+        let blocked = g.detect_vector(200, 200, 100, 100, 4.0, 10.0, 0.0, false, 3.5);
+        let ok_area = match blocked {
+            Ok(r) => r.area_sf,
+            Err(_) => 0.0,
+        };
+        // …and exclusion recovers a much larger region.
+        let recovered = g
+            .detect_vector(200, 200, 100, 100, 4.0, 10.0, 0.0, true, 3.5)
+            .unwrap();
+        assert!(
+            recovered.area_sf > ok_area.max(20.0),
+            "excluded {} vs blocked {}",
+            recovered.area_sf,
+            ok_area
+        );
+    }
+
+    #[test]
+    fn page_geom_hatch_empty_page_noop() {
+        let g = PageGeom::from_flat(&room_flat()).unwrap();
+        assert!(g.hatch_ids().is_empty(), "no hatch on the plain room");
+        let empty = PageGeom::from_flat(&[]).unwrap();
+        assert!(empty.hatch_ids().is_empty());
     }
 
     #[test]
