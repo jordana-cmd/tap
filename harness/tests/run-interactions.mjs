@@ -225,15 +225,25 @@ await run('snap indicators never accumulate (mousemove sweep + zoom churn)', asy
     const { cx, cy } = await clientOf(page, 110 + i * 17, 399);
     await page.mouse.move(cx, cy);
   }
-  // Zoom churn mid-sweep (the suspected unclean-compositing window).
+  // Zoom churn mid-sweep with NO settling waits — overlapping renderPage
+  // calls are exactly the unclean-compositing window; interleave moves.
   await page.click('#zoomIn');
   await page.click('#zoomIn');
-  await new Promise(r => setTimeout(r, 600));
+  for (let i = 0; i < 10; i++) {
+    const { cx, cy } = await clientOf(page, 110 + i * 17, 399);
+    await page.mouse.move(cx, cy);
+  }
+  await page.click('#zoomOut');
+  await new Promise(r => setTimeout(r, 700));
   for (let i = 0; i < 25; i++) {
     const { cx, cy } = await clientOf(page, 110 + i * 17, 399);
     await page.mouse.move(cx, cy);
   }
-  // Park the cursor far from geometry: NO indicator should remain.
+  // Reset the view so the park point is inside the viewport (a park move
+  // that misses the canvas would leave the LIVE indicator painted and
+  // read as a false accumulation), then park far from geometry.
+  await page.click('#zoomFit');
+  await new Promise(r => setTimeout(r, 700));
   const { cx, cy } = await clientOf(page, 700, 550);
   await page.mouse.move(cx, cy);
   const green = await countPixels(page, GREEN);

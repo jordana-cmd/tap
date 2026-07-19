@@ -125,7 +125,11 @@ function drawSynthetic() {
   ctx.fillRect(ft(60), ft(35), ft(8), ft(0.5));
 }
 
-async function cacheClean() { cleanBitmap = await createImageBitmap(canvas); }
+async function cacheClean() {
+  const old = cleanBitmap;
+  cleanBitmap = await createImageBitmap(canvas);
+  if (old) old.close(); // bitmaps are GPU-backed; never leak them
+}
 
 // Display scale `s` is USER-driven only (fit-width default + zoom). Scale
 // (fpi) changes never touch it — invariant 5: geometry is stored in base
@@ -161,23 +165,35 @@ async function setZoom(next, anchor) {
   wrap.scrollTop = a.y * s - keepY;
 }
 
+let renderGen = 0; // serialize overlapping renderPage calls (rapid zoom)
+
 async function renderPage() {
+  const gen = ++renderGen;
   if (!pdfDoc) { drawSynthetic(); await cacheClean(); setGeometry(null); return; }
-  const page = await pdfDoc.getPage(pageNum);
-  const base = page.getViewport({ scale: 1 });
-  pageDims = { w: base.width, h: base.height };
-  const vp = page.getViewport({ scale: s });
-  canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
-  await page.render({ canvasContext: ctx, viewport: vp }).promise;
-  $('pageLabel').textContent = `${pageNum} / ${pdfDoc.numPages}`;
-  zoomLabel();
-  await cacheClean();
-  // Vector geometry is per PAGE (base units), independent of render scale.
-  if (!extractCache.has(pageNum)) {
-    extractCache.set(pageNum, await extractSegments(page, pdfjs.OPS));
+  try {
+    const page = await pdfDoc.getPage(pageNum);
+    if (gen !== renderGen) return; // superseded by a newer render
+    const base = page.getViewport({ scale: 1 });
+    pageDims = { w: base.width, h: base.height };
+    const vp = page.getViewport({ scale: s });
+    canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    if (gen !== renderGen) return;
+    $('pageLabel').textContent = `${pageNum} / ${pdfDoc.numPages}`;
+    zoomLabel();
+    await cacheClean();
+    // Vector geometry is per PAGE (base units), independent of render scale.
+    if (!extractCache.has(pageNum)) {
+      extractCache.set(pageNum, await extractSegments(page, pdfjs.OPS));
+    }
+    if (gen !== renderGen) return;
+    setGeometry(extractCache.get(pageNum));
+    render();
+  } catch (e) {
+    // A superseded pdf.js render throws — never leave it unhandled (an
+    // aborted renderPage is exactly the stale-bitmap window).
+    if (gen === renderGen) say(`render error: ${e?.message ?? e}`);
   }
-  setGeometry(extractCache.get(pageNum));
-  render();
 }
 
 // ---- off-screen detection raster (display never re-renders for detect) ----
@@ -248,7 +264,16 @@ function setGeometry(extracted) {
 const maskSource = () => ($('maskVector').checked ? 'vector' : 'raster');
 const minWidthPts = () => parseFloat($('minWidth').value);
 
-function redraw() { if (cleanBitmap) ctx.drawImage(cleanBitmap, 0, 0); }
+/// Guaranteed-clean compositor base: ALWAYS clear the full canvas before
+/// laying the page bitmap down. Accumulation of transient overlays is
+/// impossible regardless of bitmap state (a stale-size bitmap after an
+/// aborted render no longer leaves uncleared regions — the confirmed
+/// indicator-accumulation bug).
+function redraw() {
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (cleanBitmap) ctx.drawImage(cleanBitmap, 0, 0);
+}
 
 function strokeFlat(flat, closed) {
   ctx.beginPath();
@@ -347,6 +372,11 @@ function render() {
     }
     haloStroke('#c2410c', 5);
     for (const p of [chainPreview.start, chainPreview.end]) marker(p.x * s, p.y * s, '#c2410c');
+  }
+  // Calibration clicks are STATE, drawn here every frame — never painted
+  // directly from event handlers (the transient-as-persistent class).
+  for (const p of calibPts) {
+    marker(p.x * s, p.y * s, p.snapped ? '#16a34a' : '#dc2626');
   }
   if (hover && hover.closing && draft && draft.verts.length) {
     // Distinct close indicator: clicking will close the polygon here.
@@ -661,8 +691,8 @@ canvas.addEventListener('click', ev => {
       ? ` [snap: ${pt.snap.kind} seg#${pt.snap.segment}` +
         (pt.snap.other !== undefined ? `∩#${pt.snap.other}` : '') + ']'
       : '';
-    calibPts.push({ x: pt.x, y: pt.y });
-    marker(pt.x * s, pt.y * s, pt.snap ? '#16a34a' : '#dc2626');
+    calibPts.push({ x: pt.x, y: pt.y, snapped: !!pt.snap });
+    render();
     if (calibPts.length === 2) {
       $('calibEntry').hidden = false;
       say(`Both points set${snapNote} — enter the real distance in feet and Apply.`);
