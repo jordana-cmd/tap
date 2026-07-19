@@ -17,9 +17,9 @@ pub mod traits;
 pub mod units;
 
 pub use detect::{
-    default_min_width, detect_candidates, detect_room, detect_room_from_mask,
+    classify_hatch, default_min_width, detect_candidates, detect_room, detect_room_from_mask,
     passes_width_filter, rasterize_wall_mask, width_histogram, DetectError, DetectParams,
-    GrayRaster, Mask, PixelMap, RoomCandidate, RoomDetection, WidthBucket,
+    GrayRaster, HatchParams, Mask, PixelMap, RoomCandidate, RoomDetection, WidthBucket,
 };
 pub use error::ScaleError;
 pub use geom::{distance, polygon_area, polygon_perimeter, polyline_length, simplify, Point};

@@ -13,6 +13,7 @@
 mod ccl;
 mod contour;
 mod flood;
+mod hatch;
 mod mask_ops;
 mod pixelmap;
 mod raster;
@@ -20,6 +21,7 @@ mod wallmask;
 
 pub use contour::trace_contour;
 pub use flood::flood_fill;
+pub use hatch::{classify_hatch, HatchParams};
 pub use mask_ops::{close_region, dilate, door_gap_radius_px, threshold_mask};
 pub use pixelmap::{choose_px_per_foot, PixelMap, TARGET_PX_PER_FOOT};
 pub use raster::{GrayRaster, Mask, RasterError, MAX_RASTER_PIXELS};
