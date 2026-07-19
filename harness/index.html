@@ -103,6 +103,7 @@ let measurements = [];      // {id, kind, name, value, valueText, origin, geomet
 let hoverMeas = null;       // measurement id emphasized from the list panel
 let measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0 };
 let nextMeasId = 1;
+let lastClick = null;       // {t, cx, cy} — double-click debounce
 
 const pxPerFoot = () => (72 / fpi) * s;
 const say = t => { status.textContent = t; };
@@ -297,7 +298,16 @@ function render() {
     ctx.stroke();
     for (const p of [chainPreview.start, chainPreview.end]) marker(p.x * s, p.y * s, '#ea580c');
   }
-  if (hover && hover.snap) {
+  if (hover && hover.closing) {
+    // Distinct close indicator: clicking will close the polygon here.
+    const v0 = draft.verts[0];
+    ctx.fillStyle = 'rgba(234, 88, 12, 0.85)';
+    ctx.beginPath();
+    ctx.arc(v0.x * s, v0.y * s, 8, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.fillStyle = '#ea580c'; ctx.font = 'bold 11px ui-monospace, monospace';
+    ctx.fillText('close', v0.x * s + 11, v0.y * s - 10);
+  } else if (hover && hover.snap) {
     const { x, y, kind } = hover.snap;
     ctx.strokeStyle = '#16a34a'; ctx.lineWidth = 2;
     ctx.beginPath();
@@ -486,11 +496,19 @@ function setTool(next) {
 }
 
 /// Cursor event → base units, with snap (unless Shift constrains) applied.
+/// `closing` = area tool hovering its own first vertex: the close-and-
+/// commit gesture, which overrides both snap and constraint.
 function cursorPoint(ev) {
   const rect = canvas.getBoundingClientRect();
   const cx = (ev.clientX - rect.left) * canvas.width / rect.width;
   const cy = (ev.clientY - rect.top) * canvas.height / rect.height;
-  let pt = { x: cx / s, y: cy / s, snap: null };
+  let pt = { x: cx / s, y: cy / s, snap: null, closing: false };
+  if (tool === 'area' && draft && draft.verts.length >= 3) {
+    const v0 = draft.verts[0];
+    if (Math.hypot(pt.x - v0.x, pt.y - v0.y) <= 10 / s) {
+      return { x: v0.x, y: v0.y, snap: null, closing: true };
+    }
+  }
   const last = draft && draft.verts.length ? draft.verts[draft.verts.length - 1] : null;
   if (ev.shiftKey && last && (tool === 'line' || tool === 'area')) {
     // Constrain to the nearest of the 8 H/V/45° rays from the last vertex
@@ -541,14 +559,14 @@ function finishDraft() {
   const origin = draft.anySnap ? 'snap' : 'manual';
   if (tool === 'line') {
     const lf = measure_polyline(flat, fpi);
-    addMeasurement('linear', 'Line', lf, `${lf.toFixed(1)} LF`, origin, flat);
-    say(`Line committed: ${lf.toFixed(1)} LF`);
+    const m = addMeasurement('linear', 'Line', lf, `${lf.toFixed(1)} LF`, origin, flat);
+    say(`${m.name} committed: ${lf.toFixed(1)} LF — line tool armed, click to start the next one.`);
   } else {
     const ring = flat.concat(flat.slice(0, 2));
     const sf = measure_polygon_area(flat, fpi);
     const lf = measure_polyline(ring, fpi);
-    addMeasurement('area', 'Area', sf, `${sf.toFixed(1)} SF (${lf.toFixed(1)} LF)`, origin, flat);
-    say(`Area committed: ${sf.toFixed(1)} SF, perimeter ${lf.toFixed(1)} LF`);
+    const m = addMeasurement('area', 'Area', sf, `${sf.toFixed(1)} SF (${lf.toFixed(1)} LF)`, origin, flat);
+    say(`${m.name} committed: ${sf.toFixed(1)} SF, perimeter ${lf.toFixed(1)} LF — area tool armed, click to start the next one.`);
   }
   draft = null;
   render();
@@ -559,8 +577,8 @@ function commitChain() {
   const c = chainPreview;
   const flat = [c.start.x, c.start.y, c.end.x, c.end.y];
   const lf = measure_polyline(flat, fpi);
-  addMeasurement('linear', 'Wall run', lf, `${lf.toFixed(1)} LF`, 'snap', flat);
-  say(`Wall run committed: ${lf.toFixed(1)} LF (${c.ids.length} segment(s))`);
+  const m = addMeasurement('linear', 'Wall run', lf, `${lf.toFixed(1)} LF`, 'snap', flat);
+  say(`${m.name} committed: ${lf.toFixed(1)} LF (${c.ids.length} segment(s)) — wall tool armed, click the next wall.`);
   chainPreview = null;
   render();
 }
@@ -595,6 +613,15 @@ canvas.addEventListener('click', ev => {
   }
   if (tool === 'line' || tool === 'area') {
     if (!scaleGuard()) return;
+    // Close gesture (area): clicking the first vertex closes and commits.
+    if (pt.closing) { finishDraft(); return; }
+    // Double-click debounce: the second click of a double-click must not
+    // add a stray vertex — the dblclick event finishes the draft instead.
+    if (lastClick && ev.timeStamp - lastClick.t < 350 &&
+        Math.hypot(ev.clientX - lastClick.cx, ev.clientY - lastClick.cy) < 5) {
+      return;
+    }
+    lastClick = { t: ev.timeStamp, cx: ev.clientX, cy: ev.clientY };
     if (!draft) draft = { verts: [], anySnap: false };
     draft.verts.push({ x: pt.x, y: pt.y });
     if (pt.snap) draft.anySnap = true;
@@ -622,13 +649,10 @@ canvas.addEventListener('click', ev => {
 });
 
 canvas.addEventListener('dblclick', () => {
-  if (tool === 'line' || tool === 'area') {
-    // The double-click's own second click just added a duplicate vertex.
-    if (draft && draft.verts.length) draft.verts.pop();
-    finishDraft();
-  } else if (tool === 'wall') {
-    commitChain();
-  }
+  // The click debounce already swallowed the double-click's second click,
+  // so no stray vertex exists to pop.
+  if (tool === 'line' || tool === 'area') finishDraft();
+  else if (tool === 'wall') commitChain();
 });
 
 window.addEventListener('keydown', ev => {
