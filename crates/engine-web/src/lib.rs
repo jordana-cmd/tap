@@ -17,7 +17,8 @@
 
 use engine_core::detect::{DetectParams, GrayRaster, PixelMap, RasterError};
 use engine_core::{
-    polygon_area, polyline_length, DetectError, Point, RoomDetection, Scale, ScaleError,
+    polygon_area, polyline_length, DetectError, Point, RoomDetection, Scale, ScaleError, Segment,
+    SegmentIndex, SnapKind,
 };
 use wasm_bindgen::prelude::*;
 
@@ -28,6 +29,8 @@ pub(crate) enum WebError {
     Detect(DetectError),
     Raster(RasterError),
     Scale(ScaleError),
+    /// Segment buffer is not [x1,y1,x2,y2,width] × n.
+    BadSegments { len: usize },
 }
 
 impl WebError {
@@ -52,6 +55,7 @@ impl WebError {
                     "INVALID_CALIBRATION"
                 }
             },
+            WebError::BadSegments { .. } => "BAD_SEGMENTS",
         }
     }
 
@@ -60,6 +64,9 @@ impl WebError {
             WebError::Detect(e) => e.to_string(),
             WebError::Raster(e) => e.to_string(),
             WebError::Scale(e) => e.to_string(),
+            WebError::BadSegments { len } => {
+                format!("segment buffer length {len} is not a multiple of 5")
+            }
         }
     }
 }
@@ -146,6 +153,119 @@ fn detect(
         area_sf,
         perimeter_lf,
     })
+}
+
+/// One page's extracted vector geometry: segments + spatial index, built
+/// ONCE per page (rebuilding an rstar bulk-load over ~10⁵ segments per
+/// click or per pointer-move is the wrong steady-state). Serves the
+/// stroke-width histogram, the vector wall-mask detect path, the overlay
+/// filter list, and snapping from a single owned copy of the segments.
+struct PageGeom {
+    index: SegmentIndex,
+}
+
+impl PageGeom {
+    /// `flat` = [x1,y1,x2,y2,width_pts] × n in base units.
+    fn from_flat(flat: &[f64]) -> Result<PageGeom, WebError> {
+        if flat.len() % 5 != 0 {
+            return Err(WebError::BadSegments { len: flat.len() });
+        }
+        let segments: Vec<Segment> = flat
+            .chunks_exact(5)
+            .map(|c| Segment {
+                p1: Point::new(c[0], c[1]),
+                p2: Point::new(c[2], c[3]),
+                width: c[4],
+            })
+            .collect();
+        Ok(PageGeom {
+            index: SegmentIndex::build(segments),
+        })
+    }
+
+    fn segment_count(&self) -> u32 {
+        self.index.len() as u32
+    }
+
+    fn histogram_json(&self) -> String {
+        let entries: Vec<String> = engine_core::width_histogram(self.index.segments())
+            .iter()
+            .map(|b| format!("{{\"width_pts\":{},\"segments\":{}}}", b.width_pts, b.segments))
+            .collect();
+        format!("[{}]", entries.join(","))
+    }
+
+    fn default_min_width(&self) -> f64 {
+        engine_core::default_min_width(&engine_core::width_histogram(self.index.segments()))
+    }
+
+    /// Ids (positions in the flat build array) of segments passing the
+    /// width filter — the harness's wall-skeleton overlay.
+    fn passing_ids(&self, min_width_pts: f64) -> Vec<u32> {
+        self.index
+            .segments()
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| engine_core::passes_width_filter(s, min_width_pts))
+            .map(|(i, _)| i as u32)
+            .collect()
+    }
+
+    /// Vector-mask Level-1 detect: rasterize width-filtered segments onto
+    /// the canvas pixel grid, then run the shared §A3.1 pipeline.
+    #[allow(clippy::too_many_arguments)]
+    fn detect_vector(
+        &self,
+        width_px: u32,
+        height_px: u32,
+        seed_x: u32,
+        seed_y: u32,
+        fpi: f64,
+        px_per_foot: f64,
+        min_width_pts: f64,
+        door_gap_ft: f64,
+    ) -> Result<RoomOut, WebError> {
+        let scale = Scale::from_fpi(fpi)?;
+        // Same convention as the raster path: the canvas IS the page.
+        let map = PixelMap::new(Point::new(0.0, 0.0), scale, px_per_foot)?;
+        let mask = engine_core::rasterize_wall_mask(
+            self.index.segments(),
+            &map,
+            width_px,
+            height_px,
+            min_width_pts,
+        )?;
+        let params = DetectParams {
+            door_gap_ft,
+            ..DetectParams::default()
+        };
+        let RoomDetection {
+            contour,
+            area_sf,
+            perimeter_lf,
+        } = engine_core::detect_room_from_mask(&mask, &map, (seed_x, seed_y), &params)?;
+        Ok(RoomOut {
+            contour: contour.iter().flat_map(|p| [p.x, p.y]).collect(),
+            area_sf,
+            perimeter_lf,
+        })
+    }
+
+    /// Snap in BASE UNITS (tolerance already divided by zoom on the JS
+    /// side). None → no snap within tolerance (or empty index).
+    fn snap_json(&self, x: f64, y: f64, tolerance_pts: f64) -> Option<String> {
+        let snap = self.index.snap(Point::new(x, y), tolerance_pts)?;
+        let (kind, other) = match snap.kind {
+            SnapKind::Endpoint => ("endpoint", None),
+            SnapKind::Intersection { other } => ("intersection", Some(other.0)),
+            SnapKind::Projection => ("projection", None),
+        };
+        let other_field = other.map_or(String::new(), |o| format!(",\"other\":{o}"));
+        Some(format!(
+            "{{\"x\":{},\"y\":{},\"kind\":\"{}\",\"segment\":{}{}}}",
+            snap.point.x, snap.point.y, kind, snap.segment.0, other_field
+        ))
+    }
 }
 
 fn calibrate(x1: f64, y1: f64, x2: f64, y2: f64, known_feet: f64) -> Result<f64, WebError> {
@@ -267,6 +387,92 @@ pub fn detect_room(
     .map_err(to_js)
 }
 
+/// Per-page vector geometry handle (addendum §A3.1 mask-source revision +
+/// §A3.3). Construct once per page from the extraction's flat
+/// `[x1,y1,x2,y2,width_pts] × n` Float64Array (base units, top-left
+/// origin); call `.free()` before replacing it. An empty array is valid —
+/// the scanned-PDF degrade path (detect throws, snap returns null).
+#[wasm_bindgen]
+pub struct PageGeometry {
+    inner: PageGeom,
+}
+
+#[wasm_bindgen]
+impl PageGeometry {
+    /// Throws `{ code: "BAD_SEGMENTS" }` if `flat.length % 5 != 0`.
+    #[wasm_bindgen(constructor)]
+    pub fn new(flat: &[f64]) -> Result<PageGeometry, JsValue> {
+        PageGeom::from_flat(flat)
+            .map(|inner| PageGeometry { inner })
+            .map_err(to_js)
+    }
+
+    /// Total segments in the id space (including non-finite inert entries).
+    #[wasm_bindgen(getter)]
+    pub fn segment_count(&self) -> u32 {
+        self.inner.segment_count()
+    }
+
+    /// Stroke-width histogram as JSON `[{width_pts, segments}, …]`,
+    /// ascending by width.
+    pub fn histogram_json(&self) -> String {
+        self.inner.histogram_json()
+    }
+
+    /// Data-driven default for the min-width filter (midpoint between the
+    /// thinnest and the modal stroke width; 0 when no segments).
+    pub fn default_min_width(&self) -> f64 {
+        self.inner.default_min_width()
+    }
+
+    /// Ids of segments passing the width filter — drives the harness's
+    /// wall-skeleton overlay (ids index the flat construction array × 5).
+    pub fn wall_segment_ids(&self, min_width_pts: f64) -> Vec<u32> {
+        self.inner.passing_ids(min_width_pts)
+    }
+
+    /// Click-to-room on the VECTOR wall mask: width-filtered segments
+    /// rasterized onto the canvas grid, then the same dilate/flood/close
+    /// pipeline as the raster path. Same error codes as `detect_room`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn detect_room_vector(
+        &self,
+        width_px: u32,
+        height_px: u32,
+        seed_x: u32,
+        seed_y: u32,
+        fpi: f64,
+        px_per_foot: f64,
+        min_width_pts: f64,
+        door_gap_ft: f64,
+    ) -> Result<RoomResult, JsValue> {
+        self.inner
+            .detect_vector(
+                width_px,
+                height_px,
+                seed_x,
+                seed_y,
+                fpi,
+                px_per_foot,
+                min_width_pts,
+                door_gap_ft,
+            )
+            .map(|r| RoomResult {
+                contour: r.contour,
+                area_sf: r.area_sf,
+                perimeter_lf: r.perimeter_lf,
+            })
+            .map_err(to_js)
+    }
+
+    /// Snap a base-unit cursor within a base-unit tolerance (JS converts
+    /// the addendum's `10 / zoom` screen tolerance before calling).
+    /// Returns JSON `{x, y, kind, segment[, other]}` or null.
+    pub fn snap_json(&self, x: f64, y: f64, tolerance_pts: f64) -> Option<String> {
+        self.inner.snap_json(x, y, tolerance_pts)
+    }
+}
+
 // ---------- native tests ----------
 
 #[cfg(test)]
@@ -373,5 +579,91 @@ mod tests {
         // Bad scale.
         let err = detect(&gray, 200, 200, 100, 100, f64::NAN, 10.0, 200, 3.5).unwrap_err();
         assert_eq!(err.code(), "INVALID_SCALE");
+    }
+
+    /// Flat-form square room: 10×10 ft interior at fpi 4 (1 ft = 18 pts),
+    /// stroke centerlines on the interior faces ± half stroke. Walls at
+    /// 3.6 pts (2 px at 10 ppf), one hairline dim line crossing inside.
+    fn room_flat() -> Vec<f64> {
+        let (a, b) = (90.0, 270.0); // 5 ft and 15 ft in pts
+        vec![
+            a, a, b, a, 3.6, // top
+            b, a, b, b, 3.6, // right
+            b, b, a, b, 3.6, // bottom
+            a, b, a, a, 3.6, // left
+            // Hairline annotation mid-room, crossing THROUGH the right wall
+            // (so its endpoint is not coincident with the intersection).
+            a, 180.0, 280.0, 180.0, 0.12,
+        ]
+    }
+
+    #[test]
+    fn page_geom_rejects_len_not_multiple_of_five() {
+        // (match, not unwrap_err — SegmentIndex has no Debug impl)
+        let Err(err) = PageGeom::from_flat(&[1.0, 2.0, 3.0]) else {
+            panic!("expected BAD_SEGMENTS");
+        };
+        assert_eq!(err.code(), "BAD_SEGMENTS");
+        assert!(err.message().contains("multiple of 5"));
+    }
+
+    #[test]
+    fn page_geom_histogram_json_and_default_width() {
+        let g = PageGeom::from_flat(&room_flat()).unwrap();
+        assert_eq!(g.segment_count(), 5);
+        assert_eq!(
+            g.histogram_json(),
+            "[{\"width_pts\":0.12,\"segments\":1},{\"width_pts\":3.6,\"segments\":4}]"
+        );
+        // Midpoint of thinnest (0.12) and modal (3.6).
+        assert!((g.default_min_width() - 1.86).abs() < 1e-12);
+    }
+
+    #[test]
+    fn page_geom_detect_vector_recovers_synthetic_room() {
+        let g = PageGeom::from_flat(&room_flat()).unwrap();
+        // 200×200 px canvas at 10 ppf; seed off the (filtered-out) hairline.
+        let out = g
+            .detect_vector(200, 200, 100, 75, 4.0, 10.0, 1.86, 3.5)
+            .unwrap();
+        // Interior 9.8×9.8 ft (centerline strokes inset one pixel).
+        assert!((out.area_sf - 96.04).abs() <= 3.0, "area {}", out.area_sf);
+
+        // Unfiltered, the hairline partitions the room: fragment.
+        let frag = g
+            .detect_vector(200, 200, 100, 75, 4.0, 10.0, 0.0, 3.5)
+            .unwrap();
+        assert!(
+            frag.area_sf < 0.6 * out.area_sf,
+            "expected fragment, got {}",
+            frag.area_sf
+        );
+    }
+
+    #[test]
+    fn page_geom_passing_ids_inclusive_boundary() {
+        let g = PageGeom::from_flat(&room_flat()).unwrap();
+        assert_eq!(g.passing_ids(0.0).len(), 5);
+        assert_eq!(g.passing_ids(0.12).len(), 5); // inclusive
+        assert_eq!(g.passing_ids(1.86), vec![0, 1, 2, 3]);
+        assert!(g.passing_ids(99.0).is_empty());
+    }
+
+    #[test]
+    fn page_geom_snap_json_endpoint_and_none() {
+        let g = PageGeom::from_flat(&room_flat()).unwrap();
+        // Near the (90, 90) corner → endpoint on some wall segment.
+        let json = g.snap_json(91.0, 89.0, 5.0).unwrap();
+        assert!(json.contains("\"kind\":\"endpoint\""));
+        assert!(json.contains("\"x\":90") && json.contains("\"y\":90"));
+        // Intersection of hairline and right wall at (270, 180): cursor
+        // near it but away from endpoints.
+        let json = g.snap_json(268.0, 179.0, 4.0).unwrap();
+        assert!(json.contains("\"kind\":\"intersection\""), "{json}");
+        assert!(json.contains("\"other\":"), "{json}");
+        // Far from everything → None; empty index → None.
+        assert!(g.snap_json(500.0, 500.0, 5.0).is_none());
+        let empty = PageGeom::from_flat(&[]).unwrap();
+        assert!(empty.snap_json(90.0, 90.0, 5.0).is_none());
     }
 }
