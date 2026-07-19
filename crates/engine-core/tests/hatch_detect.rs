@@ -152,7 +152,10 @@ fn equal_room_row_rails_not_hatch() {
     let segs = s.segments();
     let params = HatchParams::derive(&segs);
     let flags = classify_hatch(&segs, &params);
-    // The twelve wall faces (first 12 segments) never classify.
+    // The twelve wall faces (first 12 segments) never classify. (This was
+    // a REAL failure during development: pairwise pitch-voting qualified
+    // the 162-pt room module and the same-role faces chained on its
+    // lattice — the min_density gate is what rejects them.)
     assert!(flags[..12].iter().all(|&f| !f));
 }
 

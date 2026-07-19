@@ -215,15 +215,16 @@ impl PageGeom {
         let p = &self.hatch().0;
         format!(
             "{{\"rail_merge_tol_pts\":{},\"dash_gap_tol_pts\":{},\"min_rails\":{},\
-             \"pitch_cv_max\":{},\"max_pitch_pts\":{},\"min_overlap_frac\":{},\
-             \"extent_outlier_ratio\":{}}}",
+             \"lattice_tol_pts\":{},\"max_pitch_pts\":{},\"min_overlap_frac\":{},\
+             \"extent_outlier_ratio\":{},\"min_density\":{}}}",
             p.rail_merge_tol_pts,
             p.dash_gap_tol_pts,
             p.min_rails,
-            p.pitch_cv_max,
+            p.lattice_tol_pts,
             p.max_pitch_pts,
             p.min_overlap_frac,
-            p.extent_outlier_ratio
+            p.extent_outlier_ratio,
+            p.min_density
         )
     }
 
