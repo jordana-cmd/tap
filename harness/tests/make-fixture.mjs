@@ -10,6 +10,11 @@
 //   hairline  : 0.24 pt dimension line inside the room
 //
 // At deep-link fpi 7.2, 10 pts = 1 ft: wall run = 450 pts = 45.0 LF.
+//
+// Also included: a Form XObject with a translation /Matrix drawing one
+// 3.6-pt segment — form space (0,50)-(100,50), matrix [1 0 0 1 60 -40]
+// → user (60,10)-(160,10) → TOP-LEFT base units (60,602)-(160,602).
+// Regression coverage for the extract.js form-matrix CTM fix.
 
 export function makeWallsPdf() {
   const content = [
@@ -23,13 +28,19 @@ export function makeWallsPdf() {
     '100 462 m 100 312 l S',
     '0.24 w',
     '120 380 m 280 380 l S',
+    '/F1 Do',
   ].join('\n');
+  const formContent = '3.6 w\n0 50 m 100 50 l S';
 
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Contents 4 0 R >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Contents 4 0 R '
+      + '/Resources << /XObject << /F1 5 0 R >> >> >>',
     `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    '<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] '
+      + `/Matrix [1 0 0 1 60 -40] /Length ${formContent.length} >>\n`
+      + `stream\n${formContent}\nendstream`,
   ];
 
   let pdf = '%PDF-1.4\n';

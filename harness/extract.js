@@ -75,6 +75,19 @@ export async function extractSegments(page, OPS) {
       for (const [key, value] of args[0] ?? []) {
         if (key === 'LW') lineWidth = value;
       }
+    } else if (fn === OPS.paintFormXObjectBegin) {
+      // pdf.js inlines the form's ops until paintFormXObjectEnd; the form
+      // matrix composes into the CTM for that span (previously ignored —
+      // a latent misplacement defect, eval-03 queue A.2). BBox clipping
+      // is deliberately not applied: this walk collects geometry/widths,
+      // not painted pixels. Nested forms work via the ordinary stack.
+      stack.push([ctm, lineWidth]);
+      // Matrix may be a plain Array OR a Float32Array (pdf.js 6.x).
+      if (args?.[0]?.length === 6) {
+        ctm = mul(ctm, args[0]);
+      }
+    } else if (fn === OPS.paintFormXObjectEnd) {
+      if (stack.length) [ctm, lineWidth] = stack.pop();
     } else if (fn === OPS.constructPath) {
       // pdf.js 6.x fused form: [paintOp, [Float32Array subpath…], minMax].
       const [paintOp, subpaths] = args;
