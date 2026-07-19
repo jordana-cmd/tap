@@ -65,6 +65,7 @@
   </span>
   <label>min_width: <input id="minWidth" type="range" min="0" max="2" step="0.01" value="0" disabled>
     <span id="minWidthVal">–</span> pts</label>
+  <button id="minWidthReset" hidden title="reset min_width to the per-page derived default">↺ derived</button>
   <label><input id="snapChk" type="checkbox" checked> snap calib clicks</label>
   <label><input id="hideHatch" type="checkbox" checked disabled> hide hatch</label>
   <span id="vecInfo">no vector geometry</span>
@@ -111,6 +112,7 @@ let pageGeom = null;        // PageGeometry wasm handle (vector mask + snap)
 let segFlat = null;         // the flat [x1,y1,x2,y2,w]×n array behind it
 let hatchIds = new Set();   // ids classified as hatch (purple overlay)
 let extractCache = new Map(); // pageNum -> {flat, pathCount, curveCount}
+let minWidthOverride = null; // session-scoped min_width override (null = per-page derived)
 
 // ---- manual measurement state (all geometry in BASE UNITS) ----
 const ANGLE_EPS_RAD = 1.5 * Math.PI / 180; // click-a-wall collinearity
@@ -248,6 +250,17 @@ async function detectRaster(needGray) {
   return detCache;
 }
 
+/// min_width re-derives per page (each sheet's linework differs), BUT a
+/// manual slider move sets a session override that sticks across pages
+/// until "↺ derived" clears it (the agreed best-of-both behavior).
+function syncMinWidth(derivedDefault) {
+  const max = parseFloat($('minWidth').max);
+  const v = minWidthOverride != null ? Math.min(minWidthOverride, max) : derivedDefault;
+  $('minWidth').value = v.toFixed(2);
+  $('minWidthVal').textContent = v.toFixed(2);
+  $('minWidthReset').hidden = minWidthOverride == null;
+}
+
 /// Swap the PageGeometry handle (freeing the old one) and sync the vector UI.
 function setGeometry(extracted) {
   if (pageGeom) { pageGeom.free(); pageGeom = null; segFlat = null; }
@@ -260,8 +273,7 @@ function setGeometry(extracted) {
     const def = pageGeom.default_min_width();
     const maxW = hist.length ? hist[hist.length - 1].width_pts : 1;
     $('minWidth').max = (maxW * 1.25).toFixed(2);
-    $('minWidth').value = def.toFixed(2);
-    $('minWidthVal').textContent = def.toFixed(2);
+    syncMinWidth(def);
     $('vecInfo').textContent =
       `${pageGeom.segment_count} segs, ${extracted.curveCount} curves skipped, ` +
       `${hatchIds.size} hatch, ` +
@@ -1032,7 +1044,15 @@ $('exportCsv').addEventListener('click', () => {
   say(`exported ${measurements.length} measurement(s) to takeoff.csv`);
 });
 $('minWidth').addEventListener('input', () => {
+  minWidthOverride = minWidthPts(); // sticky for the session
   $('minWidthVal').textContent = minWidthPts().toFixed(2);
+  $('minWidthReset').hidden = false;
+  render();
+});
+$('minWidthReset').addEventListener('click', () => {
+  minWidthOverride = null;
+  if (pageGeom) syncMinWidth(pageGeom.default_min_width());
+  $('minWidthReset').blur();
   render();
 });
 

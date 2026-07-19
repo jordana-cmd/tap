@@ -418,6 +418,32 @@ await run('CSV quotes free-text names containing commas', async page => {
   assert.match(csv, /"Doors, exterior"/, 'comma-bearing name is CSV-quoted');
 });
 
+await run('min_width override sticks across pages; reset re-derives', async page => {
+  assert.ok(await page.$eval('#minWidth', el => !el.disabled),
+    'min_width slider enabled on a vector page');
+  const read = () => page.evaluate(() => ({
+    val: document.querySelector('#minWidth').value,
+    resetHidden: document.querySelector('#minWidthReset').hidden,
+  }));
+  // Move the slider → session override + reset affordance shown.
+  await page.$eval('#minWidth', el => {
+    el.value = '0.77'; el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  let st = await read();
+  assert.equal(st.val, '0.77', 'override applied');
+  assert.equal(st.resetHidden, false, 'reset control shown');
+  // Switch pages → override persists (not the new page's derived default).
+  await gotoPage(page, +1);
+  st = await read();
+  assert.equal(st.val, '0.77', 'override persists across the page switch');
+  assert.equal(st.resetHidden, false);
+  // Reset → back to this page's derived default, control hidden.
+  await page.click('#minWidthReset');
+  st = await read();
+  assert.equal(st.resetHidden, true, 'reset hides the control');
+  assert.notEqual(st.val, '0.77', 'value reverted to the per-page derived default');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();
