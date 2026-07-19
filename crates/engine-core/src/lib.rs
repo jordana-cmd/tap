@@ -17,7 +17,10 @@ pub mod snap;
 pub mod traits;
 pub mod units;
 
-pub use assembly::ExprError;
+pub use assembly::{
+    apply, Assembly, AssemblyError, BillOfMaterials, ExprError, LineItem, MeasureKind,
+    MeasurementInput, Parameter, Part, Rounding, Unit,
+};
 pub use detect::{
     classify_hatch, default_min_width, detect_candidates, detect_room, detect_room_from_mask,
     passes_width_filter, rasterize_wall_mask, width_histogram, DetectError, DetectParams,
