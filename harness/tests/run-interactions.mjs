@@ -361,6 +361,23 @@ await run('count tool: place N markers, Enter commits N EA, armed after', async 
   assert.equal(st.meas.filter(m => m.kind === 'count').length, 1, 'no extra count committed');
 });
 
+await run('measurement rename persists to the state model', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  // Click the name to open the inline editor, replace the text, Enter.
+  await page.click('.measRow .measName');
+  await page.click('.measRow .renameInput', { clickCount: 3 });
+  await page.type('.measRow .renameInput', 'Dining — flooring');
+  await page.keyboard.press('Enter');
+  const st = await state(page);
+  assert.equal(st.meas[0].name, 'Dining — flooring', 'rename persisted to the measurement');
+  // And the row shows it (no stray canvas keydown side effects).
+  assert.match(st.rows[0], /Dining/, 'renamed row rendered');
+  assert.equal(st.meas.length, 1, 'no extra measurement from the rename keystrokes');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();

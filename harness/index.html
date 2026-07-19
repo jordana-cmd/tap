@@ -15,12 +15,17 @@
   #calibFeet { width: 5em; }
   .tool.active { background: #1d4ed8; color: #fff; }
   #workRow { display: flex; gap: 12px; align-items: flex-start; }
-  #measPanel { flex: 0 0 250px; background: #fff; border: 1px solid #d6d3d1;
+  #measPanel { flex: 0 0 285px; background: #fff; border: 1px solid #d6d3d1;
                padding: 8px; font-size: 0.85rem; max-height: 655px; overflow-y: auto; }
-  .measRow { display: flex; justify-content: space-between; align-items: baseline; gap: 6px;
+  .measRow { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap;
              padding: 3px 4px; border-bottom: 1px solid #e7e5e4; }
   .measRow:hover { background: #eff6ff; }
+  .measName { cursor: text; font-weight: 500; }
+  .measName:hover { text-decoration: underline dotted; }
+  .measVal { flex: 1 1 auto; }
   .measRow .origin { color: #78716c; font-size: 0.75rem; }
+  .measRow .measColor { width: 22px; height: 16px; padding: 0; border: none; cursor: pointer; }
+  .renameInput { flex: 1 1 100%; font-size: 0.85rem; }
   .measRow button { border: none; background: none; color: #dc2626; cursor: pointer; }
 </style>
 </head>
@@ -607,11 +612,22 @@ function renderMeasList() {
   for (const m of visible) {
     const row = document.createElement('div');
     row.className = 'measRow';
-    const label = document.createElement('span');
-    label.textContent = `${m.name} — ${m.valueText} `;
+    // Name — click to rename inline (free text, flows to CSV export).
+    const name = document.createElement('span');
+    name.className = 'measName';
+    name.title = 'click to rename';
+    name.textContent = m.name;
+    name.addEventListener('click', () => beginRename(m, name));
+    const value = document.createElement('span');
+    value.className = 'measVal';
+    value.textContent = ` — ${m.valueText}`;
     const origin = document.createElement('span');
     origin.className = 'origin';
     origin.textContent = `${m.origin} · ${m.page === 0 ? 'syn' : `p${m.page}`}`;
+    const colour = document.createElement('input');
+    colour.type = 'color'; colour.className = 'measColor'; colour.value = m.color;
+    colour.title = 'measurement colour';
+    colour.addEventListener('input', () => { m.color = colour.value; render(); });
     const del = document.createElement('button');
     del.textContent = '✕';
     del.addEventListener('click', () => {
@@ -621,9 +637,30 @@ function renderMeasList() {
     });
     row.addEventListener('mouseenter', () => { hoverMeas = m.id; render(); });
     row.addEventListener('mouseleave', () => { hoverMeas = null; render(); });
-    row.append(label, origin, del);
+    row.append(name, value, origin, colour, del);
     list.append(row);
   }
+}
+
+/// Swap a name span for an inline text input; Enter/blur commits, Esc
+/// reverts. Names are per-measurement free text.
+function beginRename(m, span) {
+  const input = document.createElement('input');
+  input.className = 'renameInput'; input.value = m.name;
+  let done = false;
+  const commit = save => {
+    if (done) return; done = true;
+    if (save) { const v = input.value.trim(); if (v) m.name = v; }
+    renderMeasList();
+  };
+  input.addEventListener('keydown', ev => {
+    ev.stopPropagation(); // don't let Enter/Backspace reach the canvas tools
+    if (ev.key === 'Enter') commit(true);
+    else if (ev.key === 'Escape') commit(false);
+  });
+  input.addEventListener('blur', () => commit(true));
+  span.replaceWith(input);
+  input.focus(); input.select();
 }
 
 // ---- tool interaction ----
