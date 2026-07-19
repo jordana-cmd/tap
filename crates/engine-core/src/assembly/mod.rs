@@ -9,6 +9,7 @@
 //! derive.
 
 pub mod expr;
+pub mod seeds;
 
 pub use expr::ExprError;
 
@@ -49,9 +50,10 @@ pub enum Rounding {
 }
 
 /// What kind of measurement an assembly can be applied to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum MeasureKind {
+    #[default]
     Area,
     Linear,
     Count,
@@ -108,12 +110,6 @@ pub struct MeasurementInput {
     pub perimeter_lf: Option<f64>,
     pub length_lf: Option<f64>,
     pub count_ea: Option<f64>,
-}
-
-impl Default for MeasureKind {
-    fn default() -> Self {
-        MeasureKind::Area
-    }
 }
 
 impl MeasurementInput {
