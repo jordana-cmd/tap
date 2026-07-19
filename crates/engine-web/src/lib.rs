@@ -15,6 +15,7 @@
 //! buffer, no views into wasm memory are retained (views invalidate on
 //! memory growth — zero-copy belongs to the real tile pipeline later).
 
+use engine_core::assembly::{AssemblyError, ExprError};
 use engine_core::detect::{DetectParams, GrayRaster, PixelMap, RasterError};
 use engine_core::{
     polygon_area, polyline_length, DetectError, Point, RoomDetection, Scale, ScaleError, Segment,
@@ -31,6 +32,10 @@ pub(crate) enum WebError {
     Scale(ScaleError),
     /// Segment buffer is not [x1,y1,x2,y2,width] × n.
     BadSegments { len: usize },
+    /// Assembly/drivers/overrides JSON failed to parse.
+    BadAssembly(String),
+    /// Applying the assembly failed (kind/parameter/formula).
+    Assembly(AssemblyError),
 }
 
 impl WebError {
@@ -57,6 +62,19 @@ impl WebError {
                 }
             },
             WebError::BadSegments { .. } => "BAD_SEGMENTS",
+            WebError::BadAssembly(_) => "BAD_ASSEMBLY",
+            WebError::Assembly(e) => match e {
+                AssemblyError::WrongKind { .. } => "WRONG_KIND",
+                AssemblyError::UnboundParameter(_) => "UNBOUND_PARAMETER",
+                AssemblyError::Formula { source, .. } => match source {
+                    ExprError::Syntax(_) => "FORMULA_SYNTAX",
+                    ExprError::UnknownVariable(_) => "FORMULA_UNKNOWN_VARIABLE",
+                    ExprError::UnknownFunction(_) => "FORMULA_UNKNOWN_FUNCTION",
+                    ExprError::DivideByZero => "FORMULA_DIVIDE_BY_ZERO",
+                    ExprError::TypeError(_) => "FORMULA_TYPE",
+                    ExprError::ArgCount { .. } => "FORMULA_ARG_COUNT",
+                },
+            },
         }
     }
 
@@ -68,6 +86,8 @@ impl WebError {
             WebError::BadSegments { len } => {
                 format!("segment buffer length {len} is not a multiple of 5")
             }
+            WebError::BadAssembly(m) => m.clone(),
+            WebError::Assembly(e) => e.to_string(),
         }
     }
 }
@@ -85,6 +105,11 @@ impl From<RasterError> for WebError {
 impl From<ScaleError> for WebError {
     fn from(e: ScaleError) -> WebError {
         WebError::Scale(e)
+    }
+}
+impl From<AssemblyError> for WebError {
+    fn from(e: AssemblyError) -> WebError {
+        WebError::Assembly(e)
     }
 }
 
@@ -368,6 +393,129 @@ fn presets_json() -> String {
     format!("[{}]", entries.join(","))
 }
 
+// ---------- assemblies (formula engine at the boundary) ----------
+
+use engine_core::assembly::{Assembly, MeasureKind, MeasurementInput, Unit};
+
+fn unit_str(u: Unit) -> &'static str {
+    match u {
+        Unit::SF => "SF",
+        Unit::LF => "LF",
+        Unit::EA => "EA",
+        Unit::GAL => "GAL",
+        Unit::HR => "HR",
+        Unit::BOX => "BOX",
+    }
+}
+
+/// JSON-escape a string for hand-built output.
+fn jstr(s: &str) -> String {
+    format!("{s:?}") // Debug on &str emits a valid JSON string literal
+}
+
+fn drivers_from_json(json: &str) -> Result<MeasurementInput, WebError> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| WebError::BadAssembly(format!("drivers: {e}")))?;
+    let kind = match v.get("kind").and_then(|k| k.as_str()) {
+        Some("area") => MeasureKind::Area,
+        Some("linear") => MeasureKind::Linear,
+        Some("count") => MeasureKind::Count,
+        other => return Err(WebError::BadAssembly(format!("drivers.kind invalid: {other:?}"))),
+    };
+    let num = |k: &str| v.get(k).and_then(|x| x.as_f64());
+    Ok(MeasurementInput {
+        kind,
+        area_sf: num("area_sf"),
+        perimeter_lf: num("perimeter_lf"),
+        length_lf: num("length_lf"),
+        count_ea: num("count_ea"),
+    })
+}
+
+/// Apply an assembly (JSON) to a measurement's drivers with per-application
+/// parameter overrides. Returns the BOM as hand-built JSON — the BOM is
+/// DERIVED and never serde-serialized (invariant 5).
+fn apply_assembly_core(
+    assembly_json: &str,
+    drivers_json: &str,
+    overrides_json: &str,
+) -> Result<String, WebError> {
+    let mut assembly: Assembly = serde_json::from_str(assembly_json)
+        .map_err(|e| WebError::BadAssembly(format!("assembly: {e}")))?;
+    let overrides: serde_json::Value = serde_json::from_str(overrides_json)
+        .map_err(|e| WebError::BadAssembly(format!("overrides: {e}")))?;
+    // Per-application overrides (stored on the measurement, not the
+    // assembly). A key `waste:<part_id>` overrides that part's waste
+    // percentage ("this room gets 15%"); any other key overrides the
+    // matching parameter's default for this application only.
+    if let Some(map) = overrides.as_object() {
+        for (key, val) in map {
+            let Some(n) = val.as_f64() else { continue };
+            if let Some(pid) = key.strip_prefix("waste:") {
+                for part in &mut assembly.parts {
+                    if part.id == pid {
+                        part.waste_pct = Some(n);
+                    }
+                }
+            } else {
+                for p in &mut assembly.parameters {
+                    if p.name == *key {
+                        p.default = Some(n);
+                    }
+                }
+            }
+        }
+    }
+    let input = drivers_from_json(drivers_json)?;
+    let bom = engine_core::apply(&assembly, &input)?;
+    let lines: Vec<String> = bom
+        .line_items
+        .iter()
+        .map(|l| {
+            format!(
+                "{{\"part_name\":{},\"unit\":{},\"raw_quantity\":{},\"waste_applied\":{},\
+                 \"final_quantity\":{},\"formula_text\":{}}}",
+                jstr(&l.part_name),
+                jstr(unit_str(l.unit)),
+                l.raw_quantity,
+                l.waste_applied,
+                l.final_quantity,
+                jstr(&l.formula_text),
+            )
+        })
+        .collect();
+    Ok(format!("{{\"line_items\":[{}]}}", lines.join(",")))
+}
+
+/// Parse + evaluate a single formula against a sample variable map — the
+/// live authoring-validation primitive.
+fn eval_formula_core(formula: &str, vars_json: &str) -> Result<f64, WebError> {
+    let v: serde_json::Value =
+        serde_json::from_str(vars_json).map_err(|e| WebError::BadAssembly(format!("vars: {e}")))?;
+    let mut vars = std::collections::BTreeMap::new();
+    if let Some(map) = v.as_object() {
+        for (k, val) in map {
+            if let Some(n) = val.as_f64() {
+                vars.insert(k.clone(), n);
+            }
+        }
+    }
+    let ast = engine_core::assembly::expr::parse(formula).map_err(|source| {
+        WebError::Assembly(AssemblyError::Formula { part: "formula".into(), source })
+    })?;
+    ast.eval_num(&vars).map_err(|source| {
+        WebError::Assembly(AssemblyError::Formula { part: "formula".into(), source })
+    })
+}
+
+fn seed_assemblies() -> String {
+    let seeds = [
+        engine_core::assembly::seeds::commercial_flooring(),
+        engine_core::assembly::seeds::epoxy_coating(),
+    ];
+    serde_json::to_string(&seeds).expect("seed assemblies serialize")
+}
+
 // ---------- wasm exports (3-line wrappers) ----------
 
 /// Length of an OPEN polyline in real feet. `points`: flat [x0,y0,…] in
@@ -403,6 +551,35 @@ pub fn calibrate_two_point(
 #[wasm_bindgen]
 pub fn scale_presets_json() -> String {
     presets_json()
+}
+
+/// Apply an assembly (JSON) to a measurement's drivers with per-application
+/// parameter overrides (`{param:value}` JSON). Returns the derived BOM as
+/// JSON `{line_items:[{part_name,unit,raw_quantity,waste_applied,
+/// final_quantity,formula_text}]}`. Throws `{ code, message }` (WRONG_KIND,
+/// UNBOUND_PARAMETER, FORMULA_*, BAD_ASSEMBLY).
+#[wasm_bindgen]
+pub fn apply_assembly(
+    assembly_json: &str,
+    drivers_json: &str,
+    overrides_json: &str,
+) -> Result<String, JsValue> {
+    apply_assembly_core(assembly_json, drivers_json, overrides_json).map_err(to_js)
+}
+
+/// Parse + evaluate one formula against a sample variable map (JSON). The
+/// live authoring-validation primitive; throws `{ code, message }` on a bad
+/// formula.
+#[wasm_bindgen]
+pub fn eval_formula(formula: &str, vars_json: &str) -> Result<f64, JsValue> {
+    eval_formula_core(formula, vars_json).map_err(to_js)
+}
+
+/// The engine's seed assemblies as a JSON array — the harness seeds its
+/// library from this (engine-core is the single source of truth).
+#[wasm_bindgen]
+pub fn seed_assemblies_json() -> String {
+    seed_assemblies()
 }
 
 #[wasm_bindgen]
@@ -587,6 +764,128 @@ impl PageGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- assembly surface ----
+
+    /// Extract the numeric value of `key` from a hand-built BOM line for
+    /// the line whose part_name is `part` (test-only JSON peeking).
+    fn bom_field(bom: &str, part: &str, key: &str) -> f64 {
+        let v: serde_json::Value = serde_json::from_str(bom).unwrap();
+        for li in v["line_items"].as_array().unwrap() {
+            if li["part_name"].as_str() == Some(part) {
+                return li[key].as_f64().unwrap();
+            }
+        }
+        panic!("no line item `{part}`");
+    }
+
+    #[test]
+    fn apply_assembly_flooring_matches_engine() {
+        let seeds: serde_json::Value = serde_json::from_str(&seed_assemblies()).unwrap();
+        let flooring = seeds[0].to_string(); // commercial_flooring is first
+        let bom = apply_assembly_core(
+            &flooring,
+            r#"{"kind":"area","area_sf":2475,"perimeter_lf":210}"#,
+            "{}",
+        )
+        .unwrap();
+        assert_eq!(bom_field(&bom, "Flooring boxes", "final_quantity"), 137.0);
+        assert_eq!(bom_field(&bom, "Adhesive", "final_quantity"), 17.0);
+        assert_eq!(bom_field(&bom, "Cove base", "final_quantity"), 220.5);
+        assert!((bom_field(&bom, "Labor", "final_quantity") - 12.375).abs() < 1e-9);
+        // formula_text provenance crosses the boundary.
+        let v: serde_json::Value = serde_json::from_str(&bom).unwrap();
+        assert_eq!(v["line_items"][0]["formula_text"].as_str(), Some("area_sf"));
+        assert_eq!(v["line_items"][0]["unit"].as_str(), Some("SF"));
+    }
+
+    #[test]
+    fn apply_assembly_override_changes_quantity() {
+        let seeds: serde_json::Value = serde_json::from_str(&seed_assemblies()).unwrap();
+        let flooring = seeds[0].to_string();
+        let drivers = r#"{"kind":"area","area_sf":2475,"perimeter_lf":210}"#;
+        let base = apply_assembly_core(&flooring, drivers, "{}").unwrap();
+        // Overriding the material part's waste 10 -> 20 raises its
+        // post-waste quantity (per-application "this room gets 20%").
+        let overridden = apply_assembly_core(&flooring, drivers, r#"{"waste:material":20}"#).unwrap();
+        assert!((bom_field(&base, "Flooring material", "waste_applied") - 2722.5).abs() < 1e-6);
+        assert!((bom_field(&overridden, "Flooring material", "waste_applied") - 2970.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn apply_assembly_error_codes_map() {
+        let seeds: serde_json::Value = serde_json::from_str(&seed_assemblies()).unwrap();
+        let flooring = seeds[0].to_string();
+        // Wrong kind: flooring applies to Area, driven as linear.
+        assert_eq!(
+            apply_assembly_core(&flooring, r#"{"kind":"linear","length_lf":10}"#, "{}")
+                .unwrap_err()
+                .code(),
+            "WRONG_KIND"
+        );
+        // Bad assembly JSON.
+        assert_eq!(
+            apply_assembly_core("{not json", r#"{"kind":"area"}"#, "{}")
+                .unwrap_err()
+                .code(),
+            "BAD_ASSEMBLY"
+        );
+        // A formula that divides by zero surfaces the nested ExprError code.
+        let bad = r#"{"id":"x","name":"x","applies_to":["Area"],"parameters":[],
+            "parts":[{"id":"p","name":"P","unit":"SF","formula":"area_sf / 0",
+            "waste_pct":null,"rounding":"None"}]}"#;
+        assert_eq!(
+            apply_assembly_core(bad, r#"{"kind":"area","area_sf":10}"#, "{}")
+                .unwrap_err()
+                .code(),
+            "FORMULA_DIVIDE_BY_ZERO"
+        );
+        // Unbound parameter (no default).
+        let unbound = r#"{"id":"x","name":"x","applies_to":["Area"],
+            "parameters":[{"name":"k","default":null,"unit":"EA"}],
+            "parts":[{"id":"p","name":"P","unit":"SF","formula":"area_sf * k",
+            "waste_pct":null,"rounding":"None"}]}"#;
+        assert_eq!(
+            apply_assembly_core(unbound, r#"{"kind":"area","area_sf":10}"#, "{}")
+                .unwrap_err()
+                .code(),
+            "UNBOUND_PARAMETER"
+        );
+    }
+
+    #[test]
+    fn eval_formula_ok_and_error() {
+        assert_eq!(
+            eval_formula_core("area_sf / box + 1", r#"{"area_sf":40,"box":20}"#).unwrap(),
+            3.0
+        );
+        assert_eq!(
+            eval_formula_core("area_sf / 0", r#"{"area_sf":40}"#).unwrap_err().code(),
+            "FORMULA_DIVIDE_BY_ZERO"
+        );
+        assert_eq!(
+            eval_formula_core("area_sf +", "{}").unwrap_err().code(),
+            "FORMULA_SYNTAX"
+        );
+        assert_eq!(
+            eval_formula_core("nope", "{}").unwrap_err().code(),
+            "FORMULA_UNKNOWN_VARIABLE"
+        );
+    }
+
+    #[test]
+    fn seed_assemblies_json_round_trips() {
+        let json = seed_assemblies();
+        // Both seeds deserialize back into engine-core Assemblies.
+        let seeds: Vec<engine_core::assembly::Assembly> = serde_json::from_str(&json).unwrap();
+        assert_eq!(seeds.len(), 2);
+        assert_eq!(seeds[0].name, "Commercial Flooring");
+        assert_eq!(seeds[1].name, "Epoxy Coating");
+        // And each one applies cleanly to an area.
+        let dj = r#"{"kind":"area","area_sf":1000,"perimeter_lf":130}"#;
+        assert!(apply_assembly_core(&serde_json::to_string(&seeds[0]).unwrap(), dj, "{}").is_ok());
+        assert!(apply_assembly_core(&serde_json::to_string(&seeds[1]).unwrap(), dj, "{}").is_ok());
+    }
 
     #[test]
     fn polyline_feet_72pts_at_fpi4_is_4ft() {

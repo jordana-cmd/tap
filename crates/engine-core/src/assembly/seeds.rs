@@ -27,11 +27,12 @@ pub fn commercial_flooring() -> Assembly {
         id: "commercial_flooring".into(),
         name: "Commercial Flooring".into(),
         applies_to: vec![MeasureKind::Area],
+        // Parameters drive FORMULAS; per-part waste is a fixed field on the
+        // part (overridable per application via `waste:<part_id>` at the
+        // apply boundary), so it is not repeated as a parameter here.
         parameters: vec![
-            param("waste_pct", 10.0, Unit::EA),
             param("box_coverage_sf", 20.0, Unit::SF),
             param("adhesive_coverage_sf_per_gal", 150.0, Unit::SF),
-            param("cove_base_waste_pct", 5.0, Unit::EA),
             param("transition_lf", 0.0, Unit::LF), // set per job
             param("labor_sf_per_hour", 200.0, Unit::SF),
         ],
@@ -58,11 +59,12 @@ pub fn epoxy_coating() -> Assembly {
         id: "epoxy_coating".into(),
         name: "Epoxy Coating".into(),
         applies_to: vec![MeasureKind::Area],
+        // Per-part waste (5%) is a fixed field on each part, overridable per
+        // application via `waste:<part_id>`; not repeated as a parameter.
         parameters: vec![
             param("coats", 2.0, Unit::EA),
             param("coverage_sf_per_gal", 250.0, Unit::SF),
             param("primer_coverage_sf_per_gal", 300.0, Unit::SF),
-            param("waste_pct", 5.0, Unit::EA),
             param("labor_sf_per_hour", 150.0, Unit::SF),
         ],
         parts: vec![
