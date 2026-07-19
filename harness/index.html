@@ -34,13 +34,24 @@
   <label>door_gap_ft: <input id="doorGap" type="range" min="1" max="15" step="0.5" value="3.5">
     <span id="doorGapVal">3.5</span> ft</label>
 </div>
+<div class="bar">
+  <span>mask:
+    <label><input type="radio" name="maskSrc" id="maskRaster" value="raster" checked> raster</label>
+    <label><input type="radio" name="maskSrc" id="maskVector" value="vector" disabled> vector</label>
+  </span>
+  <label>min_width: <input id="minWidth" type="range" min="0" max="2" step="0.01" value="0" disabled>
+    <span id="minWidthVal">–</span> pts</label>
+  <label><input id="snapChk" type="checkbox" checked> snap calib clicks</label>
+  <span id="vecInfo">no vector geometry</span>
+</div>
 <canvas id="plan" width="900" height="650"></canvas>
 <div id="status">loading wasm…</div>
 
 <script type="module">
-import init, { detect_room, measure_polyline, calibrate_two_point, scale_presets_json }
-  from './pkg/engine_web.js';
+import init, { detect_room, measure_polyline, calibrate_two_point, scale_presets_json,
+  PageGeometry } from './pkg/engine_web.js';
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
+import { extractSegments } from './extract.js';
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
 
 const TARGET_PPF = 10, MAX_DIM = 4096;
@@ -57,6 +68,9 @@ let s = 10 / 18;            // canvas px per PDF point (synthetic: ppf 10 @ fpi 
 let cleanBitmap = null;     // clean render for overlay redraws
 let mode = 'detect';        // 'detect' | 'calibrate'
 let calibPts = [];          // collected calibration clicks, base units
+let pageGeom = null;        // PageGeometry wasm handle (vector mask + snap)
+let segFlat = null;         // the flat [x1,y1,x2,y2,w]×n array behind it
+let extractCache = new Map(); // pageNum -> {flat, pathCount, curveCount}
 
 const pxPerFoot = () => (72 / fpi) * s;
 const say = t => { status.textContent = t; };
@@ -79,7 +93,7 @@ function drawSynthetic() {
 async function cacheClean() { cleanBitmap = await createImageBitmap(canvas); }
 
 async function renderPage() {
-  if (!pdfDoc) { drawSynthetic(); await cacheClean(); return; }
+  if (!pdfDoc) { drawSynthetic(); await cacheClean(); setGeometry(null); return; }
   const page = await pdfDoc.getPage(pageNum);
   const base = page.getViewport({ scale: 1 });
   if (scaleSet) {
@@ -93,9 +107,60 @@ async function renderPage() {
   await page.render({ canvasContext: ctx, viewport: vp }).promise;
   $('pageLabel').textContent = `${pageNum} / ${pdfDoc.numPages}`;
   await cacheClean();
+  // Vector geometry is per PAGE (base units), independent of render scale.
+  if (!extractCache.has(pageNum)) {
+    extractCache.set(pageNum, await extractSegments(page, pdfjs.OPS));
+  }
+  setGeometry(extractCache.get(pageNum));
+  refreshOverlay();
 }
 
+/// Swap the PageGeometry handle (freeing the old one) and sync the vector UI.
+function setGeometry(extracted) {
+  if (pageGeom) { pageGeom.free(); pageGeom = null; segFlat = null; }
+  const hasVectors = extracted && extracted.flat.length > 0;
+  if (hasVectors) {
+    segFlat = extracted.flat;
+    pageGeom = new PageGeometry(segFlat);
+    const hist = JSON.parse(pageGeom.histogram_json());
+    const def = pageGeom.default_min_width();
+    const maxW = hist.length ? hist[hist.length - 1].width_pts : 1;
+    $('minWidth').max = (maxW * 1.25).toFixed(2);
+    $('minWidth').value = def.toFixed(2);
+    $('minWidthVal').textContent = def.toFixed(2);
+    $('vecInfo').textContent =
+      `${pageGeom.segment_count} segs, ${extracted.curveCount} curves skipped, ` +
+      `widths [${hist.map(b => `${b.width_pts}:${b.segments}`).join(' ')}]`;
+    $('maskVector').disabled = false; $('minWidth').disabled = false;
+    $('maskVector').checked = true;   // vector is the primary path when present
+  } else {
+    $('maskVector').disabled = true; $('minWidth').disabled = true;
+    $('maskRaster').checked = true;
+    $('minWidthVal').textContent = '–';
+    $('vecInfo').textContent = 'no vector geometry (raster fallback)';
+  }
+}
+
+const maskSource = () => ($('maskVector').checked ? 'vector' : 'raster');
+const minWidthPts = () => parseFloat($('minWidth').value);
+
 function redraw() { if (cleanBitmap) ctx.drawImage(cleanBitmap, 0, 0); }
+
+/// Clean render + (in vector mode) the wall skeleton: exactly the segments
+/// that pass the current width filter.
+function refreshOverlay() {
+  redraw();
+  if (maskSource() !== 'vector' || !pageGeom) return;
+  const ids = pageGeom.wall_segment_ids(minWidthPts());
+  ctx.strokeStyle = 'rgba(220, 38, 38, 0.8)'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (const id of ids) {
+    const o = id * 5;
+    ctx.moveTo(segFlat[o] * s, segFlat[o + 1] * s);
+    ctx.lineTo(segFlat[o + 2] * s, segFlat[o + 3] * s);
+  }
+  ctx.stroke();
+}
 
 function grayscale() {
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -116,8 +181,8 @@ function overlay(contour) {
   ctx.fill(); ctx.stroke();
 }
 
-function marker(x, y) {
-  ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 2;
+function marker(x, y, color = '#dc2626') {
+  ctx.strokeStyle = color; ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(x - 8, y); ctx.lineTo(x + 8, y);
   ctx.moveTo(x, y - 8); ctx.lineTo(x, y + 8);
@@ -126,27 +191,37 @@ function marker(x, y) {
 
 function runDetect(x, y) {
   if (pdfDoc && !scaleSet) { say('Set a scale first (preset or calibration).'); return; }
-  redraw();
-  const gray = grayscale(); // copied into wasm per call; buffer stays ours
+  const src = maskSource();
   const threshold = parseInt($('thresh').value, 10);
   const doorGap = parseFloat($('doorGap').value);
   try {
-    const r = detect_room(gray, canvas.width, canvas.height, x, y,
-                          fpi, pxPerFoot(), threshold, doorGap);
-    redraw(); overlay(r.contour);
+    let r;
+    if (src === 'vector') {
+      r = pageGeom.detect_room_vector(canvas.width, canvas.height, x, y,
+                                      fpi, pxPerFoot(), minWidthPts(), doorGap);
+    } else {
+      redraw();
+      const gray = grayscale(); // copied into wasm per call; buffer stays ours
+      r = detect_room(gray, canvas.width, canvas.height, x, y,
+                      fpi, pxPerFoot(), threshold, doorGap);
+    }
+    refreshOverlay(); overlay(r.contour);
     const c = r.contour;
     const closed = new Float64Array(c.length + 2);
     closed.set(c); closed[c.length] = c[0]; closed[c.length + 1] = c[1];
     const viaPolyline = measure_polyline(closed, fpi);
-    say(`click (${x}, ${y}) px | fpi ${fpi.toFixed(3)} | ppf ${pxPerFoot().toFixed(2)} | ` +
-        `threshold ${threshold} | door_gap ${doorGap}\n` +
+    const knobs = src === 'vector'
+      ? `min_width ${minWidthPts().toFixed(2)} pts`
+      : `threshold ${threshold}`;
+    say(`click (${x}, ${y}) px | mask ${src} | fpi ${fpi.toFixed(3)} | ` +
+        `ppf ${pxPerFoot().toFixed(2)} | ${knobs} | door_gap ${doorGap}\n` +
         `area_sf       = ${r.area_sf.toFixed(1)} SF\n` +
         `perimeter_lf  = ${r.perimeter_lf.toFixed(1)} LF\n` +
         `measure_polyline(closed contour) = ${viaPolyline.toFixed(1)} LF  (cross-check: ` +
         `${Math.abs(viaPolyline - r.perimeter_lf) < 1e-6 ? 'MATCH' : 'MISMATCH'})\n` +
         `contour vertices = ${c.length / 2}`);
   } catch (e) {
-    redraw();
+    refreshOverlay();
     if (e && e.code === 'REGION_NOT_ENCLOSED') {
       say(`[${e.code}] Region not enclosed — falling back to manual trace.\n(${e.message})`);
     } else if (e && e.code) {
@@ -178,13 +253,27 @@ canvas.addEventListener('click', ev => {
   const x = Math.round((ev.clientX - rect.left) * canvas.width / rect.width);
   const y = Math.round((ev.clientY - rect.top) * canvas.height / rect.height);
   if (mode === 'calibrate') {
-    calibPts.push({ x: x / s, y: y / s }); // base units
-    marker(x, y);
+    // Snap the click to extracted geometry (endpoint > intersection >
+    // projection) within the addendum's 10/zoom screen tolerance — the
+    // first exercise of snapping on real plan geometry.
+    let pt = { x: x / s, y: y / s }; // base units
+    let snapNote = '';
+    if ($('snapChk').checked && pageGeom) {
+      const hit = pageGeom.snap_json(pt.x, pt.y, 10 / s);
+      if (hit) {
+        const snap = JSON.parse(hit);
+        pt = { x: snap.x, y: snap.y };
+        snapNote = ` [snap: ${snap.kind} seg#${snap.segment}` +
+                   (snap.other !== undefined ? `∩#${snap.other}` : '') + ']';
+      }
+    }
+    calibPts.push(pt);
+    marker(pt.x * s, pt.y * s, snapNote ? '#16a34a' : '#dc2626');
     if (calibPts.length === 2) {
       $('calibEntry').hidden = false;
-      say('Both points set — enter the real distance in feet and Apply.');
+      say(`Both points set${snapNote} — enter the real distance in feet and Apply.`);
     } else {
-      say('First point set — click the other end of the known dimension.');
+      say(`First point set${snapNote} — click the other end of the known dimension.`);
     }
     return;
   }
@@ -199,7 +288,7 @@ $('file').addEventListener('change', async ev => {
 });
 async function loadPdf(data, name) {
   pdfDoc = await pdfjs.getDocument({ data }).promise;
-  pageNum = 1; scaleSet = false;
+  pageNum = 1; scaleSet = false; extractCache.clear();
   $('fpiLabel').textContent = '— set scale —';
   await renderPage();
   say(`${name}: ${pdfDoc.numPages} page(s). Pick a preset scale or calibrate on a known dimension.`);
@@ -224,6 +313,12 @@ $('calibBtn').addEventListener('click', () => {
 $('calibApply').addEventListener('click', () => applyCalibration(parseFloat($('calibFeet').value)));
 $('thresh').addEventListener('input', () => { $('threshVal').textContent = $('thresh').value; });
 $('doorGap').addEventListener('input', () => { $('doorGapVal').textContent = $('doorGap').value; });
+$('maskRaster').addEventListener('change', refreshOverlay);
+$('maskVector').addEventListener('change', refreshOverlay);
+$('minWidth').addEventListener('input', () => {
+  $('minWidthVal').textContent = minWidthPts().toFixed(2);
+  refreshOverlay();
+});
 
 // ---- boot ----
 await init();
@@ -238,6 +333,7 @@ say('wasm loaded — click inside a room, or load a PDF.');
 // Deep-link/self-test affordance (also drives headless smoke tests):
 // ?url=/plans/x.pdf&page=N&fpi=F&threshold=T&door=D&autoclick=x,y
 //   &calib=x1,y1,x2,y2,feet   (canvas px + feet; runs after render)
+//   &mask=vector|raster&minwidth=W   (applied after geometry loads)
 const qs = new URLSearchParams(location.search);
 if (qs.has('threshold')) { $('thresh').value = qs.get('threshold'); $('threshVal').textContent = $('thresh').value; }
 if (qs.has('door')) { $('doorGap').value = qs.get('door'); $('doorGapVal').textContent = $('doorGap').value; }
@@ -250,6 +346,15 @@ if (qs.has('url')) {
     $('fpiLabel').textContent = `${fpi.toFixed(4)} (param)`;
     await renderPage();
   }
+}
+if (qs.get('mask') === 'raster') { $('maskRaster').checked = true; refreshOverlay(); }
+if (qs.get('mask') === 'vector' && !$('maskVector').disabled) {
+  $('maskVector').checked = true; refreshOverlay();
+}
+if (qs.has('minwidth') && !$('minWidth').disabled) {
+  $('minWidth').value = qs.get('minwidth');
+  $('minWidthVal').textContent = minWidthPts().toFixed(2);
+  refreshOverlay();
 }
 if (qs.has('calib')) {
   const [x1, y1, x2, y2, feet] = qs.get('calib').split(',').map(Number);
