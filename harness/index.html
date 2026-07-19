@@ -69,8 +69,8 @@
 <div id="status">loading wasm…</div>
 
 <script type="module">
-import init, { detect_room, measure_polyline, calibrate_two_point, scale_presets_json,
-  PageGeometry } from './pkg/engine_web.js';
+import init, { detect_room, measure_polyline, measure_polygon_area, calibrate_two_point,
+  scale_presets_json, PageGeometry } from './pkg/engine_web.js';
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
 import { extractSegments } from './extract.js';
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
@@ -298,8 +298,10 @@ function render() {
     ctx.stroke();
     for (const p of [chainPreview.start, chainPreview.end]) marker(p.x * s, p.y * s, '#ea580c');
   }
-  if (hover && hover.closing) {
+  if (hover && hover.closing && draft && draft.verts.length) {
     // Distinct close indicator: clicking will close the polygon here.
+    // (draft guard: hover can still carry `closing` from the last
+    // mousemove right after the closing click commits and nulls draft.)
     const v0 = draft.verts[0];
     ctx.fillStyle = 'rgba(234, 88, 12, 0.85)';
     ctx.beginPath();
@@ -656,10 +658,13 @@ canvas.addEventListener('dblclick', () => {
 });
 
 window.addEventListener('keydown', ev => {
-  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(ev.target.tagName)) return;
+  // Swallow keys only for genuine text entry. Leftover focus on sliders,
+  // selects, or buttons must not eat Enter/Backspace/Esc — a real
+  // hands-on failure mode (focus stays on the last-touched control).
+  if (ev.target === $('calibFeet') || ev.target === $('file')) return;
   if (ev.key === 'Enter') {
-    if (tool === 'line' || tool === 'area') finishDraft();
-    else if (tool === 'wall') commitChain();
+    if (tool === 'line' || tool === 'area') { ev.preventDefault(); finishDraft(); }
+    else if (tool === 'wall') { ev.preventDefault(); commitChain(); }
   } else if (ev.key === 'Backspace') {
     if (draft && draft.verts.length) {
       draft.verts.pop();
@@ -742,6 +747,15 @@ $('minWidth').addEventListener('input', () => {
   $('minWidthVal').textContent = minWidthPts().toFixed(2);
   render();
 });
+
+// Read-only state hook for the interaction test suite (harness/tests).
+window.__harness = {
+  measurements: () => measurements,
+  tool: () => tool,
+  draft: () => draft,
+  chainPreview: () => chainPreview,
+  s: () => s,
+};
 
 // ---- boot ----
 await init();
