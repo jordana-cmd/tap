@@ -35,7 +35,7 @@ fn room_sheet() -> SynthSegments {
 fn vector_room_detected_from_four_wall_segments() {
     let sheet = room_sheet();
     let (w, h) = sheet.grid();
-    let mask = rasterize_wall_mask(&sheet.segments(), &sheet.map(), w, h, 0.0).unwrap();
+    let mask = rasterize_wall_mask(&sheet.segments(), &sheet.map(), w, h, 0.0, None).unwrap();
     let room = detect_room_from_mask(
         &mask,
         &sheet.map(),
@@ -58,14 +58,14 @@ fn hairline_annotation_crossing_interior_removed_by_width_filter() {
     let seed = sheet.seed_at_ft(15.0, 8.0);
 
     // Filtered at 0.18 pts (between hairline and wall): full room.
-    let filtered = rasterize_wall_mask(&sheet.segments(), &map, w, h, 0.18).unwrap();
+    let filtered = rasterize_wall_mask(&sheet.segments(), &map, w, h, 0.18, None).unwrap();
     let full = detect_room_from_mask(&filtered, &map, seed, &params).unwrap();
     assert_close(full.area_sf, 293.04, 0.0, 0.03);
 
     // Unfiltered (min_width 0): the hairline partitions the fill — the
     // detected region is a fragment. This is eval-01's failure mode,
     // reproduced deliberately to prove the filter is what fixes it.
-    let unfiltered = rasterize_wall_mask(&sheet.segments(), &map, w, h, 0.0).unwrap();
+    let unfiltered = rasterize_wall_mask(&sheet.segments(), &map, w, h, 0.0, None).unwrap();
     let fragment = detect_room_from_mask(&unfiltered, &map, seed, &params).unwrap();
     assert!(
         fragment.area_sf < 0.6 * full.area_sf,
@@ -87,7 +87,7 @@ fn door_gap_between_wall_segments_closed_by_dilation() {
     let (w, h) = s.grid();
     let map = s.map();
     let seed = s.seed_at_ft(15.0, 12.5);
-    let mask = rasterize_wall_mask(&s.segments(), &map, w, h, 0.0).unwrap();
+    let mask = rasterize_wall_mask(&s.segments(), &map, w, h, 0.0, None).unwrap();
 
     // Default door_gap 3.5 ft seals the 3-ft opening.
     let room = detect_room_from_mask(&mask, &map, seed, &DetectParams::default()).unwrap();
@@ -122,7 +122,7 @@ fn vector_and_raster_paths_agree_on_identical_geometry() {
     let mut sheet = SynthSegments::new(30.0, 25.0, scale(), PPF);
     sheet.wall_rect_ft(4.9, 4.9, 20.2, 15.2, WALL_STROKE_PTS);
     let (w, h) = sheet.grid();
-    let mask = rasterize_wall_mask(&sheet.segments(), &sheet.map(), w, h, 0.0).unwrap();
+    let mask = rasterize_wall_mask(&sheet.segments(), &sheet.map(), w, h, 0.0, None).unwrap();
     let vector_room = detect_room_from_mask(
         &mask,
         &sheet.map(),
@@ -141,7 +141,7 @@ fn mask_path_error_parity() {
     let (w, h) = sheet.grid();
     let map = sheet.map();
     let params = DetectParams::default();
-    let mask = rasterize_wall_mask(&sheet.segments(), &map, w, h, 0.0).unwrap();
+    let mask = rasterize_wall_mask(&sheet.segments(), &map, w, h, 0.0, None).unwrap();
 
     // Seed on a (dilated) wall pixel.
     assert!(matches!(
@@ -156,7 +156,7 @@ fn mask_path_error_parity() {
     // Open geometry: one lone wall segment never encloses the seed.
     let mut open = SynthSegments::new(30.0, 25.0, scale(), PPF);
     open.seg_ft(5.0, 5.0, 25.0, 5.0, WALL_STROKE_PTS);
-    let open_mask = rasterize_wall_mask(&open.segments(), &map, w, h, 0.0).unwrap();
+    let open_mask = rasterize_wall_mask(&open.segments(), &map, w, h, 0.0, None).unwrap();
     assert_eq!(
         detect_room_from_mask(&open_mask, &map, sheet.seed_at_ft(15.0, 12.5), &params),
         Err(DetectError::RegionNotEnclosed)
@@ -204,7 +204,7 @@ proptest! {
         let (w, h) = sheet.grid();
         let map = sheet.map();
         let params = DetectParams::default();
-        let mask = rasterize_wall_mask(&sheet.segments(), &map, w, h, 0.18).unwrap();
+        let mask = rasterize_wall_mask(&sheet.segments(), &map, w, h, 0.18, None).unwrap();
         let reference =
             detect_room_from_mask(&mask, &map, sheet.seed_at_ft(15.0, 12.5), &params).unwrap();
         let seeded =
@@ -234,8 +234,8 @@ proptest! {
             })
             .collect();
         let t2 = t1 + dt;
-        let loose = rasterize_wall_mask(&segments, &map, 60, 50, t1).unwrap();
-        let strict = rasterize_wall_mask(&segments, &map, 60, 50, t2).unwrap();
+        let loose = rasterize_wall_mask(&segments, &map, 60, 50, t1, None).unwrap();
+        let strict = rasterize_wall_mask(&segments, &map, 60, 50, t2, None).unwrap();
         for y in 0..50u32 {
             for x in 0..60u32 {
                 prop_assert!(

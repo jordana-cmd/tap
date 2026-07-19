@@ -150,6 +150,69 @@ impl SynthSegments {
         self.seg_ft(x, y + h, x, y, stroke_pts);
     }
 
+    /// Fill the rectangle [x, x+w] × [y, y+h] ft with a hatch field of
+    /// parallel lines at `angle_deg` (0 = horizontal), spaced `pitch_ft`
+    /// apart, clipped to the rectangle.
+    pub fn hatch_field_ft(
+        &mut self,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        angle_deg: f64,
+        pitch_ft: f64,
+        stroke_pts: f64,
+    ) {
+        let ang = angle_deg.to_radians();
+        let (ux, uy) = (ang.cos(), ang.sin());
+        let (nx, ny) = (-uy, ux);
+        // Offsets along the normal that cover the rectangle's corners.
+        let corners = [(x, y), (x + w, y), (x, y + h), (x + w, y + h)];
+        let rhos: Vec<f64> = corners.iter().map(|&(cx, cy)| cx * nx + cy * ny).collect();
+        let (rho_min, rho_max) = (
+            rhos.iter().cloned().fold(f64::INFINITY, f64::min),
+            rhos.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+        );
+        let ss: Vec<f64> = corners.iter().map(|&(cx, cy)| cx * ux + cy * uy).collect();
+        let (s_min, s_max) = (
+            ss.iter().cloned().fold(f64::INFINITY, f64::min),
+            ss.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+        );
+        let mut rho = rho_min + pitch_ft;
+        while rho < rho_max {
+            // Line at offset rho spanning [s_min, s_max], Liang-Barsky
+            // clipped to the rectangle (correct for any angle).
+            let (ax, ay) = (rho * nx + s_min * ux, rho * ny + s_min * uy);
+            let (bx, by) = (rho * nx + s_max * ux, rho * ny + s_max * uy);
+            let (dx, dy) = (bx - ax, by - ay);
+            let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
+            let mut visible = true;
+            for (p, q) in [
+                (-dx, ax - x),
+                (dx, x + w - ax),
+                (-dy, ay - y),
+                (dy, y + h - ay),
+            ] {
+                if p == 0.0 {
+                    if q < 0.0 {
+                        visible = false;
+                    }
+                } else {
+                    let r = q / p;
+                    if p < 0.0 {
+                        t0 = t0.max(r);
+                    } else {
+                        t1 = t1.min(r);
+                    }
+                }
+            }
+            if visible && t0 < t1 {
+                self.seg_ft(ax + t0 * dx, ay + t0 * dy, ax + t1 * dx, ay + t1 * dy, stroke_pts);
+            }
+            rho += pitch_ft;
+        }
+    }
+
     pub fn segments(&self) -> Vec<Segment> {
         self.segments.clone()
     }

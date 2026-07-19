@@ -235,6 +235,7 @@ impl PageGeom {
             width_px,
             height_px,
             min_width_pts,
+            None,
         )?;
         let params = DetectParams {
             door_gap_ft,

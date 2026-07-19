@@ -84,6 +84,12 @@ pub fn passes_width_filter(seg: &Segment, min_width_pts: f64) -> bool {
 /// grid the raster path uses (`map` supplies pts↔px; the grid is
 /// `width_px × height_px` with pixel (0,0) at `map`'s origin).
 ///
+/// `hatch`: optional per-segment flags from
+/// [`classify_hatch`](super::classify_hatch) — flagged segments are
+/// skipped exactly like sub-threshold widths (`None` = keep all). The
+/// downstream pipeline ([`detect_room_from_mask`](super::detect_room_from_mask))
+/// consumes the mask unchanged.
+///
 /// Stroke thickness: `width_pts / map.points_per_px()`, half-thickness
 /// clamped to ≥ 0.5 px so hairline-thin kept segments still rasterize at
 /// least one pixel wide. Drawing = capsule coverage test (pixel center
@@ -99,6 +105,7 @@ pub fn rasterize_wall_mask(
     width_px: u32,
     height_px: u32,
     min_width_pts: f64,
+    hatch: Option<&[bool]>,
 ) -> Result<Mask, RasterError> {
     if width_px == 0 || height_px == 0 {
         return Err(RasterError::Empty);
@@ -110,7 +117,10 @@ pub fn rasterize_wall_mask(
         });
     }
     let mut mask = Mask::new(width_px, height_px);
-    for seg in segments {
+    for (i, seg) in segments.iter().enumerate() {
+        if hatch.is_some_and(|h| h.get(i).copied().unwrap_or(false)) {
+            continue;
+        }
         if !passes_width_filter(seg, min_width_pts) || !finite_geometry(seg) {
             continue;
         }
@@ -293,7 +303,7 @@ mod tests {
         // are exactly 0.5 px away → rows 4 and 5 set, rows 3 and 6 not.
         let m = map();
         let segs = [seg(9.0, 9.0, 45.0, 9.0, 3.6)];
-        let mask = rasterize_wall_mask(&segs, &m, 40, 12, 0.0).unwrap();
+        let mask = rasterize_wall_mask(&segs, &m, 40, 12, 0.0, None).unwrap();
         assert!(mask.get(10, 4) && mask.get(10, 5));
         assert!(!mask.get(10, 3) && !mask.get(10, 6));
     }
@@ -304,7 +314,7 @@ mod tests {
         // flood fill from one side must NOT reach the other side.
         let m = map();
         let segs = [seg(0.0, 0.0, 36.0, 36.0, 0.01)];
-        let mask = rasterize_wall_mask(&segs, &m, 20, 20, 0.0).unwrap();
+        let mask = rasterize_wall_mask(&segs, &m, 20, 20, 0.0, None).unwrap();
         let fill = super::super::flood_fill(&mask, (15, 2));
         // Fill aborts at the boundary (open region) — but must never cross
         // the diagonal. Check by verifying no filled pixel below-left of it.
@@ -326,7 +336,7 @@ mod tests {
     fn rasterize_zero_length_segment_is_dot() {
         let m = map();
         let segs = [seg(9.0, 9.0, 9.0, 9.0, 0.24)];
-        let mask = rasterize_wall_mask(&segs, &m, 10, 10, 0.0).unwrap();
+        let mask = rasterize_wall_mask(&segs, &m, 10, 10, 0.0, None).unwrap();
         assert!(mask.get(5, 5));
         assert!(mask.count() <= 4, "dot stamped {} px", mask.count());
     }
@@ -338,7 +348,7 @@ mod tests {
             seg(0.0, 3.6, 18.0, 3.6, 0.12), // below → dropped
             seg(0.0, 9.0, 18.0, 9.0, 0.18), // equal → kept (inclusive)
         ];
-        let mask = rasterize_wall_mask(&segs, &m, 10, 10, 0.18).unwrap();
+        let mask = rasterize_wall_mask(&segs, &m, 10, 10, 0.18, None).unwrap();
         assert!(!mask.get(5, 2), "0.12 segment should be filtered out");
         assert!(mask.get(5, 5), "0.18 segment should be kept");
     }
@@ -347,7 +357,7 @@ mod tests {
     fn rasterize_skips_nonfinite_segments() {
         let m = map();
         let segs = [seg(f64::NAN, 0.0, 18.0, 0.0, 0.24)];
-        let mask = rasterize_wall_mask(&segs, &m, 10, 10, 0.0).unwrap();
+        let mask = rasterize_wall_mask(&segs, &m, 10, 10, 0.0, None).unwrap();
         assert_eq!(mask.count(), 0);
     }
 
@@ -355,11 +365,11 @@ mod tests {
     fn rasterize_rejects_zero_and_oversize_grid() {
         let m = map();
         assert_eq!(
-            rasterize_wall_mask(&[], &m, 0, 10, 0.0),
+            rasterize_wall_mask(&[], &m, 0, 10, 0.0, None),
             Err(RasterError::Empty)
         );
         assert!(matches!(
-            rasterize_wall_mask(&[], &m, 5000, 5000, 0.0),
+            rasterize_wall_mask(&[], &m, 5000, 5000, 0.0, None),
             Err(RasterError::TooLarge { .. })
         ));
     }
