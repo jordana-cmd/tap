@@ -306,29 +306,48 @@ fn flag_comb(rails: &[Rail], comb: &[usize], params: &HatchParams, flags: &mut [
 }
 
 /// Sweep rails (sorted by ρ) into uniform-pitch combs and flag them.
+///
+/// Multiple combs stay OPEN simultaneously: a rail that fails only the
+/// extent-overlap gate against one comb belongs to a different locality
+/// (side-by-side fields, or annotation elsewhere on the sheet at an
+/// interleaving offset) and must neither join nor SPLIT that comb — it
+/// tries the other open combs and otherwise seeds its own. Only a
+/// structural failure (pitch too large / irregular) against every
+/// overlapping comb starts a new comb. Unjoined single rails stay
+/// unclassified — the conservative direction.
 fn combs_over_rails(rails: &[Rail], params: &HatchParams, flags: &mut [bool]) {
-    let mut comb: Vec<usize> = Vec::new();
-    let mut pitches: Vec<f64> = Vec::new();
-    for r in 0..rails.len() {
-        if let Some(&prev) = comb.last() {
-            let pitch = rails[r].rho - rails[prev].rho;
-            let mut trial = pitches.clone();
-            trial.push(pitch);
-            let joins = pitch <= params.max_pitch_pts
-                && pitch_cv(&trial) <= params.pitch_cv_max
-                && overlap_frac(&rails[prev], &rails[r]) >= params.min_overlap_frac;
-            if joins {
-                comb.push(r);
-                pitches = trial;
-                continue;
-            }
-            flag_comb(rails, &comb, params, flags);
-            comb.clear();
-            pitches.clear();
-        }
-        comb.push(r);
+    struct Comb {
+        members: Vec<usize>,
+        pitches: Vec<f64>,
     }
-    flag_comb(rails, &comb, params, flags);
+    let mut combs: Vec<Comb> = Vec::new();
+    for r in 0..rails.len() {
+        let mut joined = false;
+        for comb in combs.iter_mut() {
+            let &prev = comb.members.last().unwrap();
+            if overlap_frac(&rails[prev], &rails[r]) < params.min_overlap_frac {
+                continue; // different locality: neither join nor split
+            }
+            let pitch = rails[r].rho - rails[prev].rho;
+            let mut trial = comb.pitches.clone();
+            trial.push(pitch);
+            if pitch <= params.max_pitch_pts && pitch_cv(&trial) <= params.pitch_cv_max {
+                comb.members.push(r);
+                comb.pitches = trial;
+                joined = true;
+                break;
+            }
+        }
+        if !joined {
+            combs.push(Comb {
+                members: vec![r],
+                pitches: Vec::new(),
+            });
+        }
+    }
+    for comb in &combs {
+        flag_comb(rails, &comb.members, params, flags);
+    }
 }
 
 impl HatchParams {
