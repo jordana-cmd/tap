@@ -51,6 +51,7 @@
   <span id="calibEntry" hidden>feet: <input id="calibFeet" type="number" min="0.1" step="0.5" value="10">
     <button id="calibApply">Apply</button></span>
   <span>fpi = <b id="fpiLabel">4.0 (synthetic)</b></span>
+  <span id="saveState" title="autosave status">—</span>
 </div>
 <div class="bar">
   <label>wall_threshold: <input id="thresh" type="range" min="0" max="255" step="5" value="200">
@@ -84,6 +85,7 @@ import init, { detect_room, measure_polyline, measure_polygon_area, calibrate_tw
   scale_presets_json, PageGeometry } from './pkg/engine_web.js';
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
 import { extractSegments } from './extract.js';
+import * as store from './store.js';
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
 
 const TARGET_PPF = 10, MAX_DIM = 4096;
@@ -126,6 +128,13 @@ let hoverMeas = null;       // measurement id emphasized from the list panel
 let measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
 let nextMeasId = 1;
 let lastClick = null;       // {t, cx, cy} — double-click debounce
+
+// ---- persistence (harness-only IndexedDB; see store.js / README) ----
+let currentSha = null;      // content hash of the open PDF (project key)
+let currentName = '';       // filename of the open PDF (display only)
+let currentBytes = null;    // ArrayBuffer of the open PDF (for file store)
+let saveTimer = null;       // debounce handle
+let storageBlocked = false; // set on a write failure — blocks further edits
 
 const pxPerFoot = () => (72 / curFpi()) * s;
 const say = t => { status.textContent = t; };
@@ -572,6 +581,7 @@ function addMeasurement(kind, family, value, valueText, origin, geometry) {
   });
   renderMeasList();
   render();
+  markDirty();
   return measurements[measurements.length - 1];
 }
 
@@ -607,6 +617,122 @@ function applyScaleChange(newFpi, sourceLabel) {
   detCache = null;
   revalueMeasurements();
   render();
+  markDirty();
+}
+
+// ---- persistence: §A2-mirroring serialization + debounced autosave ----
+
+/// Measurement → stored record. Mirrors §A2 field names; NEVER stores
+/// derived values (invariant 5 — value/valueText recompute on load).
+/// `color` is a documented harness display-only extension.
+function toStored(m) {
+  return {
+    id: m.id, page: m.page, kind: m.kind, label: m.name, origin: m.origin,
+    geometry: Array.from(m.geometry),
+    confirmedBy: null, parentId: null, deleted: null, // §A2 optionals, unused here
+    color: m.color,
+  };
+}
+function fromStored(r) {
+  return {
+    id: r.id, kind: r.kind, name: r.label, origin: r.origin, page: r.page,
+    color: r.color ?? '#1e3a8a',
+    value: 0, valueText: '', // recomputed below
+    geometry: Float64Array.from(r.geometry),
+  };
+}
+/// Rebuild derived quantity/text after restore or import (invariant 5).
+function recomputeAll() {
+  for (const m of measurements) {
+    if (m.kind === 'count') { m.value = m.geometry.length / 2; m.valueText = `${m.value} EA`; continue; }
+    const f = scaleOf(m.page);
+    const flat = Array.from(m.geometry);
+    if (f == null) { m.valueText = '(no scale)'; continue; }
+    if (m.kind === 'linear') {
+      m.value = measure_polyline(flat, f);
+      m.valueText = `${m.value.toFixed(1)} LF`;
+    } else {
+      const ring = flat.concat(flat.slice(0, 2));
+      m.value = measure_polygon_area(flat, f);
+      m.valueText = `${m.value.toFixed(1)} SF (${measure_polyline(ring, f).toFixed(1)} LF)`;
+    }
+  }
+}
+
+/// pageScales Map → stored array (§A2 ScaleState names) and back.
+function scalesToStored() {
+  return [...pageScales].map(([page, v]) =>
+    ({ page, feet_per_paper_inch: v.fpi, source: v.source, verification: null }));
+}
+function scalesFromStored(arr) {
+  pageScales.clear();
+  for (const r of arr) pageScales.set(r.page, { fpi: r.feet_per_paper_inch, source: r.source });
+  if (!pageScales.has(0)) pageScales.set(0, { fpi: 4.0, source: 'synthetic' });
+}
+
+/// After restoring/importing measurements: derive quantities, and set the
+/// id + name counters past what was restored so new commits never collide.
+function reindexAfterRestore() {
+  recomputeAll();
+  nextMeasId = 1 + measurements.reduce((mx, m) => Math.max(mx, m.id), 0);
+  measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
+  for (const m of measurements) {
+    const mm = /^(Line|Area|Wall run|Room|Count) (\d+)$/.exec(m.name);
+    if (mm) measSeq[mm[1]] = Math.max(measSeq[mm[1]], +mm[2]);
+  }
+}
+
+function projectRecord() {
+  return {
+    sha: currentSha, name: currentName,
+    pageScales: scalesToStored(),
+    measurements: measurements.map(toStored),
+    minWidthOverride, updatedAt: Date.now(),
+  };
+}
+
+const saveTime = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function setSaveState(text) { $('saveState').textContent = text; }
+
+/// Persist project + file bytes. Wrapped — a write failure blocks edits
+/// behind a modal rather than silently losing work.
+async function saveProject() {
+  if (!currentSha) return;
+  setSaveState('Saving…');
+  try {
+    await store.putProject(projectRecord());
+    if (currentBytes) {
+      await store.putFile({ sha: currentSha, name: currentName,
+                            size: currentBytes.byteLength, bytes: currentBytes });
+    }
+    setSaveState(`Saved ${saveTime()}`);
+  } catch (e) {
+    onStorageError(e);
+  }
+}
+
+/// Debounced autosave after any mutation (no-op on the synthetic demo).
+function markDirty() {
+  if (!currentSha || storageBlocked) return;
+  setSaveState('unsaved…');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveProject, 800);
+}
+
+/// Force any pending save to complete now (deterministic tests).
+async function flushSave() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; await saveProject(); }
+}
+
+function onStorageError(e) {
+  storageBlocked = true;
+  setSaveState('SAVE FAILED');
+  const modal = $('storageModal');
+  if (modal) {
+    $('storageMsg').textContent = `Storage write failed: ${e?.message ?? e}. `
+      + 'Your work is NOT being saved — export a JSON backup, then free space or clear other data.';
+    modal.hidden = false;
+  }
 }
 
 /// Sync the scale chip to the current page (page switches, file loads).
@@ -643,13 +769,13 @@ function renderMeasList() {
     const colour = document.createElement('input');
     colour.type = 'color'; colour.className = 'measColor'; colour.value = m.color;
     colour.title = 'measurement colour';
-    colour.addEventListener('input', () => { m.color = colour.value; render(); });
+    colour.addEventListener('input', () => { m.color = colour.value; render(); markDirty(); });
     const del = document.createElement('button');
     del.textContent = '✕';
     del.addEventListener('click', () => {
       measurements = measurements.filter(x => x.id !== m.id);
       if (hoverMeas === m.id) hoverMeas = null;
-      renderMeasList(); render();
+      renderMeasList(); render(); markDirty();
     });
     row.addEventListener('mouseenter', () => { hoverMeas = m.id; render(); });
     row.addEventListener('mouseleave', () => { hoverMeas = null; render(); });
@@ -698,7 +824,7 @@ function beginRename(m, span) {
   let done = false;
   const commit = save => {
     if (done) return; done = true;
-    if (save) { const v = input.value.trim(); if (v) m.name = v; }
+    if (save) { const v = input.value.trim(); if (v && v !== m.name) { m.name = v; markDirty(); } }
     renderMeasList();
   };
   input.addEventListener('keydown', ev => {
@@ -963,13 +1089,35 @@ function cancelTransients(reason) {
 }
 
 async function loadPdf(data, name) {
-  pdfDoc = await pdfjs.getDocument({ data }).promise;
-  // A new document: nothing from the old one survives.
+  // Content-address the bytes: same file → same project under any name.
+  // pdf.js may detach its input buffer, so hash/store the original and
+  // hand pdf.js a copy.
+  const bytes = data instanceof ArrayBuffer ? data : data.buffer;
+  currentBytes = bytes.slice(0);
+  currentName = name;
+  currentSha = await store.sha256(currentBytes);
+  storageBlocked = false;
+  pdfDoc = await pdfjs.getDocument({ data: bytes.slice(0) }).promise;
   pageNum = 1; extractCache.clear(); detCache = null;
-  pageScales.clear(); pageScales.set(0, { fpi: 4.0, source: 'synthetic' });
-  measurements = []; nextMeasId = 1;
-  measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
   cancelTransients(null);
+  minWidthOverride = null;
+
+  // Restore a saved project for this content, or start fresh.
+  let proj = null;
+  try { proj = await store.getProject(currentSha); } catch { /* read-only failure: start fresh */ }
+  if (proj) {
+    scalesFromStored(proj.pageScales);
+    measurements = proj.measurements.map(fromStored);
+    minWidthOverride = proj.minWidthOverride ?? null;
+    reindexAfterRestore();
+    setSaveState(`Saved ${new Date(proj.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
+  } else {
+    pageScales.clear(); pageScales.set(0, { fpi: 4.0, source: 'synthetic' });
+    measurements = []; nextMeasId = 1;
+    measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
+    setSaveState('—'); // no project until the first mutation
+  }
+
   const base = (await pdfDoc.getPage(1)).getViewport({ scale: 1 });
   pageDims = { w: base.width, h: base.height };
   fitS = fitWidthScale();
@@ -977,7 +1125,8 @@ async function loadPdf(data, name) {
   refreshScaleUI();
   renderMeasList();
   await renderPage();
-  say(`${name}: ${pdfDoc.numPages} page(s). Pick a preset scale or calibrate on a known dimension.`);
+  const restored = proj ? ` — restored ${measurements.length} measurement(s)` : '';
+  say(`${name}: ${pdfDoc.numPages} page(s)${restored}. Pick a preset scale or calibrate on a known dimension.`);
 }
 
 /// The one page-switch path: transients cancel (a polygon spanning two
@@ -1048,10 +1197,12 @@ $('minWidth').addEventListener('input', () => {
   $('minWidthVal').textContent = minWidthPts().toFixed(2);
   $('minWidthReset').hidden = false;
   render();
+  markDirty();
 });
 $('minWidthReset').addEventListener('click', () => {
   minWidthOverride = null;
   if (pageGeom) syncMinWidth(pageGeom.default_min_width());
+  markDirty();
   $('minWidthReset').blur();
   render();
 });
@@ -1068,10 +1219,15 @@ window.__harness = {
   pageScales: () => Object.fromEntries([...pageScales].map(([p, v]) => [p, v.fpi])),
   buildCsv: () => buildCsv(),
   loadPdf,
+  currentSha: () => currentSha,
+  flushSave: () => flushSave(),
+  listProjects: () => store.listProjects(),
+  deleteProject: sha => store.deleteProject(sha),
 };
 
 // ---- boot ----
 await init();
+store.requestPersist(); // best-effort: keep our storage across eviction
 for (const p of JSON.parse(scale_presets_json())) {
   const o = document.createElement('option');
   o.value = p.fpi; o.textContent = p.label;

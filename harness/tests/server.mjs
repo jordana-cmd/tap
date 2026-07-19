@@ -4,7 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { makeWallsPdf } from './make-fixture.mjs';
+import { makeWallsPdf, makeOtherPdf } from './make-fixture.mjs';
 
 const HARNESS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MIME = {
@@ -15,11 +15,17 @@ const MIME = {
 
 export function startServer() {
   const walls = makeWallsPdf();
+  const other = makeOtherPdf();
   const server = http.createServer((req, res) => {
     const urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
     if (urlPath === '/test/walls.pdf') {
       res.writeHead(200, { 'Content-Type': 'application/pdf' });
       res.end(walls);
+      return;
+    }
+    if (urlPath === '/test/other.pdf') {
+      res.writeHead(200, { 'Content-Type': 'application/pdf' });
+      res.end(other);
       return;
     }
     const rel = urlPath === '/' ? 'index.html' : urlPath.slice(1);

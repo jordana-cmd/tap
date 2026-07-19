@@ -13,20 +13,28 @@ const URL = `http://127.0.0.1:${server.port}/?url=/test/walls.pdf&fpi=7.2`;
 
 let failures = 0;
 
+const waitReady = page => page.waitForFunction(
+  () => window.__harness && document.querySelector('#vecInfo').textContent.includes('segs'),
+  { timeout: 30_000 },
+);
+
+// Each case runs in its OWN browser context → isolated IndexedDB, so
+// persisted projects never leak between cases.
+const newContext = () =>
+  (browser.createBrowserContext?.() ?? browser.createIncognitoBrowserContext());
+
 async function withPage(fn) {
-  const page = await browser.newPage();
+  const context = await newContext();
+  const page = await context.newPage();
   const pageErrors = [];
   page.on('pageerror', e => pageErrors.push(String(e)));
   await page.goto(URL);
-  await page.waitForFunction(
-    () => window.__harness && document.querySelector('#vecInfo').textContent.includes('segs'),
-    { timeout: 30_000 },
-  );
+  await waitReady(page);
   try {
     await fn(page, pageErrors);
     assert.deepEqual(pageErrors, [], 'uncaught page errors');
   } finally {
-    await page.close();
+    await context.close();
   }
 }
 
@@ -34,7 +42,7 @@ const state = page => page.evaluate(() => ({
   tool: window.__harness.tool(),
   meas: window.__harness.measurements().map(m => ({
     name: m.name, kind: m.kind, value: m.value, origin: m.origin,
-    page: m.page, verts: m.geometry.length / 2,
+    page: m.page, color: m.color, verts: m.geometry.length / 2,
   })),
   draftVerts: (d => (d ? d.verts.length : null))(window.__harness.draft()),
   chain: !!window.__harness.chainPreview(),
@@ -314,21 +322,21 @@ await run('scale is per page (guard + independent values)', async page => {
   assert.ok(near(p1.value, 100, 3), `p1 SF ${p1.value} must keep page-1 scale`);
 });
 
-await run('file load clears document state', async page => {
+await run('loading a different document is a clean slate', async page => {
   await setTool(page, 'area');
   await snapOff(page);
   for (const [x, y] of SQ) await clickBase(page, x, y);
   await page.keyboard.press('Enter');
   assert.equal((await state(page)).meas.length, 1);
-  // Reload the same fixture through the deep-link (fresh document).
+  await page.evaluate(() => window.__harness.flushSave()); // ensure it's persisted
+  // A genuinely different document (distinct bytes) → separate project,
+  // so the first document's measurements do not carry over.
   await page.evaluate(async () => {
-    const resp = await fetch('/test/walls.pdf');
-    // eslint-disable-next-line no-undef
-    await window.__harness.loadPdf(await resp.arrayBuffer(), 'reload.pdf');
+    const bytes = await (await fetch('/test/other.pdf')).arrayBuffer();
+    await window.__harness.loadPdf(bytes, 'other.pdf');
   });
-  await new Promise(r => setTimeout(r, 600));
-  const st = await state(page);
-  assert.equal(st.meas.length, 0, 'measurements must not survive a new document');
+  await new Promise(r => setTimeout(r, 400));
+  assert.equal((await state(page)).meas.length, 0, 'different document starts clean');
 });
 
 await run('count tool: place N markers, Enter commits N EA, armed after', async page => {
@@ -442,6 +450,87 @@ await run('min_width override sticks across pages; reset re-derives', async page
   st = await read();
   assert.equal(st.resetHidden, true, 'reset hides the control');
   assert.notEqual(st.val, '0.77', 'value reverted to the per-page derived default');
+});
+
+await run('persistence: measure → reload → restored (page/name/color/scale)', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await setTool(page, 'count');
+  for (const [x, y] of [[600, 200], [640, 200], [680, 200]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  // Rename + recolor the area so the restore checks those fields too.
+  await page.click('.measRow .measName');
+  await page.click('.measRow .renameInput', { clickCount: 3 });
+  await page.type('.measRow .renameInput', 'Dining');
+  await page.keyboard.press('Enter');
+  await page.$eval('.measRow .measColor', el => {
+    el.value = '#ff8800'; el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.evaluate(() => window.__harness.flushSave());
+
+  await page.reload();
+  await waitReady(page);
+  const st = await state(page);
+  const area = st.meas.find(m => m.kind === 'area');
+  const count = st.meas.find(m => m.kind === 'count');
+  assert.ok(area && count, 'both measurements restored');
+  assert.equal(area.name, 'Dining', 'renamed name restored');
+  assert.equal(area.color, '#ff8800', 'color restored');
+  assert.equal(area.page, 1, 'page restored');
+  assert.ok(near(area.value, 100, 3), `area value re-derived from scale (${area.value})`);
+  assert.equal(count.value, 3, 'count quantity restored');
+  assert.match(st.status, /restored/, 'load message notes the restore');
+});
+
+await run('persistence: same bytes under a different filename → same project', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => window.__harness.flushSave());
+  const sha = await page.evaluate(() => window.__harness.currentSha());
+  // Reload the identical bytes under a new name → content-addressed match.
+  await page.evaluate(async () => {
+    const bytes = await (await fetch('/test/walls.pdf')).arrayBuffer();
+    await window.__harness.loadPdf(bytes, 'renamed-copy.pdf');
+  });
+  await new Promise(r => setTimeout(r, 400));
+  const st = await state(page);
+  assert.equal(await page.evaluate(() => window.__harness.currentSha()), sha, 'same content hash');
+  assert.equal(st.meas.length, 1, 'measurement restored under the new filename');
+});
+
+await run('persistence: a different file is a separate project', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => window.__harness.flushSave());
+  const sha1 = await page.evaluate(() => window.__harness.currentSha());
+  await page.evaluate(async () => {
+    const bytes = await (await fetch('/test/other.pdf')).arrayBuffer();
+    await window.__harness.loadPdf(bytes, 'other.pdf');
+  });
+  await new Promise(r => setTimeout(r, 400));
+  const st = await state(page);
+  assert.notEqual(await page.evaluate(() => window.__harness.currentSha()), sha1, 'distinct hash');
+  assert.equal(st.meas.length, 0, 'separate project starts empty');
+});
+
+await run('persistence: delete → gone after reload', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.evaluate(async () => {
+    await window.__harness.deleteProject(window.__harness.currentSha());
+  });
+  await page.reload();
+  await waitReady(page);
+  assert.equal((await state(page)).meas.length, 0, 'deleted project does not restore');
 });
 
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
