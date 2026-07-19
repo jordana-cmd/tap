@@ -34,7 +34,7 @@ const state = page => page.evaluate(() => ({
   tool: window.__harness.tool(),
   meas: window.__harness.measurements().map(m => ({
     name: m.name, kind: m.kind, value: m.value, origin: m.origin,
-    verts: m.geometry.length / 2,
+    page: m.page, verts: m.geometry.length / 2,
   })),
   draftVerts: (d => (d ? d.verts.length : null))(window.__harness.draft()),
   chain: !!window.__harness.chainPreview(),
@@ -191,6 +191,166 @@ await run('Enter still finishes after focusing a control (slider)', async page =
   await page.keyboard.press('Enter');
   const st = await state(page);
   assert.equal(st.meas.length, 1, 'Enter swallowed by control-focus keydown guard');
+});
+
+// ---- state-model & rendering-class cases ----
+
+const countPixels = (page, pred) => page.evaluate(predSrc => {
+  const c = document.querySelector('#plan');
+  const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+  const pred = new Function('r', 'g', 'b', `return ${predSrc};`);
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (pred(d[i], d[i + 1], d[i + 2])) n++;
+  }
+  return n;
+}, pred);
+// Snap-indicator green #15803d ≈ (21,128,61); committed blue ≈ (30,58,138).
+const GREEN = 'Math.abs(r-21)<30 && Math.abs(g-128)<40 && Math.abs(b-61)<30';
+const BLUE = 'Math.abs(r-30)<30 && Math.abs(g-58)<40 && Math.abs(b-138)<40';
+
+const gotoPage = async (page, dir) => {
+  await page.click(dir > 0 ? '#next' : '#prev');
+  await page.waitForFunction(
+    n => document.querySelector('#pageLabel').textContent.startsWith(`${n} `),
+    {}, dir > 0 ? 2 : 1,
+  );
+  await new Promise(r => setTimeout(r, 400)); // extraction + geometry swap
+};
+
+await run('snap indicators never accumulate (mousemove sweep + zoom churn)', async page => {
+  await setTool(page, 'line'); // snap stays on: indicators active
+  // Sweep along the wall run (snappable) — many hover positions.
+  for (let i = 0; i < 25; i++) {
+    const { cx, cy } = await clientOf(page, 110 + i * 17, 399);
+    await page.mouse.move(cx, cy);
+  }
+  // Zoom churn mid-sweep (the suspected unclean-compositing window).
+  await page.click('#zoomIn');
+  await page.click('#zoomIn');
+  await new Promise(r => setTimeout(r, 600));
+  for (let i = 0; i < 25; i++) {
+    const { cx, cy } = await clientOf(page, 110 + i * 17, 399);
+    await page.mouse.move(cx, cy);
+  }
+  // Park the cursor far from geometry: NO indicator should remain.
+  const { cx, cy } = await clientOf(page, 700, 550);
+  await page.mouse.move(cx, cy);
+  const green = await countPixels(page, GREEN);
+  assert.ok(green < 40, `${green} green indicator pixels remain after sweep`);
+});
+
+await run('measurements are page-scoped (render + list + restore)', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  let st = await state(page);
+  assert.equal(st.meas.length, 1);
+  assert.equal(st.meas[0].page, 1, 'measurement must record its page');
+  await gotoPage(page, +1);
+  // Canvas must not render page 1's measurement on page 2.
+  const blue = await countPixels(page, BLUE);
+  assert.ok(blue < 40, `${blue} measurement pixels rendered on page 2`);
+  // List defaults to current page: zero rows on p2.
+  st = await state(page);
+  assert.equal(st.rows.length, 0, `page-2 list should be empty, got ${st.rows.length} rows`);
+  // All-pages view shows it with its badge.
+  await page.evaluate(() => { const c = document.querySelector('#allPages'); if (!c.checked) c.click(); });
+  st = await state(page);
+  assert.equal(st.rows.length, 1, 'all-pages view shows the row');
+  assert.match(st.rows[0], /p1/, 'row carries its page badge');
+  await page.evaluate(() => { const c = document.querySelector('#allPages'); if (c.checked) c.click(); });
+  // Back to page 1: exact restoration.
+  await gotoPage(page, -1);
+  st = await state(page);
+  assert.equal(st.rows.length, 1, 'page-1 row restored');
+  const blueBack = await countPixels(page, BLUE);
+  assert.ok(blueBack >= 40, 'measurement renders again on its own page');
+});
+
+await run('page switch cancels an in-progress draft', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ.slice(0, 3)) await clickBase(page, x, y);
+  await gotoPage(page, +1);
+  const st = await state(page);
+  assert.equal(st.draftVerts, null, 'draft must cancel on page switch');
+  assert.equal(st.meas.length, 0, 'nothing committed by the switch');
+});
+
+await run('scale is per page (guard + independent values)', async page => {
+  // Deep-link fpi seeds page 1 only. Page 2 must guard.
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter'); // p1 area at fpi 7.2 → 100 SF
+  await gotoPage(page, +1);
+  await setTool(page, 'detect');
+  await clickBase(page, 480, 300); // inside page-2 room
+  let st = await state(page);
+  assert.match(st.status, /[Ss]et a scale/, `page 2 should demand a scale: ${st.status}`);
+  // Give page 2 its own scale (engineer 1"=20' → fpi 20) via preset.
+  await page.select('#preset', '20');
+  await setTool(page, 'area');
+  for (const [x, y] of [[600, 100], [700, 100], [700, 200], [600, 200]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  st = await state(page);
+  const p2 = st.meas.find(m => m.page === 2);
+  assert.ok(p2, 'page-2 measurement committed');
+  assert.ok(near(p2.value, 771.6, 8), `p2 SF ${p2.value} should use fpi 20 (≈771.6)`);
+  const p1 = st.meas.find(m => m.page === 1);
+  assert.ok(near(p1.value, 100, 3), `p1 SF ${p1.value} must keep page-1 scale`);
+});
+
+await run('file load clears document state', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  assert.equal((await state(page)).meas.length, 1);
+  // Reload the same fixture through the deep-link (fresh document).
+  await page.evaluate(async () => {
+    const resp = await fetch('/test/walls.pdf');
+    // eslint-disable-next-line no-undef
+    await window.__harness.loadPdf(await resp.arrayBuffer(), 'reload.pdf');
+  });
+  await new Promise(r => setTimeout(r, 600));
+  const st = await state(page);
+  assert.equal(st.meas.length, 0, 'measurements must not survive a new document');
+});
+
+await run('every wasm import in index.html exists in the module (class 4)', async page => {
+  const result = await page.evaluate(async () => {
+    const html = await (await fetch('/index.html')).text();
+    const m = html.match(/import init,\s*\{([^}]+)\}\s*from '\.\/pkg\/engine_web\.js'/);
+    const imports = m[1].split(',').map(s => s.trim()).filter(Boolean);
+    const mod = await import('/pkg/engine_web.js');
+    const missing = imports.filter(name => !(name in mod));
+    return { imports, missing };
+  });
+  assert.ok(result.imports.length >= 5, 'import list parsed');
+  assert.deepEqual(result.missing, [], `imports missing from wasm module: ${result.missing}`);
+});
+
+await run('all-tools smoke: zero page errors across every tool', async page => {
+  await setTool(page, 'line');
+  await clickBase(page, 620, 320);
+  await clickBase(page, 680, 320);
+  await page.keyboard.press('Enter');
+  await setTool(page, 'area');
+  for (const [x, y] of [[600, 250], [660, 250], [660, 290]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await setTool(page, 'wall');
+  await clickBase(page, 325, 398);
+  await page.keyboard.press('Enter');
+  await setTool(page, 'detect');
+  await clickBase(page, 200, 350); // inside room 1
+  await page.click('#calibBtn');
+  await clickBase(page, 100, 400);
+  await clickBase(page, 250, 400);
+  await page.keyboard.press('Escape');
+  // pageErrors asserted by withPage automatically.
 });
 
 await browser.close();

@@ -43,15 +43,27 @@ export function makeWallsPdf() {
   ].join('\n');
   const formContent = '3.6 w\n0 50 m 100 50 l S';
 
+  // Page 2 (for page-scoping tests): one plain room, base units
+  // x 400-560, y' 252-412, no hatch — distinct from page 1's geometry.
+  const page2 = [
+    '3.6 w',
+    '400 200 m 560 200 l S',
+    '560 200 m 560 360 l S',
+    '560 360 m 400 360 l S',
+    '400 360 m 400 200 l S',
+  ].join('\n');
+
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>',
     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Contents 4 0 R '
       + '/Resources << /XObject << /F1 5 0 R >> >> >>',
     `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
     '<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] '
       + `/Matrix [1 0 0 1 60 -40] /Length ${formContent.length} >>\n`
       + `stream\n${formContent}\nendstream`,
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Contents 7 0 R >>',
+    `<< /Length ${page2.length} >>\nstream\n${page2}\nendstream`,
   ];
 
   let pdf = '%PDF-1.4\n';
