@@ -40,6 +40,7 @@
     <button class="tool" data-tool="line">line</button>
     <button class="tool" data-tool="area">area</button>
     <button class="tool" data-tool="wall">wall</button>
+    <button class="tool" data-tool="count">count</button>
   </span>
   <button id="calibBtn">Calibrate (2 clicks)</button>
   <span id="calibEntry" hidden>feet: <input id="calibFeet" type="number" min="0.1" step="0.5" value="10">
@@ -95,7 +96,7 @@ const scaleOf = page => pageScales.get(page) ?? null;
 const curFpi = () => scaleOf(currentPage()) ?? 4.0; // fallback for display math only
 let s = 10 / 18;            // canvas px per PDF point (synthetic: ppf 10 @ fpi 4)
 let cleanBitmap = null;     // clean render for overlay redraws
-let tool = 'detect';        // 'detect' | 'line' | 'area' | 'wall' | 'calibrate'
+let tool = 'detect';        // 'detect' | 'line' | 'area' | 'wall' | 'count' | 'calibrate'
 let calibPts = [];          // collected calibration clicks, base units
 let pageGeom = null;        // PageGeometry wasm handle (vector mask + snap)
 let segFlat = null;         // the flat [x1,y1,x2,y2,w]×n array behind it
@@ -106,11 +107,12 @@ let extractCache = new Map(); // pageNum -> {flat, pathCount, curveCount}
 const ANGLE_EPS_RAD = 1.5 * Math.PI / 180; // click-a-wall collinearity
 const JOIN_TOL_PTS = 3.0;                  // click-a-wall join tolerance
 let draft = null;           // {verts:[{x,y,snapped}], anySnap} while line/area in progress
+let countDraft = [];        // in-progress count markers, base units (count tool)
 let chainPreview = null;    // parsed chain_json result awaiting commit
 let hover = null;           // {x, y, snap} last cursor position (base units)
 let measurements = [];      // {id, kind, name, value, valueText, origin, geometry}
 let hoverMeas = null;       // measurement id emphasized from the list panel
-let measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0 };
+let measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
 let nextMeasId = 1;
 let lastClick = null;       // {t, cx, cy} — double-click debounce
 
@@ -290,6 +292,12 @@ function strokeFlat(flat, closed) {
   if (closed) ctx.closePath();
 }
 
+/// "#rrggbb" + alpha → rgba() string (measurement fills).
+function hexToRgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
 /// Stroke the current path twice — white underlay, then color — so
 /// working geometry reads over dense background linework.
 function haloStroke(color, width, dash) {
@@ -316,6 +324,20 @@ function haloText(text, x, y, color, font) {
   ctx.strokeText(text, x, y);
   ctx.fillStyle = color;
   ctx.fillText(text, x, y);
+}
+
+/// Numbered count markers: white-ringed filled dot per point, 1..n label.
+function drawCountMarkers(flat, color, hot) {
+  const r = hot ? 8 : 6;
+  for (let i = 0; i < flat.length; i += 2) {
+    const cx = flat[i] * s, cy = flat[i + 1] * s;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(cx, cy, r + 1.5, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.fill();
+    haloText(String(i / 2 + 1), cx + r + 2, cy - r, color,
+             `bold ${hot ? 12 : 11}px ui-monospace, monospace`);
+  }
 }
 
 /// One full-frame redraw: bitmap → skeleton (dim, background) →
@@ -354,16 +376,24 @@ function render() {
   for (const m of measurements) {
     if (m.page !== currentPage()) continue; // page-scoped rendering
     const hot = m.id === hoverMeas;
+    const col = m.color;
+    if (m.kind === 'count') {
+      drawCountMarkers(m.geometry, col, hot);
+      continue;
+    }
     strokeFlat(m.geometry, m.kind === 'area');
     if (m.kind === 'area') {
-      ctx.fillStyle = hot ? 'rgba(185, 28, 28, 0.4)' : 'rgba(30, 64, 175, 0.28)';
+      ctx.fillStyle = hexToRgba(col, hot ? 0.4 : 0.28);
       ctx.fill();
     }
-    haloStroke(hot ? '#b91c1c' : '#1e3a8a', hot ? 4 : 3);
+    // Hover emphasis is WIDTH-based, not a fixed colour, so any custom
+    // measurement colour stays visible when highlighted from the list.
+    haloStroke(col, hot ? 5 : 3);
     const g = m.geometry;
-    for (let i = 0; i < g.length; i += 2) {
-      vertexDot(g[i], g[i + 1], 4, hot ? '#b91c1c' : '#1e3a8a');
-    }
+    for (let i = 0; i < g.length; i += 2) vertexDot(g[i], g[i + 1], hot ? 5 : 4, col);
+  }
+  if (countDraft.length) {
+    drawCountMarkers(countDraft.flatMap(p => [p.x, p.y]), '#0e7490', false);
   }
   if (draft && draft.verts.length) {
     const pts = draft.verts.flatMap(v => [v.x, v.y]);
@@ -516,6 +546,7 @@ function addMeasurement(kind, family, value, valueText, origin, geometry) {
     name: `${family} ${measSeq[family]}`,
     value, valueText, origin,
     page: currentPage(), // authoritative at commit time (§A2)
+    color: '#1e3a8a',    // user-recolourable (measurement editing)
     geometry: Float64Array.from(geometry),
   });
   renderMeasList();
@@ -528,6 +559,7 @@ function addMeasurement(kind, family, value, valueText, origin, geometry) {
 /// screen moves, only the numbers update.
 function revalueMeasurements() {
   for (const m of measurements) {
+    if (m.kind === 'count') continue; // EA quantity is scale-independent
     // Values derive from the OWNING page's scale, not the current page's.
     const f = scaleOf(m.page);
     if (f == null) continue; // committed under a scale; defensive only
@@ -606,6 +638,7 @@ function setTool(next) {
     line: 'line: click vertices (Shift = H/V/45), Enter/double-click finishes, Backspace undoes, Esc cancels.',
     area: 'area: click vertices, Enter/double-click closes the polygon, Backspace undoes, Esc cancels.',
     wall: 'wall: click near a wall to preview its collinear run, Enter/double-click commits, Esc clears.',
+    count: 'count: click each symbol (doors, fixtures…), Enter commits the group as EA, Backspace removes last, Esc cancels. No scale needed.',
     calibrate: 'Calibration: click one end of a known printed dimension.',
   };
   say(hints[next]);
@@ -635,7 +668,8 @@ function cursorPoint(ev) {
     const t = dx * Math.cos(ang) + dy * Math.sin(ang);
     pt.x = last.x + t * Math.cos(ang);
     pt.y = last.y + t * Math.sin(ang);
-  } else if ($('snapChk').checked && pageGeom) {
+  } else if ($('snapChk').checked && pageGeom && tool !== 'count') {
+    // Counts click symbols, not geometry — snapping stays off for them.
     const hit = pageGeom.snap_json(pt.x, pt.y, 10 / s);
     if (hit) {
       pt.snap = JSON.parse(hit);
@@ -686,6 +720,16 @@ function finishDraft() {
     say(`${m.name} committed: ${sf.toFixed(1)} SF, perimeter ${lf.toFixed(1)} LF — area tool armed, click to start the next one.`);
   }
   draft = null;
+  render();
+}
+
+function commitCount() {
+  if (!countDraft.length) { say('no markers to commit'); return; }
+  const flat = countDraft.flatMap(p => [p.x, p.y]);
+  const n = countDraft.length;
+  const m = addMeasurement('count', 'Count', n, `${n} EA`, 'manual', flat);
+  say(`${m.name} committed: ${n} EA — count tool armed, click to start the next group.`);
+  countDraft = [];
   render();
 }
 
@@ -749,6 +793,18 @@ canvas.addEventListener('click', ev => {
     draftStatus();
     return;
   }
+  if (tool === 'count') {
+    // Counts are EA (scale-independent) and click SYMBOLS, not geometry:
+    // no scale guard, no snap. Use the RAW base-unit point (cursorPoint's
+    // `pt` may be snapped); the marker still records its base position.
+    const rect = canvas.getBoundingClientRect();
+    const rx = (ev.clientX - rect.left) * canvas.width / rect.width / s;
+    const ry = (ev.clientY - rect.top) * canvas.height / rect.height / s;
+    countDraft.push({ x: rx, y: ry });
+    render();
+    say(`count: ${countDraft.length} marker(s) — Enter commits, Backspace removes last, Esc cancels.`);
+    return;
+  }
   if (tool === 'wall') {
     if (!scaleGuard()) return;
     if (!pageGeom) { say('no vector geometry on this page'); return; }
@@ -783,8 +839,14 @@ window.addEventListener('keydown', ev => {
   if (ev.key === 'Enter') {
     if (tool === 'line' || tool === 'area') { ev.preventDefault(); finishDraft(); }
     else if (tool === 'wall') { ev.preventDefault(); commitChain(); }
+    else if (tool === 'count') { ev.preventDefault(); commitCount(); }
   } else if (ev.key === 'Backspace') {
-    if (draft && draft.verts.length) {
+    if (tool === 'count' && countDraft.length) {
+      countDraft.pop();
+      render();
+      say(`count: ${countDraft.length} marker(s) — Enter commits, Backspace removes last, Esc cancels.`);
+      ev.preventDefault();
+    } else if (draft && draft.verts.length) {
       draft.verts.pop();
       if (!draft.verts.length) draft = null;
       render();
@@ -792,7 +854,7 @@ window.addEventListener('keydown', ev => {
       ev.preventDefault();
     }
   } else if (ev.key === 'Escape') {
-    draft = null; chainPreview = null;
+    draft = null; chainPreview = null; countDraft = [];
     render();
     say('cancelled');
   }
@@ -808,8 +870,8 @@ $('file').addEventListener('change', async ev => {
 /// hover, list hover, debounce) — page switches, file loads, and tool
 /// changes must never leak in-progress state across the transition.
 function cancelTransients(reason) {
-  const hadDraft = draft || chainPreview || calibPts.length;
-  draft = null; chainPreview = null; calibPts = [];
+  const hadDraft = draft || chainPreview || calibPts.length || countDraft.length;
+  draft = null; chainPreview = null; calibPts = []; countDraft = [];
   hover = null; hoverMeas = null; lastClick = null;
   $('calibEntry').hidden = true;
   if (hadDraft && reason) say(`draft cancelled (${reason})`);
@@ -821,7 +883,7 @@ async function loadPdf(data, name) {
   pageNum = 1; extractCache.clear(); detCache = null;
   pageScales.clear(); pageScales.set(0, 4.0);
   measurements = []; nextMeasId = 1;
-  measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0 };
+  measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
   cancelTransients(null);
   const base = (await pdfDoc.getPage(1)).getViewport({ scale: 1 });
   pageDims = { w: base.width, h: base.height };
@@ -896,6 +958,7 @@ window.__harness = {
   measurements: () => measurements,
   tool: () => tool,
   draft: () => draft,
+  countDraft: () => countDraft,
   chainPreview: () => chainPreview,
   s: () => s,
   page: () => currentPage(),

@@ -331,6 +331,36 @@ await run('file load clears document state', async page => {
   assert.equal(st.meas.length, 0, 'measurements must not survive a new document');
 });
 
+await run('count tool: place N markers, Enter commits N EA, armed after', async page => {
+  await setTool(page, 'count');
+  // Count is un-gated by scale and does not snap — place 4 markers.
+  const marks = [[600, 100], [640, 100], [680, 100], [720, 100]];
+  for (const [x, y] of marks) await clickBase(page, x, y);
+  assert.equal((await page.evaluate(() => window.__harness.countDraft().length)), 4,
+    'four markers in the in-progress group');
+  await page.keyboard.press('Enter');
+  let st = await state(page);
+  const c = st.meas.find(m => m.kind === 'count');
+  assert.ok(c, 'a count measurement committed');
+  assert.equal(c.value, 4, 'quantity equals marker count');
+  assert.equal(c.verts, 4, 'geometry has one point per marker');
+  assert.equal(c.origin, 'manual');
+  assert.equal(st.tool, 'count', 'tool stays armed');
+  // Fresh group after commit.
+  await clickBase(page, 600, 150);
+  assert.equal((await page.evaluate(() => window.__harness.countDraft().length)), 1,
+    'a new group starts armed');
+  // Backspace drops one; Esc clears the rest with nothing new committed.
+  await page.keyboard.press('Backspace');
+  assert.equal((await page.evaluate(() => window.__harness.countDraft().length)), 0);
+  await clickBase(page, 600, 150);
+  await clickBase(page, 640, 150);
+  await page.keyboard.press('Escape');
+  st = await state(page);
+  assert.equal((await page.evaluate(() => window.__harness.countDraft().length)), 0, 'Esc clears the group');
+  assert.equal(st.meas.filter(m => m.kind === 'count').length, 1, 'no extra count committed');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();
