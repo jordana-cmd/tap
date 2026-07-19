@@ -2,3 +2,5 @@
 spikes/crdt/target/
 harness/pkg/
 harness/tests/node_modules/
+fixtures/plans/*
+!fixtures/plans/.gitkeep
