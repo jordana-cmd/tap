@@ -589,6 +589,28 @@ await run('JSON round-trip: export → clear → import → identical state', as
     'names, kinds, pages, colors, values all round-trip');
 });
 
+await run('storage write failure blocks edits until acknowledged', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  assert.equal((await state(page)).meas.length, 1);
+  // Force a write failure → modal shown (covering the toolbar), edits blocked.
+  await page.evaluate(() => window.__harness.simulateStorageError());
+  assert.equal(await page.evaluate(() => window.__harness.storageBlocked()), true);
+  assert.equal(await page.$eval('#storageModal', el => el.hidden), false, 'modal shown');
+  // A canvas edit attempt while blocked does nothing (guard + overlay).
+  await clickBase(page, 600, 300);
+  await page.keyboard.press('Enter');
+  assert.equal((await state(page)).meas.length, 1, 'no new measurement while blocked');
+  // Dismiss (the modal button is on top) → unblocked, edits resume.
+  await page.click('#storageDismiss');
+  assert.equal(await page.evaluate(() => window.__harness.storageBlocked()), false);
+  for (const [x, y] of [[600, 300], [700, 300], [700, 400], [600, 400]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  assert.equal((await state(page)).meas.length, 2, 'edits resume after acknowledge');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();

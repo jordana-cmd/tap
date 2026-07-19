@@ -34,6 +34,12 @@
   .projRow .projName { font-weight: 500; flex: 1 1 auto; }
   .projRow .projMeta { color: #78716c; font-size: 0.78rem; }
   .projRow button { font-size: 0.8rem; }
+  #storageModal:not([hidden]) { position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+                  z-index: 1000; display: flex; align-items: center; justify-content: center; }
+  #storageModal > div { background: #fff; max-width: 480px; padding: 20px; border-radius: 6px;
+                        border: 2px solid #dc2626; }
+  #storageModal h2 { color: #dc2626; margin: 0 0 8px; font-size: 1rem; }
+  #storageModal .actions { margin-top: 14px; display: flex; gap: 10px; }
 </style>
 </head>
 <body>
@@ -94,6 +100,16 @@
     <div id="measList">(none yet)</div></div>
 </div>
 <div id="status">loading wasm…</div>
+<div id="storageModal" hidden>
+  <div>
+    <h2>⚠ Storage write failed</h2>
+    <p id="storageMsg"></p>
+    <div class="actions">
+      <button id="storageExport">Export JSON backup</button>
+      <button id="storageDismiss">Dismiss (I understand)</button>
+    </div>
+  </div>
+</div>
 
 <script type="module">
 import init, { detect_room, measure_polyline, measure_polygon_area, calibrate_two_point,
@@ -1049,6 +1065,7 @@ canvas.addEventListener('mousemove', ev => {
 });
 
 canvas.addEventListener('click', ev => {
+  if (storageBlocked) return; // edits blocked until the storage error is acknowledged
   const pt = cursorPoint(ev);
   if (tool === 'calibrate') {
     const snapNote = pt.snap
@@ -1126,6 +1143,7 @@ window.addEventListener('keydown', ev => {
   // selects, or buttons must not eat Enter/Backspace/Esc — a real
   // hands-on failure mode (focus stays on the last-touched control).
   if (ev.target === $('calibFeet') || ev.target === $('file')) return;
+  if (storageBlocked) return; // edits blocked until the storage error is acknowledged
   if (ev.key === 'Enter') {
     if (tool === 'line' || tool === 'area') { ev.preventDefault(); finishDraft(); }
     else if (tool === 'wall') { ev.preventDefault(); commitChain(); }
@@ -1266,6 +1284,12 @@ $('projectsBtn').addEventListener('click', () => {
   panel.hidden = !panel.hidden;
   if (!panel.hidden) renderProjectPanel();
 });
+$('storageExport').addEventListener('click', () => $('exportJson').click());
+$('storageDismiss').addEventListener('click', () => {
+  storageBlocked = false;
+  $('storageModal').hidden = true;
+  setSaveState('unsaved…');
+});
 $('exportCsv').addEventListener('click', () => {
   if (!measurements.length) { say('no measurements to export'); return; }
   const blob = new Blob([buildCsv()], { type: 'text/csv' });
@@ -1330,6 +1354,8 @@ window.__harness = {
   deleteProject: sha => store.deleteProject(sha),
   exportJson: () => exportJson(),
   importJson: str => importJson(str),
+  simulateStorageError: () => onStorageError(new Error('simulated quota exceeded')),
+  storageBlocked: () => storageBlocked,
 };
 
 // ---- boot ----
