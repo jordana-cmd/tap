@@ -48,24 +48,29 @@ pub fn width_histogram(segments: &[Segment]) -> Vec<WidthBucket> {
 
 
 /// Data-driven default for the minimum stroke width kept as "wall ink":
-/// the midpoint between the THINNEST bucket's width and the MODAL bucket's
-/// width (most segments). Rationale: hairline annotation (dimension lines,
-/// grids, extension lines) is thinner than a sheet's dominant linework, and
-/// walls are never thinner than the dominant stroke.
+/// the midpoint of the TWO THINNEST distinct bucket widths — i.e. drop
+/// exactly the thinnest layer (hairline/zero-width annotation: dimension
+/// lines, grids, leaders), keep everything from the second bucket up.
 ///
-/// Degenerate cases degrade to a no-op filter, never to deleted walls:
-/// empty histogram → 0.0; single bucket, or the modal bucket IS the
-/// thinnest → the midpoint equals the thinnest width and the INCLUSIVE
-/// filter ([`passes_width_filter`]) keeps everything.
+/// Rationale (eval-03): the earlier thinnest↔modal midpoint degenerated
+/// to a no-op whenever the thinnest bucket was also the modal one — true
+/// on both measured full-size sheets, where the 0-width annotation layer
+/// dominates by count. The two-thinnest rule is never MORE aggressive
+/// than the old rule and still degrades safely: empty histogram → 0.0;
+/// single bucket → threshold == that width and the INCLUSIVE filter
+/// ([`passes_width_filter`]) keeps everything.
+///
+/// Accepted, documented risk: a sheet whose walls occupy the thinnest of
+/// ≥2 buckets would leak at this default. That contradicts drafting
+/// convention on every fixture measured so far, the miss is visible in
+/// the harness skeleton overlay, and this is a DEFAULT for a user-held
+/// slider — not a gate.
 pub fn default_min_width(hist: &[WidthBucket]) -> f64 {
-    let Some(thinnest) = hist.first() else {
-        return 0.0;
-    };
-    let modal = hist
-        .iter()
-        .max_by_key(|b| b.segments)
-        .expect("non-empty histogram has a modal bucket");
-    (thinnest.width_pts + modal.width_pts) / 2.0
+    match hist {
+        [] => 0.0,
+        [only] => only.width_pts,
+        [thinnest, second, ..] => (thinnest.width_pts + second.width_pts) / 2.0,
+    }
 }
 
 /// The single width-filter predicate, shared by [`rasterize_wall_mask`] and
@@ -225,9 +230,8 @@ mod tests {
     }
 
     #[test]
-    fn default_min_width_lands_between_thinnest_and_mode() {
-        // Fixture-shaped: hairlines at 0.12, dominant linework at 0.24,
-        // sparse heavier strokes above.
+    fn default_min_width_lands_between_two_thinnest() {
+        // Fixture-001-shaped: hairlines at 0.12, dominant linework at 0.24.
         let hist = [
             WidthBucket { width_pts: 0.12, segments: 4_647 },
             WidthBucket { width_pts: 0.24, segments: 67_836 },
@@ -248,14 +252,33 @@ mod tests {
     }
 
     #[test]
-    fn default_min_width_mode_is_thinnest_keeps_all() {
+    fn default_min_width_mode_is_thinnest_drops_thinnest_bucket() {
+        // Eval-03 degeneracy: modal bucket IS the thinnest (zero-width
+        // annotation dominates). New rule drops exactly that layer.
         let hist = [
             WidthBucket { width_pts: 0.12, segments: 900 },
             WidthBucket { width_pts: 0.48, segments: 10 },
         ];
         let d = default_min_width(&hist);
-        assert_eq!(d, 0.12);
-        assert!(passes_width_filter(&seg(0.0, 0.0, 1.0, 0.0, 0.12), d));
+        assert!((d - 0.30).abs() < 1e-12);
+        assert!(!passes_width_filter(&seg(0.0, 0.0, 1.0, 0.0, 0.12), d));
+        assert!(passes_width_filter(&seg(0.0, 0.0, 1.0, 0.0, 0.48), d));
+    }
+
+    #[test]
+    fn default_min_width_fixture002_shape_drops_zero_width_layer() {
+        // p37-shaped: 0-width modal+thinnest, walls et al at 0.72.
+        let hist = [
+            WidthBucket { width_pts: 0.0, segments: 4_125 },
+            WidthBucket { width_pts: 0.36, segments: 1_659 },
+            WidthBucket { width_pts: 0.72, segments: 3_826 },
+            WidthBucket { width_pts: 0.84, segments: 68 },
+            WidthBucket { width_pts: 1.74, segments: 497 },
+        ];
+        let d = default_min_width(&hist);
+        assert!((d - 0.18).abs() < 1e-12);
+        assert!(!passes_width_filter(&seg(0.0, 0.0, 1.0, 0.0, 0.0), d));
+        assert!(passes_width_filter(&seg(0.0, 0.0, 1.0, 0.0, 0.36), d));
     }
 
     #[test]
