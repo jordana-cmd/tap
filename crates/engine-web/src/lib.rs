@@ -252,6 +252,33 @@ impl PageGeom {
         })
     }
 
+    /// Click-a-wall: snap the cursor, then walk the collinear chain from
+    /// the snapped segment. None when nothing snaps or the chain is
+    /// degenerate (zero-length seed etc.).
+    fn chain_json(
+        &self,
+        x: f64,
+        y: f64,
+        tolerance_pts: f64,
+        angle_eps_rad: f64,
+        join_tol_pts: f64,
+    ) -> Option<String> {
+        let snap = self.index.snap(Point::new(x, y), tolerance_pts)?;
+        let chain = self
+            .index
+            .collinear_chain(snap.segment, angle_eps_rad, join_tol_pts)?;
+        let ids: Vec<String> = chain.ids.iter().map(|s| s.0.to_string()).collect();
+        Some(format!(
+            "{{\"ids\":[{}],\"start\":{{\"x\":{},\"y\":{}}},\"end\":{{\"x\":{},\"y\":{}}},\"run_pts\":{}}}",
+            ids.join(","),
+            chain.start.x,
+            chain.start.y,
+            chain.end.x,
+            chain.end.y,
+            chain.run_length
+        ))
+    }
+
     /// Snap in BASE UNITS (tolerance already divided by zoom on the JS
     /// side). None → no snap within tolerance (or empty index).
     fn snap_json(&self, x: f64, y: f64, tolerance_pts: f64) -> Option<String> {
@@ -472,6 +499,21 @@ impl PageGeometry {
     pub fn snap_json(&self, x: f64, y: f64, tolerance_pts: f64) -> Option<String> {
         self.inner.snap_json(x, y, tolerance_pts)
     }
+
+    /// Click-a-wall: snap, then walk the collinear chain (angle epsilon in
+    /// RADIANS, join tolerance in base units). Returns JSON
+    /// `{ids, start:{x,y}, end:{x,y}, run_pts}` or null.
+    pub fn chain_json(
+        &self,
+        x: f64,
+        y: f64,
+        tolerance_pts: f64,
+        angle_eps_rad: f64,
+        join_tol_pts: f64,
+    ) -> Option<String> {
+        self.inner
+            .chain_json(x, y, tolerance_pts, angle_eps_rad, join_tol_pts)
+    }
 }
 
 // ---------- native tests ----------
@@ -664,6 +706,30 @@ mod tests {
         assert_eq!(g.passing_ids(0.12).len(), 5); // inclusive
         assert_eq!(g.passing_ids(1.86), vec![0, 1, 2, 3]);
         assert!(g.passing_ids(99.0).is_empty());
+    }
+
+    #[test]
+    fn page_geom_chain_json_walks_wall_run_and_none_on_miss() {
+        // Three collinear wall segments y=90 spanning x 90..510 with small
+        // joins, plus a perpendicular return that must not join.
+        let flat = vec![
+            90.0, 90.0, 230.0, 90.0, 3.6, //
+            231.0, 90.0, 370.0, 90.0, 3.6, //
+            371.0, 90.0, 510.0, 90.0, 3.6, //
+            510.0, 90.0, 510.0, 300.0, 3.6,
+        ];
+        let g = PageGeom::from_flat(&flat).unwrap();
+        let json = g
+            .chain_json(200.0, 88.0, 5.0, 1.5_f64.to_radians(), 3.0)
+            .unwrap();
+        assert!(json.contains("\"ids\":[0,1,2]"), "{json}");
+        assert!(json.contains("\"run_pts\":420"), "{json}");
+        assert!(json.contains("\"start\":{\"x\":90,\"y\":90}"), "{json}");
+        assert!(json.contains("\"end\":{\"x\":510,\"y\":90}"), "{json}");
+        // Nothing near the cursor → null.
+        assert!(g
+            .chain_json(2000.0, 2000.0, 5.0, 1.5_f64.to_radians(), 3.0)
+            .is_none());
     }
 
     #[test]
