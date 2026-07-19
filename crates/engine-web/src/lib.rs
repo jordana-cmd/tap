@@ -41,6 +41,7 @@ impl WebError {
             WebError::Detect(e) => match e {
                 DetectError::RegionNotEnclosed => "REGION_NOT_ENCLOSED",
                 DetectError::SeedOnWall { .. } => "SEED_ON_WALL",
+                DetectError::SeedTrapped { .. } => "SEED_TRAPPED",
                 DetectError::SeedOutOfBounds { .. } => "SEED_OUT_OF_BOUNDS",
                 DetectError::InvalidPxPerFoot(_) => "INVALID_PX_PER_FOOT",
             },
@@ -570,6 +571,22 @@ mod tests {
         // Seed outside the room: fill reaches the boundary.
         let err = detect(&gray, 200, 200, 10, 10, 4.0, 10.0, 200, 3.5).unwrap_err();
         assert_eq!(err.code(), "REGION_NOT_ENCLOSED");
+        // Seed in a fully dilation-closed sliver: a second wall ring 20 px
+        // (2 ft) inside the first leaves no fillable pixel between them.
+        let mut sliver = room_raster();
+        let mut wall = |x0: usize, y0: usize, x1: usize, y1: usize| {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    sliver[y * 200 + x] = 0;
+                }
+            }
+        };
+        wall(70, 70, 130, 75);
+        wall(70, 125, 130, 130);
+        wall(70, 75, 75, 125);
+        wall(125, 75, 130, 125);
+        let err = detect(&sliver, 200, 200, 60, 100, 4.0, 10.0, 200, 3.5).unwrap_err();
+        assert_eq!(err.code(), "SEED_TRAPPED");
         // Buffer length mismatch.
         let err = detect(&gray, 300, 300, 100, 100, 4.0, 10.0, 200, 3.5).unwrap_err();
         assert_eq!(err.code(), "BAD_RASTER");

@@ -192,6 +192,26 @@ fn snap_on_synthetic_plan_geometry() {
 }
 
 proptest! {
+    /// Nudge invariance (eval-02 queue A1 fix): ANY raw-free click inside
+    /// the room — including clicks inside the dilation inset that used to
+    /// fail SEED_ON_WALL — succeeds and yields the identical region.
+    #[test]
+    fn prop_nudge_invariant_over_interior_seeds(
+        sx in 5.3..24.7f64,
+        sy in 5.3..19.7f64,
+    ) {
+        let sheet = room_sheet();
+        let (w, h) = sheet.grid();
+        let map = sheet.map();
+        let params = DetectParams::default();
+        let mask = rasterize_wall_mask(&sheet.segments(), &map, w, h, 0.18).unwrap();
+        let reference =
+            detect_room_from_mask(&mask, &map, sheet.seed_at_ft(15.0, 12.5), &params).unwrap();
+        let seeded =
+            detect_room_from_mask(&mask, &map, sheet.seed_at_ft(sx, sy), &params).unwrap();
+        prop_assert_eq!(seeded, reference);
+    }
+
     /// The wall mask is monotone in the width filter: raising min_width can
     /// only remove pixels, never add them (filtered ⊆ unfiltered).
     #[test]

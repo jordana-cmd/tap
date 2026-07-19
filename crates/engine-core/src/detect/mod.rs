@@ -42,6 +42,14 @@ pub enum DetectError {
     RegionNotEnclosed,
     #[error("seed ({x}, {y}) is on a wall pixel")]
     SeedOnWall { x: u32, y: u32 },
+    /// The click is in open floor, but door-gap dilation closed every
+    /// fillable pixel within nudge range — the region is narrower than the
+    /// door-gap closing. Lower `door_gap_ft` and retry.
+    #[error(
+        "seed ({x}, {y}) has no fillable pixel in nudge range — region narrower \
+         than the door-gap closing; lower door_gap_ft"
+    )]
+    SeedTrapped { x: u32, y: u32 },
     #[error("seed ({x}, {y}) is outside the raster")]
     SeedOutOfBounds { x: u32, y: u32 },
     #[error("px_per_foot must be finite and > 0, got {0}")]
@@ -115,6 +123,15 @@ pub fn detect_room(
 /// [`rasterize_wall_mask`] here. Runs §A3.1 steps 2–5 unchanged.
 /// `params.wall_threshold` is unused on this path — the mask is already
 /// binary by construction.
+///
+/// Seed contract: the user clicks against the RAW ink they can see, but
+/// the fill runs on the DILATED mask they cannot. A seed on raw ink is
+/// [`DetectError::SeedOnWall`]; a seed in open floor that dilation
+/// swallowed is nudged to the nearest fillable pixel reachable without
+/// crossing raw ink (so it can never jump into an adjacent room), or
+/// [`DetectError::SeedTrapped`] when no such pixel exists in range.
+/// Whenever the un-nudged seed is already fillable, the result is
+/// identical to previous behavior.
 pub fn detect_room_from_mask(
     walls: &Mask,
     map: &PixelMap,
@@ -123,7 +140,8 @@ pub fn detect_room_from_mask(
 ) -> Result<RoomDetection, DetectError> {
     let radius = door_gap_radius_px(params.door_gap_ft, map.px_per_foot());
     let dilated = dilate(walls, radius);
-    let fill = flood_fill(&dilated, seed_px)?;
+    let seed = nudge_seed(walls, &dilated, seed_px, 2 * radius + 1)?;
+    let fill = flood_fill(&dilated, seed)?;
     let closed = close_region(&fill, walls, radius);
     let (contour, area_sf, perimeter_lf) = measure_region(&closed, (0, 0), map, params);
     Ok(RoomDetection {
@@ -131,6 +149,56 @@ pub fn detect_room_from_mask(
         area_sf,
         perimeter_lf,
     })
+}
+
+/// Resolve a click into a fillable seed (see [`detect_room_from_mask`]'s
+/// seed contract). BFS is 4-connected through RAW-free pixels only,
+/// bounded at `max_steps` depth: dilation moves the free boundary by
+/// exactly the door-gap radius, so `2r + 1` covers escaping an ink
+/// dead-zone with slack while keeping the search local (≈(4r+3)² px).
+fn nudge_seed(
+    walls: &Mask,
+    dilated: &Mask,
+    seed: (u32, u32),
+    max_steps: u32,
+) -> Result<(u32, u32), DetectError> {
+    let (w, h) = (walls.width(), walls.height());
+    let (sx, sy) = seed;
+    if sx >= w || sy >= h {
+        return Err(DetectError::SeedOutOfBounds { x: sx, y: sy });
+    }
+    if walls.get(sx, sy) {
+        return Err(DetectError::SeedOnWall { x: sx, y: sy });
+    }
+    if !dilated.get(sx, sy) {
+        return Ok(seed); // fast path: already fillable, unchanged behavior
+    }
+    let mut visited = std::collections::HashSet::from([seed]);
+    let mut frontier = vec![seed];
+    for _ in 0..max_steps {
+        let mut next = Vec::new();
+        for &(x, y) in &frontier {
+            for (nx, ny) in [
+                (x.wrapping_sub(1), y),
+                (x + 1, y),
+                (x, y.wrapping_sub(1)),
+                (x, y + 1),
+            ] {
+                if nx >= w || ny >= h || walls.get(nx, ny) || !visited.insert((nx, ny)) {
+                    continue;
+                }
+                if !dilated.get(nx, ny) {
+                    return Ok((nx, ny));
+                }
+                next.push((nx, ny));
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    Err(DetectError::SeedTrapped { x: sx, y: sy })
 }
 
 /// Level 2 — auto-detect candidates (addendum §A3.2): full-page mask →
@@ -218,6 +286,82 @@ pub fn detect_candidates(
             .expect("detected areas are finite")
     });
     out
+}
+
+#[cfg(test)]
+mod nudge_tests {
+    use super::*;
+
+    /// 9-wide, 7-tall: raw wall column at x=4; dilated additionally covers
+    /// x ∈ [2, 6] (radius-2 dilation of the column).
+    fn masks() -> (Mask, Mask) {
+        let mut walls = Mask::new(9, 7);
+        let mut dilated = Mask::new(9, 7);
+        for y in 0..7 {
+            walls.set(4, y, true);
+            for x in 2..=6 {
+                dilated.set(x, y, true);
+            }
+        }
+        (walls, dilated)
+    }
+
+    #[test]
+    fn nudge_fast_path_is_identity() {
+        let (walls, dilated) = masks();
+        assert_eq!(nudge_seed(&walls, &dilated, (1, 3), 5), Ok((1, 3)));
+    }
+
+    #[test]
+    fn nudge_escapes_dilated_band_without_crossing_ink() {
+        let (walls, dilated) = masks();
+        // Seed at (3,3): raw-free but dilated-wall. The nearest dilated-free
+        // pixels are x=1 (2 steps left) and x=7 (4 steps right, blocked by
+        // the raw column at x=4 anyway). Must land on the seed's own side.
+        let nudged = nudge_seed(&walls, &dilated, (3, 3), 5).unwrap();
+        assert_eq!(nudged, (1, 3));
+    }
+
+    #[test]
+    fn nudge_cannot_cross_raw_ink() {
+        // Raw column at x=4 with EVERYTHING at x<4 dilated-closed: the only
+        // dilated-free pixels are at x>4, unreachable without crossing ink.
+        let mut walls = Mask::new(9, 7);
+        let mut dilated = Mask::new(9, 7);
+        for y in 0..7 {
+            walls.set(4, y, true);
+            for x in 0..=6 {
+                dilated.set(x, y, true);
+            }
+        }
+        assert_eq!(
+            nudge_seed(&walls, &dilated, (2, 3), 50),
+            Err(DetectError::SeedTrapped { x: 2, y: 3 })
+        );
+    }
+
+    #[test]
+    fn nudge_respects_step_bound() {
+        let (walls, dilated) = masks();
+        // (3,3) needs 2 steps to reach (1,3); a 1-step budget traps it.
+        assert_eq!(
+            nudge_seed(&walls, &dilated, (3, 3), 1),
+            Err(DetectError::SeedTrapped { x: 3, y: 3 })
+        );
+    }
+
+    #[test]
+    fn nudge_raw_wall_and_bounds_errors_unchanged() {
+        let (walls, dilated) = masks();
+        assert_eq!(
+            nudge_seed(&walls, &dilated, (4, 3), 5),
+            Err(DetectError::SeedOnWall { x: 4, y: 3 })
+        );
+        assert_eq!(
+            nudge_seed(&walls, &dilated, (99, 3), 5),
+            Err(DetectError::SeedOutOfBounds { x: 99, y: 3 })
+        );
+    }
 }
 
 /// Contour → base units → simplify → (polygon, SF, LF).

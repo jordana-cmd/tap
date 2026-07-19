@@ -199,3 +199,79 @@ fn ccl_candidates_filtered_and_ordered() {
         }
     }
 }
+
+/// Seed-nudge contract (eval-02 queue A1): a click in open floor that
+/// door-gap dilation swallowed is nudged to the nearest fillable pixel
+/// without crossing raw ink; genuine ink clicks and trapped regions error.
+#[test]
+fn nudge_recovers_click_near_interior_text() {
+    let mut plan = SynthPlan::new(30.0, 25.0, PPF);
+    plan.walls_rect(5.0, 5.0, 20.0, 15.0, 0.5);
+    plan.fill_rect_ft(13.0, 11.0, 4.0, 1.0, 0); // interior "label text" blob
+    let raster = plan.raster();
+    let map = plan.map(scale());
+    let params = DetectParams::default();
+
+    // 0.5 ft above the blob: raw-free, but well inside its 1.8 ft dilation.
+    let near_text = detect_room(&raster, &map, plan.seed_at_ft(14.0, 10.5), &params).unwrap();
+    // Reference: open floor far from any ink.
+    let open_floor = detect_room(&raster, &map, plan.seed_at_ft(8.0, 8.0), &params).unwrap();
+
+    assert_eq!(near_text, open_floor, "nudge must land in the same region");
+    // Room 300 SF minus the 4 SF blob (subtracted as raw ink), ±4%.
+    assert!(
+        (near_text.area_sf - 296.0).abs() <= 12.0,
+        "area {} not near 296 SF",
+        near_text.area_sf
+    );
+}
+
+#[test]
+fn seed_on_raw_ink_still_errors() {
+    let mut plan = SynthPlan::new(30.0, 25.0, PPF);
+    plan.walls_rect(5.0, 5.0, 20.0, 15.0, 0.5);
+    plan.fill_rect_ft(13.0, 11.0, 4.0, 1.0, 0);
+    let err = detect_room(
+        &plan.raster(),
+        &plan.map(scale()),
+        plan.seed_at_ft(14.0, 11.5), // inside the blob: visible ink
+        &DetectParams::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, DetectError::SeedOnWall { .. }));
+}
+
+#[test]
+fn narrow_corridor_seed_trapped() {
+    // 2 ft corridor: dilation (r = 18 px each side at defaults) closes all
+    // 20 px of its width — no fillable pixel exists anywhere inside.
+    let mut plan = SynthPlan::new(30.0, 25.0, PPF);
+    plan.walls_rect(5.0, 5.0, 20.0, 2.0, 0.5);
+    let err = detect_room(
+        &plan.raster(),
+        &plan.map(scale()),
+        plan.seed_at_ft(15.0, 6.0),
+        &DetectParams::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, DetectError::SeedTrapped { .. }), "{err:?}");
+}
+
+#[test]
+fn nudge_never_crosses_walls() {
+    // Small room A (3 ft wide -> fully dilation-closed) shares a wall with
+    // large open room B. The nearest fillable pixel to A's center is in B,
+    // but reaching it requires crossing the shared wall: must trap, and
+    // must emphatically NOT return room B's area.
+    let mut plan = SynthPlan::new(45.0, 25.0, PPF);
+    plan.walls_rect(5.0, 5.0, 3.0, 15.0, 0.5); // room A
+    plan.walls_rect(8.5, 5.0, 20.0, 15.0, 0.5); // room B, shared wall x∈[8,8.5]
+    let err = detect_room(
+        &plan.raster(),
+        &plan.map(scale()),
+        plan.seed_at_ft(6.5, 12.5),
+        &DetectParams::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, DetectError::SeedTrapped { .. }), "{err:?}");
+}
