@@ -163,6 +163,26 @@ await run('Esc cancels draft; Backspace removes exactly one vertex', async page 
   assert.equal(st.meas.length, 0, 'nothing should be committed');
 });
 
+await run('detect: hatched room traps without hide-hatch, detects with it', async page => {
+  await setTool(page, 'detect');
+  const setHide = on => page.evaluate(v => {
+    const c = document.querySelector('#hideHatch');
+    if (c.checked !== v) c.click();
+  }, on);
+  await setHide(false);
+  await clickBase(page, 675, 225); // center of the hatched second room
+  let st = await state(page);
+  assert.equal(st.meas.length, 0, 'trapped click must not commit a room');
+  assert.match(st.status, /SEED_TRAPPED|SEED_ON_WALL/, st.status);
+  await setHide(true);
+  await clickBase(page, 675, 225);
+  st = await state(page);
+  assert.equal(st.meas.length, 1, 'hide-hatch should recover the room');
+  assert.equal(st.meas[0].origin, 'floodfill');
+  assert.ok(st.meas[0].value > 140 && st.meas[0].value < 235,
+    `recovered SF ${st.meas[0].value} outside plausible band`);
+});
+
 await run('Enter still finishes after focusing a control (slider)', async page => {
   await setTool(page, 'area');
   await snapOff(page);

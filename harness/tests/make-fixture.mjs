@@ -29,6 +29,17 @@ export function makeWallsPdf() {
     '0.24 w',
     '120 380 m 280 380 l S',
     '/F1 Do',
+    // Second room (base units x 600-750, y 150-300) filled with a dense
+    // 6-pt-pitch hatch field at wall stroke — the hide-hatch suite case.
+    '3.6 w',
+    '600 312 m 750 312 l S',
+    '750 312 m 750 462 l S',
+    '750 462 m 600 462 l S',
+    '600 462 m 600 312 l S',
+    ...Array.from({ length: 24 }, (_, i) => {
+      const y = 318 + i * 6;
+      return `603 ${y} m 747 ${y} l S`;
+    }),
   ].join('\n');
   const formContent = '3.6 w\n0 50 m 100 50 l S';
 

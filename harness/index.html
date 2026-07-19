@@ -60,6 +60,7 @@
   <label>min_width: <input id="minWidth" type="range" min="0" max="2" step="0.01" value="0" disabled>
     <span id="minWidthVal">–</span> pts</label>
   <label><input id="snapChk" type="checkbox" checked> snap calib clicks</label>
+  <label><input id="hideHatch" type="checkbox" checked disabled> hide hatch</label>
   <span id="vecInfo">no vector geometry</span>
 </div>
 <div id="workRow">
@@ -91,6 +92,7 @@ let tool = 'detect';        // 'detect' | 'line' | 'area' | 'wall' | 'calibrate'
 let calibPts = [];          // collected calibration clicks, base units
 let pageGeom = null;        // PageGeometry wasm handle (vector mask + snap)
 let segFlat = null;         // the flat [x1,y1,x2,y2,w]×n array behind it
+let hatchIds = new Set();   // ids classified as hatch (purple overlay)
 let extractCache = new Map(); // pageNum -> {flat, pathCount, curveCount}
 
 // ---- manual measurement state (all geometry in BASE UNITS) ----
@@ -218,6 +220,7 @@ function setGeometry(extracted) {
   if (hasVectors) {
     segFlat = extracted.flat;
     pageGeom = new PageGeometry(segFlat);
+    hatchIds = new Set(pageGeom.hatch_segment_ids());
     const hist = JSON.parse(pageGeom.histogram_json());
     const def = pageGeom.default_min_width();
     const maxW = hist.length ? hist[hist.length - 1].width_pts : 1;
@@ -226,11 +229,16 @@ function setGeometry(extracted) {
     $('minWidthVal').textContent = def.toFixed(2);
     $('vecInfo').textContent =
       `${pageGeom.segment_count} segs, ${extracted.curveCount} curves skipped, ` +
+      `${hatchIds.size} hatch, ` +
       `widths [${hist.map(b => `${b.width_pts}:${b.segments}`).join(' ')}]`;
+    $('vecInfo').title = `hatch params: ${pageGeom.hatch_params_json()}`;
     $('maskVector').disabled = false; $('minWidth').disabled = false;
+    $('hideHatch').disabled = false;
     $('maskVector').checked = true;   // vector is the primary path when present
   } else {
+    hatchIds = new Set();
     $('maskVector').disabled = true; $('minWidth').disabled = true;
+    $('hideHatch').disabled = true;
     $('maskRaster').checked = true;
     $('minWidthVal').textContent = '–';
     $('vecInfo').textContent = 'no vector geometry (raster fallback)';
@@ -285,15 +293,30 @@ function render() {
   redraw();
   if (maskSource() === 'vector' && pageGeom) {
     // Background reference — deliberately dim so measurements pop.
+    // Hatch-classified segments draw PURPLE (see what the classifier
+    // caught before trusting it); kept wall ink draws red.
     const ids = pageGeom.wall_segment_ids(minWidthPts());
     ctx.strokeStyle = 'rgba(220, 38, 38, 0.35)'; ctx.lineWidth = 1;
     ctx.beginPath();
     for (const id of ids) {
+      if (hatchIds.has(id)) continue;
       const o = id * 5;
       ctx.moveTo(segFlat[o] * s, segFlat[o + 1] * s);
       ctx.lineTo(segFlat[o + 2] * s, segFlat[o + 3] * s);
     }
     ctx.stroke();
+    if (hatchIds.size) {
+      ctx.strokeStyle = $('hideHatch').checked
+        ? 'rgba(147, 51, 234, 0.25)'   // excluded from the mask: faint
+        : 'rgba(147, 51, 234, 0.6)';   // still in the mask: prominent
+      ctx.beginPath();
+      for (const id of hatchIds) {
+        const o = id * 5;
+        ctx.moveTo(segFlat[o] * s, segFlat[o + 1] * s);
+        ctx.lineTo(segFlat[o + 2] * s, segFlat[o + 3] * s);
+      }
+      ctx.stroke();
+    }
   }
   for (const m of measurements) {
     const hot = m.id === hoverMeas;
@@ -387,7 +410,8 @@ async function runDetect(baseX, baseY) {
       ppfUsed = det.ppf;
       r = src === 'vector'
         ? pageGeom.detect_room_vector(det.w, det.h, x, y, fpi, det.ppf,
-                                      minWidthPts(), doorGap)
+                                      minWidthPts(), $('hideHatch').checked,
+                                      doorGap)
         : detect_room(det.gray, det.w, det.h, x, y, fpi, det.ppf,
                       threshold, doorGap);
     } else {
@@ -777,6 +801,7 @@ $('thresh').addEventListener('input', () => { $('threshVal').textContent = $('th
 $('doorGap').addEventListener('input', () => { $('doorGapVal').textContent = $('doorGap').value; });
 $('maskRaster').addEventListener('change', render);
 $('maskVector').addEventListener('change', render);
+$('hideHatch').addEventListener('change', render);
 $('minWidth').addEventListener('input', () => {
   $('minWidthVal').textContent = minWidthPts().toFixed(2);
   render();
