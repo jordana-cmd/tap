@@ -249,14 +249,44 @@ function strokeFlat(flat, closed) {
   if (closed) ctx.closePath();
 }
 
-/// One full-frame redraw: bitmap → skeleton → committed measurements →
-/// draft/rubber-band → chain preview → snap indicator. Geometry lives in
-/// base units and is scaled by `s` only here (display transform only).
+/// Stroke the current path twice — white underlay, then color — so
+/// working geometry reads over dense background linework.
+function haloStroke(color, width, dash) {
+  if (dash) ctx.setLineDash(dash);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = width + 2;
+  ctx.stroke();
+  ctx.strokeStyle = color; ctx.lineWidth = width;
+  ctx.stroke();
+  if (dash) ctx.setLineDash([]);
+}
+
+/// White-ringed square vertex dot — every click stays visible.
+function vertexDot(x, y, size, color) {
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x * s - size / 2 - 1.5, y * s - size / 2 - 1.5, size + 3, size + 3);
+  ctx.fillStyle = color;
+  ctx.fillRect(x * s - size / 2, y * s - size / 2, size, size);
+}
+
+/// Halo-backed label text.
+function haloText(text, x, y, color, font) {
+  ctx.font = font;
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+}
+
+/// One full-frame redraw: bitmap → skeleton (dim, background) →
+/// committed measurements → draft/rubber-band → chain preview → snap or
+/// close indicator (foreground). Geometry lives in base units and is
+/// scaled by `s` only here (display transform only).
 function render() {
   redraw();
   if (maskSource() === 'vector' && pageGeom) {
+    // Background reference — deliberately dim so measurements pop.
     const ids = pageGeom.wall_segment_ids(minWidthPts());
-    ctx.strokeStyle = 'rgba(220, 38, 38, 0.55)'; ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(220, 38, 38, 0.35)'; ctx.lineWidth = 1;
     ctx.beginPath();
     for (const id of ids) {
       const o = id * 5;
@@ -269,54 +299,58 @@ function render() {
     const hot = m.id === hoverMeas;
     strokeFlat(m.geometry, m.kind === 'area');
     if (m.kind === 'area') {
-      ctx.fillStyle = hot ? 'rgba(220, 38, 38, 0.3)' : 'rgba(37, 99, 235, 0.18)';
+      ctx.fillStyle = hot ? 'rgba(185, 28, 28, 0.4)' : 'rgba(30, 64, 175, 0.28)';
       ctx.fill();
     }
-    ctx.strokeStyle = hot ? '#dc2626' : '#1d4ed8';
-    ctx.lineWidth = hot ? 3 : 2;
-    ctx.stroke();
+    haloStroke(hot ? '#b91c1c' : '#1e3a8a', hot ? 4 : 3);
+    const g = m.geometry;
+    for (let i = 0; i < g.length; i += 2) {
+      vertexDot(g[i], g[i + 1], 4, hot ? '#b91c1c' : '#1e3a8a');
+    }
   }
   if (draft && draft.verts.length) {
     const pts = draft.verts.flatMap(v => [v.x, v.y]);
     if (hover) pts.push(hover.x, hover.y);
     strokeFlat(pts, false);
-    ctx.strokeStyle = '#0891b2'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
-    ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = '#0891b2';
-    for (const v of draft.verts) {
-      ctx.fillRect(v.x * s - 2.5, v.y * s - 2.5, 5, 5);
-    }
+    haloStroke('#0e7490', 3, [7, 5]);
+    for (const v of draft.verts) vertexDot(v.x, v.y, 7, '#0e7490');
   }
   if (chainPreview) {
-    ctx.strokeStyle = '#ea580c'; ctx.lineWidth = 4;
     ctx.beginPath();
     for (const id of chainPreview.ids) {
       const o = id * 5;
       ctx.moveTo(segFlat[o] * s, segFlat[o + 1] * s);
       ctx.lineTo(segFlat[o + 2] * s, segFlat[o + 3] * s);
     }
-    ctx.stroke();
-    for (const p of [chainPreview.start, chainPreview.end]) marker(p.x * s, p.y * s, '#ea580c');
+    haloStroke('#c2410c', 5);
+    for (const p of [chainPreview.start, chainPreview.end]) marker(p.x * s, p.y * s, '#c2410c');
   }
   if (hover && hover.closing && draft && draft.verts.length) {
     // Distinct close indicator: clicking will close the polygon here.
     // (draft guard: hover can still carry `closing` from the last
     // mousemove right after the closing click commits and nulls draft.)
     const v0 = draft.verts[0];
-    ctx.fillStyle = 'rgba(234, 88, 12, 0.85)';
+    ctx.fillStyle = '#fff';
     ctx.beginPath();
-    ctx.arc(v0.x * s, v0.y * s, 8, 0, 2 * Math.PI);
+    ctx.arc(v0.x * s, v0.y * s, 11, 0, 2 * Math.PI);
     ctx.fill();
-    ctx.fillStyle = '#ea580c'; ctx.font = 'bold 11px ui-monospace, monospace';
-    ctx.fillText('close', v0.x * s + 11, v0.y * s - 10);
+    ctx.fillStyle = 'rgba(234, 88, 12, 0.9)';
+    ctx.beginPath();
+    ctx.arc(v0.x * s, v0.y * s, 9, 0, 2 * Math.PI);
+    ctx.fill();
+    haloText('close', v0.x * s + 13, v0.y * s - 11, '#c2410c',
+             'bold 12px ui-monospace, monospace');
   } else if (hover && hover.snap) {
     const { x, y, kind } = hover.snap;
-    ctx.strokeStyle = '#16a34a'; ctx.lineWidth = 2;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 5;
     ctx.beginPath();
-    ctx.arc(x * s, y * s, 5, 0, 2 * Math.PI);
+    ctx.arc(x * s, y * s, 5.5, 0, 2 * Math.PI);
     ctx.stroke();
-    ctx.fillStyle = '#16a34a'; ctx.font = '11px ui-monospace, monospace';
-    ctx.fillText(kind, x * s + 8, y * s - 8);
+    ctx.strokeStyle = '#15803d'; ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(x * s, y * s, 5.5, 0, 2 * Math.PI);
+    ctx.stroke();
+    haloText(kind, x * s + 9, y * s - 9, '#15803d', '11px ui-monospace, monospace');
   }
 }
 
