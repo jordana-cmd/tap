@@ -27,6 +27,13 @@
   .measRow .measColor { width: 22px; height: 16px; padding: 0; border: none; cursor: pointer; }
   .renameInput { flex: 1 1 100%; font-size: 0.85rem; }
   .measRow button { border: none; background: none; color: #dc2626; cursor: pointer; }
+  #projectPanel { background: #fff; border: 1px solid #d6d3d1; padding: 8px; margin: 6px 0;
+                  max-width: 640px; font-size: 0.85rem; }
+  .projRow { display: flex; align-items: baseline; gap: 10px; padding: 4px;
+             border-bottom: 1px solid #e7e5e4; }
+  .projRow .projName { font-weight: 500; flex: 1 1 auto; }
+  .projRow .projMeta { color: #78716c; font-size: 0.78rem; }
+  .projRow button { font-size: 0.8rem; }
 </style>
 </head>
 <body>
@@ -52,6 +59,11 @@
     <button id="calibApply">Apply</button></span>
   <span>fpi = <b id="fpiLabel">4.0 (synthetic)</b></span>
   <span id="saveState" title="autosave status">—</span>
+  <button id="projectsBtn" title="saved projects">Projects</button>
+</div>
+<div id="projectPanel" hidden>
+  <div id="projectQuota" class="origin"></div>
+  <div id="projectList"></div>
 </div>
 <div class="bar">
   <label>wall_threshold: <input id="thresh" type="range" min="0" max="255" step="5" value="200">
@@ -735,6 +747,48 @@ function onStorageError(e) {
   }
 }
 
+// ---- project list panel ----
+const fmtBytes = n => n == null ? '?' : `${(n / 1048576).toFixed(1)} MB`;
+
+async function openProject(sha) {
+  const rec = await store.getFile(sha);
+  if (!rec) { say('project bytes missing — reopen by loading the PDF'); return; }
+  $('projectPanel').hidden = true;
+  await loadPdf(rec.bytes, rec.name);
+}
+
+async function renderProjectPanel() {
+  const list = $('projectList');
+  list.textContent = '';
+  const [projects, est] = await Promise.all([store.listProjects(), store.estimate()]);
+  $('projectQuota').textContent = est.usage == null ? ''
+    : `storage: ${fmtBytes(est.usage)} used${est.quota ? ` of ${fmtBytes(est.quota)}` : ''}`;
+  if (!projects.length) { list.textContent = '(no saved projects yet)'; return; }
+  for (const p of projects) {
+    const row = document.createElement('div');
+    row.className = 'projRow';
+    const name = document.createElement('span');
+    name.className = 'projName'; name.textContent = p.name || p.sha.slice(0, 8);
+    const meta = document.createElement('span');
+    meta.className = 'projMeta';
+    const pages = new Set(p.measurements.map(m => m.page)).size;
+    meta.textContent = `${p.measurements.length} measurement(s) · ${pages} page(s) · `
+      + `opened ${new Date(p.updatedAt).toLocaleString([], { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' })}`;
+    const open = document.createElement('button');
+    open.textContent = 'open';
+    open.addEventListener('click', () => openProject(p.sha));
+    const del = document.createElement('button');
+    del.textContent = '✕'; del.style.color = '#dc2626';
+    del.addEventListener('click', async () => {
+      if (!confirm(`Delete project "${p.name || p.sha.slice(0, 8)}" and its stored PDF? This cannot be undone.`)) return;
+      await store.deleteProject(p.sha);
+      renderProjectPanel();
+    });
+    row.append(name, meta, open, del);
+    list.append(row);
+  }
+}
+
 /// Sync the scale chip to the current page (page switches, file loads).
 function refreshScaleUI() {
   const f = scaleOf(currentPage());
@@ -1182,6 +1236,11 @@ $('maskRaster').addEventListener('change', render);
 $('maskVector').addEventListener('change', render);
 $('hideHatch').addEventListener('change', render);
 $('allPages').addEventListener('change', renderMeasList);
+$('projectsBtn').addEventListener('click', () => {
+  const panel = $('projectPanel');
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) renderProjectPanel();
+});
 $('exportCsv').addEventListener('click', () => {
   if (!measurements.length) { say('no measurements to export'); return; }
   const blob = new Blob([buildCsv()], { type: 'text/csv' });
@@ -1271,6 +1330,13 @@ if (qs.has('calib')) {
 if (qs.has('autoclick')) {
   const [ax, ay] = qs.get('autoclick').split(',').map(Number); // base units
   await runDetect(ax, ay);
+}
+
+// No file open (no deep-link) and saved projects exist → surface them so
+// a reload lands the user back on their work in one click.
+if (!qs.has('url') && (await store.listProjects()).length) {
+  $('projectPanel').hidden = false;
+  await renderProjectPanel();
 }
 </script>
 </body>

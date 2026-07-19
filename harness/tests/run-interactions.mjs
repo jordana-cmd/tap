@@ -533,6 +533,31 @@ await run('persistence: delete → gone after reload', async page => {
   assert.equal((await state(page)).meas.length, 0, 'deleted project does not restore');
 });
 
+await run('project panel: lists, reopens, and deletes via UI', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => window.__harness.flushSave());
+  // Open the panel → the project is listed.
+  await page.click('#projectsBtn');
+  await page.waitForSelector('.projRow', { timeout: 5000 });
+  let rows = await page.$$eval('.projRow', els => els.length);
+  assert.equal(rows, 1, 'one saved project listed');
+  // Reopen it (from stored bytes) → measurement restored.
+  await page.click('.projRow button'); // first button = "open"
+  await waitReady(page);
+  assert.equal((await state(page)).meas.length, 1, 'reopened from stored bytes');
+  // Delete via the UI (accept the confirm) → gone.
+  page.on('dialog', d => d.accept());
+  await page.click('#projectsBtn');
+  await page.waitForSelector('.projRow', { timeout: 5000 });
+  await page.$$eval('.projRow button', bs => bs.find(b => b.textContent === '✕').click());
+  await new Promise(r => setTimeout(r, 300));
+  rows = await page.$$eval('.projRow', els => els.length);
+  assert.equal(rows, 0, 'project removed from the list after delete');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();
