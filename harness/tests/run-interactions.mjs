@@ -378,6 +378,46 @@ await run('measurement rename persists to the state model', async page => {
   assert.equal(st.meas.length, 1, 'no extra measurement from the rename keystrokes');
 });
 
+await run('CSV export: rows with §A2 provenance for area + line + count', async page => {
+  // One area, one line, one count on page 1 (deep-linked fpi 7.2 = param).
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await setTool(page, 'line');
+  for (const [x, y] of [[600, 300], [700, 300], [700, 350]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await setTool(page, 'count');
+  for (const [x, y] of [[600, 400], [640, 400], [680, 400]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+
+  const csv = await page.evaluate(() => window.__harness.buildCsv());
+  const lines = csv.trim().split('\n');
+  assert.equal(lines[0],
+    'page,name,kind,quantity,unit,origin,page_scale_fpi,scale_source', 'header');
+  assert.equal(lines.length, 4, 'header + 3 data rows');
+  const cols = lines.slice(1).map(l => l.split(','));
+  const area = cols.find(c => c[2] === 'area');
+  const line = cols.find(c => c[2] === 'linear');
+  const count = cols.find(c => c[2] === 'count');
+  assert.ok(area && line && count, 'one row per kind');
+  assert.equal(area[4], 'SF'); assert.equal(area[6], '7.2000'); assert.equal(area[7], 'param');
+  assert.equal(line[4], 'LF'); assert.equal(line[5], 'manual');
+  assert.equal(count[3], '3.00'); assert.equal(count[4], 'EA'); assert.equal(count[6], '7.2000');
+});
+
+await run('CSV quotes free-text names containing commas', async page => {
+  await setTool(page, 'count');
+  await clickBase(page, 620, 420);
+  await page.keyboard.press('Enter');
+  await page.click('.measRow .measName');
+  await page.click('.measRow .renameInput', { clickCount: 3 });
+  await page.type('.measRow .renameInput', 'Doors, exterior');
+  await page.keyboard.press('Enter');
+  const csv = await page.evaluate(() => window.__harness.buildCsv());
+  assert.match(csv, /"Doors, exterior"/, 'comma-bearing name is CSV-quoted');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();

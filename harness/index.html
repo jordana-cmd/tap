@@ -72,7 +72,8 @@
 <div id="workRow">
   <div id="canvasWrap"><canvas id="plan" width="900" height="650"></canvas></div>
   <div id="measPanel"><b>Measurements</b>
-    <label style="float:right;font-weight:normal"><input id="allPages" type="checkbox"> all pages</label>
+    <button id="exportCsv" style="float:right" title="download all measurements as CSV">export CSV</button>
+    <label style="float:right;font-weight:normal;margin-right:8px"><input id="allPages" type="checkbox"> all pages</label>
     <div id="measList">(none yet)</div></div>
 </div>
 <div id="status">loading wasm…</div>
@@ -95,9 +96,12 @@ let pdfDoc = null, pageNum = 1;
 // Scale is PER PAGE (§A2 ScaleState is page-scoped; a 74-page set mixes
 // scales per sheet). Page 0 = the synthetic demo, seeded at fpi 4.0.
 // A page with no entry has NO scale: tools guard until one is set.
-const pageScales = new Map([[0, 4.0]]);
+// Each entry is {fpi, source} — source ∈ preset|calibrated|param|synthetic
+// (provenance flows to CSV export, §A2).
+const pageScales = new Map([[0, { fpi: 4.0, source: 'synthetic' }]]);
 const currentPage = () => (pdfDoc ? pageNum : 0);
-const scaleOf = page => pageScales.get(page) ?? null;
+const scaleOf = page => pageScales.get(page)?.fpi ?? null;
+const scaleSourceOf = page => pageScales.get(page)?.source ?? null;
 const curFpi = () => scaleOf(currentPage()) ?? 4.0; // fallback for display math only
 let s = 10 / 18;            // canvas px per PDF point (synthetic: ppf 10 @ fpi 4)
 let cleanBitmap = null;     // clean render for overlay redraws
@@ -586,7 +590,7 @@ function revalueMeasurements() {
 /// cache invalidation. Deliberately NO renderPage() — the view must not
 /// move (invariant 5: values re-derive, geometry stays put).
 function applyScaleChange(newFpi, sourceLabel) {
-  pageScales.set(currentPage(), newFpi);
+  pageScales.set(currentPage(), { fpi: newFpi, source: sourceLabel });
   $('fpiLabel').textContent = `${newFpi.toFixed(4)} (${sourceLabel}, p${currentPage()})`;
   detCache = null;
   revalueMeasurements();
@@ -640,6 +644,38 @@ function renderMeasList() {
     row.append(name, value, origin, colour, del);
     list.append(row);
   }
+}
+
+const UNIT = { linear: 'LF', area: 'SF', count: 'EA' };
+
+/// One CSV cell: quote if it contains comma, quote, or newline; double
+/// internal quotes. Names are free text, so this is load-bearing.
+function csvCell(v) {
+  const s = String(v ?? '');
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/// CSV of every measurement across all pages, with §A2 provenance: an
+/// estimator must see which numbers a human drew (manual/snap) vs the
+/// engine detected (floodfill), and under which page scale.
+function buildCsv() {
+  const header = ['page', 'name', 'kind', 'quantity', 'unit',
+                  'origin', 'page_scale_fpi', 'scale_source'];
+  const rows = [header.join(',')];
+  for (const m of measurements) {
+    const fpiOf = scaleOf(m.page);          // blank for a count on an unscaled page
+    rows.push([
+      m.page,
+      csvCell(m.name),
+      m.kind,
+      m.value.toFixed(2),
+      UNIT[m.kind] ?? '',
+      m.origin,
+      fpiOf == null ? '' : fpiOf.toFixed(4),
+      csvCell(scaleSourceOf(m.page) ?? ''),
+    ].join(','));
+  }
+  return rows.join('\n') + '\n';
 }
 
 /// Swap a name span for an inline text input; Enter/blur commits, Esc
@@ -918,7 +954,7 @@ async function loadPdf(data, name) {
   pdfDoc = await pdfjs.getDocument({ data }).promise;
   // A new document: nothing from the old one survives.
   pageNum = 1; extractCache.clear(); detCache = null;
-  pageScales.clear(); pageScales.set(0, 4.0);
+  pageScales.clear(); pageScales.set(0, { fpi: 4.0, source: 'synthetic' });
   measurements = []; nextMeasId = 1;
   measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
   cancelTransients(null);
@@ -985,6 +1021,16 @@ $('maskRaster').addEventListener('change', render);
 $('maskVector').addEventListener('change', render);
 $('hideHatch').addEventListener('change', render);
 $('allPages').addEventListener('change', renderMeasList);
+$('exportCsv').addEventListener('click', () => {
+  if (!measurements.length) { say('no measurements to export'); return; }
+  const blob = new Blob([buildCsv()], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'takeoff.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  say(`exported ${measurements.length} measurement(s) to takeoff.csv`);
+});
 $('minWidth').addEventListener('input', () => {
   $('minWidthVal').textContent = minWidthPts().toFixed(2);
   render();
@@ -999,7 +1045,8 @@ window.__harness = {
   chainPreview: () => chainPreview,
   s: () => s,
   page: () => currentPage(),
-  pageScales: () => Object.fromEntries(pageScales),
+  pageScales: () => Object.fromEntries([...pageScales].map(([p, v]) => [p, v.fpi])),
+  buildCsv: () => buildCsv(),
   loadPdf,
 };
 
