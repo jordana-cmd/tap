@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use engine_core::detect::PixelMap;
-use engine_core::{distance, GrayRaster, Point, Scale};
+use engine_core::{distance, GrayRaster, Point, Scale, Segment};
 
 /// Assert |a − b| ≤ abs_tol + rel_tol × max(|a|, |b|).
 #[track_caller]
@@ -100,6 +100,77 @@ impl SynthPlan {
 
     pub fn map(&self, scale: Scale) -> PixelMap {
         PixelMap::new(Point::new(0.0, 0.0), scale, self.px_per_foot).unwrap()
+    }
+}
+
+/// Synthetic segment-set builder (vector twin of [`SynthPlan`]): segments
+/// drawn in FEET, stored in base units (PDF points) with explicit stroke
+/// widths in points. Door openings are expressed by emitting split wall
+/// segments (`wall_rect_ft` has no gaps; compose with `seg_ft`).
+pub struct SynthSegments {
+    width_ft: f64,
+    height_ft: f64,
+    px_per_foot: f64,
+    scale: Scale,
+    segments: Vec<Segment>,
+}
+
+impl SynthSegments {
+    pub fn new(width_ft: f64, height_ft: f64, scale: Scale, px_per_foot: f64) -> SynthSegments {
+        SynthSegments {
+            width_ft,
+            height_ft,
+            px_per_foot,
+            scale,
+            segments: Vec::new(),
+        }
+    }
+
+    /// Feet → base units (PDF points): `ft × 72 / fpi`.
+    fn pts(&self, ft: f64) -> f64 {
+        ft * 72.0 / self.scale.fpi()
+    }
+
+    /// One stroked segment from (x1,y1) to (x2,y2) in feet, stroke width in
+    /// POINTS (the unit extraction reports).
+    pub fn seg_ft(&mut self, x1: f64, y1: f64, x2: f64, y2: f64, stroke_pts: f64) {
+        let s = Segment {
+            p1: Point::new(self.pts(x1), self.pts(y1)),
+            p2: Point::new(self.pts(x2), self.pts(y2)),
+            width: stroke_pts,
+        };
+        self.segments.push(s);
+    }
+
+    /// Four wall segments outlining the rectangle [x, x+w] × [y, y+h] ft.
+    pub fn wall_rect_ft(&mut self, x: f64, y: f64, w: f64, h: f64, stroke_pts: f64) {
+        self.seg_ft(x, y, x + w, y, stroke_pts);
+        self.seg_ft(x + w, y, x + w, y + h, stroke_pts);
+        self.seg_ft(x + w, y + h, x, y + h, stroke_pts);
+        self.seg_ft(x, y + h, x, y, stroke_pts);
+    }
+
+    pub fn segments(&self) -> Vec<Segment> {
+        self.segments.clone()
+    }
+
+    pub fn map(&self) -> PixelMap {
+        PixelMap::new(Point::new(0.0, 0.0), self.scale, self.px_per_foot).unwrap()
+    }
+
+    /// Pixel grid covering the declared sheet extent.
+    pub fn grid(&self) -> (u32, u32) {
+        (
+            (self.width_ft * self.px_per_foot).round() as u32,
+            (self.height_ft * self.px_per_foot).round() as u32,
+        )
+    }
+
+    pub fn seed_at_ft(&self, x: f64, y: f64) -> (u32, u32) {
+        (
+            (x * self.px_per_foot).round() as u32,
+            (y * self.px_per_foot).round() as u32,
+        )
     }
 }
 

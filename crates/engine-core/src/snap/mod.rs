@@ -128,6 +128,13 @@ impl SegmentIndex {
         self.segments.get(id.0 as usize).copied()
     }
 
+    /// All segments in id order (the Vec passed to [`SegmentIndex::build`]).
+    /// Lets one owned copy serve the histogram, the wall-mask rasterizer,
+    /// and overlay filtering without duplicating ~10⁵ segments.
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
     /// Snap `cursor` to nearby geometry within `tolerance` BASE UNITS.
     ///
     /// engine-core has no zoom concept: the addendum's screen-space

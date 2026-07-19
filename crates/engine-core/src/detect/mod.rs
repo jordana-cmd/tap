@@ -16,12 +16,16 @@ mod flood;
 mod mask_ops;
 mod pixelmap;
 mod raster;
+mod wallmask;
 
 pub use contour::trace_contour;
 pub use flood::flood_fill;
 pub use mask_ops::{close_region, dilate, door_gap_radius_px, threshold_mask};
 pub use pixelmap::{choose_px_per_foot, PixelMap, TARGET_PX_PER_FOOT};
 pub use raster::{GrayRaster, Mask, RasterError, MAX_RASTER_PIXELS};
+pub use wallmask::{
+    default_min_width, passes_width_filter, rasterize_wall_mask, width_histogram, WidthBucket,
+};
 
 use crate::geom::{polygon_area, polygon_perimeter, simplify, Point};
 
@@ -94,7 +98,8 @@ pub struct RoomCandidate {
     pub contour: Vec<Point>,
 }
 
-/// Level 1 — click-to-room (addendum §A3.1 with the closing refinement).
+/// Level 1 — click-to-room (addendum §A3.1 with the closing refinement),
+/// raster mask source (luminance threshold): the fallback path for scans.
 pub fn detect_room(
     raster: &GrayRaster,
     map: &PixelMap,
@@ -102,10 +107,24 @@ pub fn detect_room(
     params: &DetectParams,
 ) -> Result<RoomDetection, DetectError> {
     let walls = threshold_mask(raster, params.wall_threshold);
+    detect_room_from_mask(&walls, map, seed_px, params)
+}
+
+/// Level 1 from a pre-built wall mask (addendum §A3.1 mask-source revision):
+/// the primary path for CAD PDFs feeds a vector-filtered mask from
+/// [`rasterize_wall_mask`] here. Runs §A3.1 steps 2–5 unchanged.
+/// `params.wall_threshold` is unused on this path — the mask is already
+/// binary by construction.
+pub fn detect_room_from_mask(
+    walls: &Mask,
+    map: &PixelMap,
+    seed_px: (u32, u32),
+    params: &DetectParams,
+) -> Result<RoomDetection, DetectError> {
     let radius = door_gap_radius_px(params.door_gap_ft, map.px_per_foot());
-    let dilated = dilate(&walls, radius);
+    let dilated = dilate(walls, radius);
     let fill = flood_fill(&dilated, seed_px)?;
-    let closed = close_region(&fill, &walls, radius);
+    let closed = close_region(&fill, walls, radius);
     let (contour, area_sf, perimeter_lf) = measure_region(&closed, (0, 0), map, params);
     Ok(RoomDetection {
         contour,
