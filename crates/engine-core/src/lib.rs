@@ -8,6 +8,7 @@
 //! This crate contains zero browser APIs (final spec §0 Rule 1). All platform
 //! I/O goes through the traits in [`traits`], implemented by `engine-web`.
 
+pub mod assembly;
 pub mod detect;
 pub mod error;
 pub mod geom;
@@ -16,6 +17,7 @@ pub mod snap;
 pub mod traits;
 pub mod units;
 
+pub use assembly::ExprError;
 pub use detect::{
     classify_hatch, default_min_width, detect_candidates, detect_room, detect_room_from_mask,
     passes_width_filter, rasterize_wall_mask, width_histogram, DetectError, DetectParams,
