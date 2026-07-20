@@ -27,7 +27,10 @@ pub use detect::{
     GrayRaster, HatchParams, Mask, PixelMap, RoomCandidate, RoomDetection, WidthBucket,
 };
 pub use error::ScaleError;
-pub use geom::{distance, polygon_area, polygon_perimeter, polyline_length, simplify, Point};
+pub use geom::{
+    distance, point_in_polygon, polygon_area, polygon_contains_polygon, polygon_perimeter,
+    polyline_length, simplify, Point,
+};
 pub use scale::{
     calibrate_two_point, Scale, ScalePreset, POINTS_PER_INCH, POINTS_SQ_PER_SQ_INCH, SCALE_PRESETS,
 };

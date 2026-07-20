@@ -173,7 +173,8 @@
 
 <script type="module">
 import init, { detect_room, measure_polyline, measure_polygon_area, calibrate_two_point,
-  scale_presets_json, PageGeometry, apply_assembly, eval_formula, seed_assemblies_json }
+  scale_presets_json, PageGeometry, apply_assembly, eval_formula, seed_assemblies_json,
+  polygon_contains_flat }
   from './pkg/engine_web.js';
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
 import { extractSegments } from './extract.js';

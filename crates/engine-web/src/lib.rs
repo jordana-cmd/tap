@@ -18,8 +18,8 @@
 use engine_core::assembly::{AssemblyError, ExprError};
 use engine_core::detect::{DetectParams, GrayRaster, PixelMap, RasterError};
 use engine_core::{
-    polygon_area, polyline_length, DetectError, Point, RoomDetection, Scale, ScaleError, Segment,
-    SegmentIndex, SnapKind,
+    polygon_area, polygon_contains_polygon, polyline_length, DetectError, Point, RoomDetection,
+    Scale, ScaleError, Segment, SegmentIndex, SnapKind,
 };
 use wasm_bindgen::prelude::*;
 
@@ -139,6 +139,19 @@ fn polyline_feet(points: &[f64], fpi: f64) -> Result<f64, WebError> {
 fn polygon_square_feet(points: &[f64], fpi: f64) -> Result<f64, WebError> {
     let scale = Scale::from_fpi(fpi)?;
     Ok(scale.points_sq_to_square_feet(polygon_area(&to_points(points))))
+}
+
+/// Does `outer` fully contain `inner`? Scale-independent (page-point
+/// geometry), so no `fpi`. Errors `BAD_SEGMENTS` if either ring has fewer
+/// than 3 points — a polygon is required on both sides.
+fn polygon_contains(outer: &[f64], inner: &[f64]) -> Result<bool, WebError> {
+    let (o, i) = (to_points(outer), to_points(inner));
+    if o.len() < 3 || i.len() < 3 {
+        return Err(WebError::BadSegments {
+            len: o.len().min(i.len()),
+        });
+    }
+    Ok(polygon_contains_polygon(&o, &i))
 }
 
 #[derive(Debug)]
@@ -532,6 +545,15 @@ pub fn measure_polygon_area(points: &[f64], fpi: f64) -> Result<f64, JsValue> {
     polygon_square_feet(points, fpi).map_err(to_js)
 }
 
+/// True iff polygon `outer` fully contains polygon `inner` (both flat
+/// [x,y,…] base-unit rings). Scale-independent — used to attach a deduction
+/// to the area it sits inside. Throws `{ code: "BAD_SEGMENTS" }` if either
+/// ring has fewer than 3 points.
+#[wasm_bindgen]
+pub fn polygon_contains_flat(outer: &[f64], inner: &[f64]) -> Result<bool, JsValue> {
+    polygon_contains(outer, inner).map_err(to_js)
+}
+
 /// Two-point calibration: the span (x1,y1)–(x2,y2) in BASE UNITS covers
 /// `known_feet` real feet; returns the derived fpi. Throws
 /// `{ code: "INVALID_CALIBRATION" | "INVALID_SCALE", message }`.
@@ -903,6 +925,22 @@ mod tests {
         assert_eq!(
             polyline_feet(&[0.0, 0.0, 72.0, 0.0, 99.0], 4.0).unwrap(),
             4.0
+        );
+    }
+
+    #[test]
+    fn polygon_contains_flat_and_error() {
+        let outer = [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0];
+        let inside = [3.0, 3.0, 7.0, 3.0, 7.0, 7.0, 3.0, 7.0];
+        let straddle = [7.0, 3.0, 13.0, 3.0, 13.0, 7.0, 7.0, 7.0];
+        assert!(polygon_contains(&outer, &inside).unwrap());
+        assert!(!polygon_contains(&outer, &straddle).unwrap());
+        // Fewer than 3 points on either side → BAD_SEGMENTS.
+        assert_eq!(
+            polygon_contains(&outer, &[1.0, 1.0, 2.0, 2.0])
+                .unwrap_err()
+                .code(),
+            "BAD_SEGMENTS"
         );
     }
 
