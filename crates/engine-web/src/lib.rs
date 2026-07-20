@@ -529,10 +529,13 @@ fn eval_formula_core(formula: &str, vars_json: &str) -> Result<f64, WebError> {
 }
 
 fn seed_assemblies() -> String {
-    let seeds = [
+    // Two synthetic examples first (their ids/order back many harness tests),
+    // then the real MCFC catalog (systems + add-ons + job consumables).
+    let mut seeds = vec![
         engine_core::assembly::seeds::commercial_flooring(),
         engine_core::assembly::seeds::epoxy_coating(),
     ];
+    seeds.extend(engine_core::assembly::seeds::mcfc_catalog());
     serde_json::to_string(&seeds).expect("seed assemblies serialize")
 }
 
@@ -905,12 +908,15 @@ mod tests {
     #[test]
     fn seed_assemblies_json_round_trips() {
         let json = seed_assemblies();
-        // Both seeds deserialize back into engine-core Assemblies.
+        // Seeds deserialize back into engine-core Assemblies: the two synthetic
+        // examples first (order relied on below), then the MCFC catalog.
         let seeds: Vec<engine_core::assembly::Assembly> = serde_json::from_str(&json).unwrap();
-        assert_eq!(seeds.len(), 2);
+        assert_eq!(seeds.len(), 2 + 7 + 6 + 1); // synthetic + systems + add-ons + consumables
         assert_eq!(seeds[0].name, "Commercial Flooring");
         assert_eq!(seeds[1].name, "Epoxy Coating");
-        // And each one applies cleanly to an area.
+        assert!(seeds.iter().any(|s| s.name == "Epoxy + High Wear Urethane"));
+        assert!(seeds.iter().any(|s| s.name == "Job Consumables"));
+        // Every area seed applies cleanly; the caulk add-on is linear.
         let dj = r#"{"kind":"area","area_sf":1000,"perimeter_lf":130}"#;
         assert!(apply_assembly_core(&serde_json::to_string(&seeds[0]).unwrap(), dj, "{}").is_ok());
         assert!(apply_assembly_core(&serde_json::to_string(&seeds[1]).unwrap(), dj, "{}").is_ok());
