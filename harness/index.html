@@ -2193,7 +2193,7 @@ function csvCell(v) {
 /// parent. All four extra columns are blank for a plain area, so existing
 /// consumers are unaffected.
 function buildCsv() {
-  const header = ['page', 'name', 'kind', 'quantity', 'unit',
+  const header = ['scope', 'page', 'name', 'kind', 'quantity', 'unit',
                   'origin', 'page_scale_fpi', 'scale_source',
                   'gross_quantity', 'deduct_quantity', 'net_quantity', 'parent'];
   const rows = [header.join(',')];
@@ -2209,7 +2209,10 @@ function buildCsv() {
       const p = measurements.find(x => x.id === m.parentId);
       parent = p ? p.name : '(unassigned)';
     }
+    // A deduct's scope follows its parent (it nests under it); else its own.
+    const scopeM = m.kind === 'deduct' ? (measurements.find(x => x.id === m.parentId) ?? m) : m;
     rows.push([
+      csvCell(scopeLabel(scopeM)),
       m.page,
       csvCell(m.name),
       m.kind,
@@ -2224,6 +2227,15 @@ function buildCsv() {
   return rows.join('\n') + '\n';
 }
 
+/// A measurement's bid-scope label — "Base Bid" or its alternate's name.
+function scopeLabel(m) {
+  if (m.scope === 'alternate') {
+    const g = alternateGroups.find(x => x.id === m.alternateGroupId);
+    if (g) return g.name;
+  }
+  return 'Base Bid';
+}
+
 /// Consolidated supplier order sheet: every measurement carrying an assembly
 /// has its BOM re-derived (invariant 5 — never stored) and rolled up by
 /// (part_name, unit), summing the per-measurement FINAL quantities (each room
@@ -2232,18 +2244,19 @@ function buildCsv() {
 /// cannot be quantified (no page scale, or its assembly left the library) is
 /// skipped and its names counted so the caller can surface the gap.
 function buildMaterialList() {
-  const roll = new Map(); // "category cond part unit" -> agg
+  const roll = new Map(); // "scope category cond part unit" -> agg
   const skipped = [];
   for (const m of measurements) {
     if (m.kind === 'deduct' || !effectiveStack(m).length) continue;
-    const res = computeStackedBom(m); // materials (per assembly) + auto consumables
+    const res = computeStackedBom(m);
     if (!res.ok) skipped.push(m.name);
     const cond = condOf(m)?.name ?? '(unassigned)';
+    const scope = scopeLabel(m);
     const rollLines = (lines, category) => {
       for (const li of lines) {
-        const key = `${category} ${cond} ${li.part_name} ${li.unit}`;
+        const key = `${scope} ${category} ${cond} ${li.part_name} ${li.unit}`;
         const agg = roll.get(key)
-          ?? { category, cond, part: li.part_name, unit: li.unit, unit_cost: li.unit_cost, total: 0, ext: 0, names: [] };
+          ?? { scope, category, cond, part: li.part_name, unit: li.unit, unit_cost: li.unit_cost, total: 0, ext: 0, names: [] };
         agg.total += li.final_quantity;
         agg.ext += li.extended_cost;
         if (!agg.names.includes(m.name)) agg.names.push(m.name);
@@ -2253,21 +2266,36 @@ function buildMaterialList() {
     for (const g of res.groups) if (g.bom) rollLines(g.bom.line_items, 'material');
     if (res.consumables) rollLines(res.consumables.line_items, 'consumable');
   }
-  const rows = [['category', 'condition', 'part', 'unit', 'total_quantity', 'unit_cost', 'extended_cost', 'measurements'].join(',')];
-  const order = { material: 0, consumable: 1 };
+  // Scope order: Base Bid first, then alternates in group order.
+  const scopeOrder = ['Base Bid', ...alternateGroups.map(g => g.name)];
+  const scopeRank = s2 => { const i = scopeOrder.indexOf(s2); return i < 0 ? scopeOrder.length : i; };
+  const catRank = { material: 0, consumable: 1 };
   const sorted = [...roll.values()].sort((a, b) =>
-    (order[a.category] - order[b.category]) || a.cond.localeCompare(b.cond)
-    || a.part.localeCompare(b.part) || a.unit.localeCompare(b.unit));
-  let matTotal = 0, consTotal = 0;
+    scopeRank(a.scope) - scopeRank(b.scope) || catRank[a.category] - catRank[b.category]
+    || a.cond.localeCompare(b.cond) || a.part.localeCompare(b.part) || a.unit.localeCompare(b.unit));
+  // Per-scope totals — an alternate's materials NEVER fold into the base bid.
+  const byScope = new Map(); // scope -> { materials, consumables }
   for (const r of sorted) {
-    if (r.category === 'material') matTotal += r.ext; else consTotal += r.ext;
-    rows.push([r.category, csvCell(r.cond), csvCell(r.part), csvCell(r.unit), niceNum(r.total),
-               r.unit_cost.toFixed(2), r.ext.toFixed(2), csvCell(r.names.join('; '))].join(','));
+    const b = byScope.get(r.scope) ?? { materials: 0, consumables: 0 };
+    if (r.category === 'material') b.materials += r.ext; else b.consumables += r.ext;
+    byScope.set(r.scope, b);
   }
-  // Separate material and consumable grand totals (materials only — phase 1/2).
-  rows.push(['', '', '', '', '', '', matTotal.toFixed(2), 'TOTAL MATERIALS'].join(','));
-  rows.push(['', '', '', '', '', '', consTotal.toFixed(2), 'TOTAL CONSUMABLES'].join(','));
-  return { csv: rows.join('\n') + '\n', lineCount: sorted.length, materialsTotal: matTotal, consumablesTotal: consTotal, skipped };
+  const rows = [['scope', 'category', 'condition', 'part', 'unit', 'total_quantity', 'unit_cost', 'extended_cost', 'measurements'].join(',')];
+  const emitScopeTotals = sc => {
+    const t = byScope.get(sc) ?? { materials: 0, consumables: 0 };
+    rows.push([csvCell(sc), '', '', '', '', '', '', t.materials.toFixed(2), 'TOTAL MATERIALS'].join(','));
+    rows.push([csvCell(sc), '', '', '', '', '', '', t.consumables.toFixed(2), 'TOTAL CONSUMABLES'].join(','));
+  };
+  let curScope = null;
+  for (const r of sorted) {
+    if (curScope !== null && r.scope !== curScope) emitScopeTotals(curScope);
+    curScope = r.scope;
+    rows.push([csvCell(r.scope), r.category, csvCell(r.cond), csvCell(r.part), csvCell(r.unit),
+               niceNum(r.total), r.unit_cost.toFixed(2), r.ext.toFixed(2), csvCell(r.names.join('; '))].join(','));
+  }
+  if (curScope !== null) emitScopeTotals(curScope);
+  const base = byScope.get('Base Bid') ?? { materials: 0, consumables: 0 };
+  return { csv: rows.join('\n') + '\n', lineCount: sorted.length, materialsTotal: base.materials, consumablesTotal: base.consumables, byScope: Object.fromEntries(byScope), skipped };
 }
 
 /// Swap a name span for an inline text input; Enter/blur commits, Esc

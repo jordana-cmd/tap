@@ -406,17 +406,19 @@ await run('CSV export: rows with §A2 provenance for area + line + count', async
   const csv = await page.evaluate(() => window.__harness.buildCsv());
   const lines = csv.trim().split('\n');
   assert.equal(lines[0],
-    'page,name,kind,quantity,unit,origin,page_scale_fpi,scale_source,'
+    'scope,page,name,kind,quantity,unit,origin,page_scale_fpi,scale_source,'
     + 'gross_quantity,deduct_quantity,net_quantity,parent', 'header');
   assert.equal(lines.length, 4, 'header + 3 data rows');
   const cols = lines.slice(1).map(l => l.split(','));
-  const area = cols.find(c => c[2] === 'area');
-  const line = cols.find(c => c[2] === 'linear');
-  const count = cols.find(c => c[2] === 'count');
+  // Column 0 is scope (all Base Bid); kind is now column 3.
+  const area = cols.find(c => c[3] === 'area');
+  const line = cols.find(c => c[3] === 'linear');
+  const count = cols.find(c => c[3] === 'count');
   assert.ok(area && line && count, 'one row per kind');
-  assert.equal(area[4], 'SF'); assert.equal(area[6], '7.2000'); assert.equal(area[7], 'param');
-  assert.equal(line[4], 'LF'); assert.equal(line[5], 'manual');
-  assert.equal(count[3], '3.00'); assert.equal(count[4], 'EA'); assert.equal(count[6], '7.2000');
+  assert.ok(cols.every(c => c[0] === 'Base Bid'), 'every row tagged Base Bid');
+  assert.equal(area[5], 'SF'); assert.equal(area[7], '7.2000'); assert.equal(area[8], 'param');
+  assert.equal(line[5], 'LF'); assert.equal(line[6], 'manual');
+  assert.equal(count[4], '3.00'); assert.equal(count[5], 'EA'); assert.equal(count[7], '7.2000');
 });
 
 await run('CSV quotes free-text names containing commas', async page => {
@@ -799,14 +801,14 @@ await run('material list: rolls up line items across measurements by (part, unit
   await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), proj);
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const lines = out.csv.trim().split('\n');
-  assert.equal(lines[0], 'category,condition,part,unit,total_quantity,unit_cost,extended_cost,measurements', 'header');
+  assert.equal(lines[0], 'scope,category,condition,part,unit,total_quantity,unit_cost,extended_cost,measurements', 'header');
   // No condition on these rooms → "(unassigned)" condition column.
   // Adhesive: ceil(2475/150)=17 GAL per room, summed across both rooms = 34.
   const adhesive = lines.filter(l => l.includes(',Adhesive,'));
   assert.equal(adhesive.length, 1, 'exactly one Adhesive/GAL row (rolled up, not duplicated)');
-  assert.equal(adhesive[0], 'material,(unassigned),Adhesive,GAL,34,0.00,0.00,Room 1; Room 2', `adhesive rollup: ${adhesive[0]}`);
+  assert.equal(adhesive[0], 'Base Bid,material,(unassigned),Adhesive,GAL,34,0.00,0.00,Room 1; Room 2', `adhesive rollup: ${adhesive[0]}`);
   // Boxes: 137 each → 274. Rows are sorted by condition then part.
-  assert.ok(lines.includes('material,(unassigned),Flooring boxes,BOX,274,0.00,0.00,Room 1; Room 2'), 'boxes summed to 274');
+  assert.ok(lines.includes('Base Bid,material,(unassigned),Flooring boxes,BOX,274,0.00,0.00,Room 1; Room 2'), 'boxes summed to 274');
   assert.equal(out.skipped.length, 0, 'both rooms quantifiable');
 });
 
@@ -982,7 +984,7 @@ await run('deduct: the material list inherits net (rolls up from the net BOM)', 
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const line = out.csv.trim().split('\n').find(l => l.includes(',Flooring material,'));
   // Net-based material quantity (1210), same as the BOM — no separate rollup path.
-  assert.equal(line, 'material,(unassigned),Flooring material,SF,1210,0.00,0.00,Room 1', `material list uses net: ${line}`);
+  assert.equal(line, 'Base Bid,material,(unassigned),Flooring material,SF,1210,0.00,0.00,Room 1', `material list uses net: ${line}`);
 });
 
 await run('deduct: takeoff.csv breaks out gross/deduct/net and names the deduct’s parent', async page => {
@@ -993,11 +995,12 @@ await run('deduct: takeoff.csv breaks out gross/deduct/net and names the deduct�
   ]));
   const lines = (await page.evaluate(() => window.__harness.buildCsv())).trim().split('\n');
   const cols = lines.slice(1).map(l => l.split(','));
-  const idx = { gross: 8, deduct: 9, net: 10, parent: 11 };
-  const room = cols.find(c => c[2] === 'area');
-  const ded = cols.find(c => c[2] === 'deduct');
+  // Columns shift +1 for the leading scope column.
+  const idx = { gross: 9, deduct: 10, net: 11, parent: 12 };
+  const room = cols.find(c => c[3] === 'area');
+  const ded = cols.find(c => c[3] === 'deduct');
   // Room: quantity column carries net; gross/deduct/net broken out; no parent.
-  assert.equal(room[3], '1100.00', 'quantity column = net');
+  assert.equal(room[4], '1100.00', 'quantity column = net');
   assert.equal(room[idx.gross], '1200.00', 'gross_quantity');
   assert.equal(room[idx.deduct], '100.00', 'deduct_quantity');
   assert.equal(room[idx.net], '1100.00', 'net_quantity');
@@ -1005,9 +1008,9 @@ await run('deduct: takeoff.csv breaks out gross/deduct/net and names the deduct�
   // gross − deduct = net, internally consistent.
   assert.ok(Math.abs(Number(room[idx.gross]) - Number(room[idx.deduct]) - Number(room[idx.net])) < 1e-9);
   // Deduct row: names its parent, quantity = its own area, breakout blank.
-  assert.equal(ded[1], 'Column A', 'the deduct row is Column A');
+  assert.equal(ded[2], 'Column A', 'the deduct row is Column A');
   assert.equal(ded[idx.parent], 'Room 1', 'deduct names its parent room');
-  assert.equal(ded[3], '100.00', 'deduct quantity = its own SF');
+  assert.equal(ded[4], '100.00', 'deduct quantity = its own SF');
   assert.equal(ded[idx.gross] + ded[idx.deduct] + ded[idx.net], '', 'no gross/deduct/net on a deduct row');
 });
 
@@ -1204,17 +1207,18 @@ await run('condition: the material list separates products (per-condition rollup
   })));
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const lines = out.csv.trim().split('\n');
-  assert.equal(lines[0], 'category,condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
+  assert.equal(lines[0], 'scope,category,condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
   // Data rows (excluding the header and the TOTAL footers) each carry their
   // condition; Epoxy and Polish are separate. (Synthetic assemblies → no
   // consumables, so every data row is a material row.)
   const dataRows = lines.slice(1).filter(l => !l.endsWith('TOTAL MATERIALS') && !l.endsWith('TOTAL CONSUMABLES'));
-  assert.ok(dataRows.every(l => l.startsWith('material,Epoxy,') || l.startsWith('material,Polish,')),
+  // All Base Bid; each row carries its condition (col 2). Epoxy and Polish separate.
+  assert.ok(dataRows.every(l => l.startsWith('Base Bid,material,Epoxy,') || l.startsWith('Base Bid,material,Polish,')),
     'every row carries its condition');
-  assert.ok(lines.some(l => l.startsWith('material,Epoxy,Epoxy,GAL,')), `epoxy line present: ${lines.join(' | ')}`);
-  assert.ok(lines.some(l => l.startsWith('material,Polish,Flooring boxes,BOX,')), 'polish flooring line present');
+  assert.ok(lines.some(l => l.startsWith('Base Bid,material,Epoxy,Epoxy,GAL,')), `epoxy line present: ${lines.join(' | ')}`);
+  assert.ok(lines.some(l => l.startsWith('Base Bid,material,Polish,Flooring boxes,BOX,')), 'polish flooring line present');
   // No row mixes the two products.
-  assert.ok(!lines.some(l => l.startsWith('material,Epoxy,Flooring boxes')), 'epoxy has no flooring parts');
+  assert.ok(!lines.some(l => l.startsWith('Base Bid,material,Epoxy,Flooring boxes')), 'epoxy has no flooring parts');
 });
 
 // ---- pricing (phase 1): cost on the BOM ----
@@ -1279,12 +1283,12 @@ await run('pricing: material list export carries unit + extended cost and a gran
   await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const lines = out.csv.trim().split('\n');
-  assert.equal(lines[0], 'category,condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
+  assert.equal(lines[0], 'scope,category,condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
   const hw = lines.find(l => l.includes(',High Wear Urethane,'));
-  assert.ok(hw.startsWith('material,') && hw.includes(',159.60,766.08,'), `HW priced row: ${hw}`);
+  assert.ok(hw.startsWith('Base Bid,material,') && hw.includes(',159.60,766.08,'), `HW priced row: ${hw}`);
   // epoxy_hw has the coating profile → auto consumables split into their own
   // rows + a separate TOTAL CONSUMABLES footer.
-  assert.ok(lines.some(l => l.startsWith('consumable,')), 'consumable rows present (auto)');
+  assert.ok(lines.some(l => l.startsWith('Base Bid,consumable,')), 'consumable rows present (auto)');
   assert.ok(lines.some(l => l.endsWith('1180.80,TOTAL MATERIALS')), 'materials total footer');
   assert.ok(lines.some(l => l.endsWith('TOTAL CONSUMABLES')), 'consumables total footer');
   assert.ok(Math.abs(out.materialsTotal - 1180.8) < 1e-6, `materialsTotal ${out.materialsTotal}`);
@@ -1464,6 +1468,29 @@ await run('scope: reload restores scope + alternate groups', async page => {
   assert.equal(st.scope2.scope, 'alternate', 'measurement scope restored');
   assert.equal(st.scope2.alternateGroupId, st.groups[0].id, 'still in its group');
   assert.equal(st.totals.alternates.length, 1, 're-derived alternate total');
+});
+
+await run('scope export: material list + CSV break out by scope; an alternate never folds into base', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), twoRooms());
+  const gid = await page.evaluate(() => window.__harness.addAlternateGroup('Add bathroom'));
+  await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
+  const out = await page.evaluate(() => window.__harness.buildMaterialList());
+  const lines = out.csv.trim().split('\n');
+  assert.equal(lines[0], 'scope,category,condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
+  const dataRows = lines.slice(1).filter(l => !l.endsWith('TOTAL MATERIALS') && !l.endsWith('TOTAL CONSUMABLES'));
+  assert.ok(dataRows.some(l => l.startsWith('Base Bid,')), 'base rows present');
+  assert.ok(dataRows.some(l => l.startsWith('Add bathroom,')), 'alternate rows tagged by scope');
+  // Per-scope TOTAL footers — the alternate's materials are their own block.
+  assert.ok(lines.some(l => l.startsWith('Base Bid,') && l.endsWith('TOTAL MATERIALS')), 'base materials total');
+  assert.ok(lines.some(l => l.startsWith('Add bathroom,') && l.endsWith('TOTAL MATERIALS')), 'alternate materials total');
+  assert.ok(out.byScope['Base Bid'].materials > 0 && out.byScope['Add bathroom'].materials > 0,
+    'each scope has its own materials total');
+  // out.materialsTotal is the BASE bid only — the alternate never folds in.
+  assert.ok(Math.abs(out.materialsTotal - out.byScope['Base Bid'].materials) < 1e-9, 'materialsTotal = base bid');
+  // takeoff.csv: the bathroom row carries the alternate scope.
+  const csv = (await page.evaluate(() => window.__harness.buildCsv())).trim().split('\n');
+  const bath = csv.slice(1).map(l => l.split(',')).find(c => c[2] === 'Bathroom');
+  assert.equal(bath[0], 'Add bathroom', 'CSV row scoped to the alternate');
 });
 
 await run('advanced: detection tuning is collapsed by default and holds the knobs + stats', async page => {
