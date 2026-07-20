@@ -35,6 +35,9 @@ origin: 'manual' | 'snap' | 'floodfill' | 'ai'     // provenance, immutable afte
 confirmedBy?: { userId, at }                        // required before origin:'ai'|'floodfill'
                                                     // items count toward posted quantities
 parentId?: measurementId                            // deductions reference their parent area
+conditionId?: conditionId                           // takeoff grouping; null = unassigned.
+                                                    // colour + assembly DERIVE from the condition
+                                                    // (a per-measurement value overrides it)
 deleted?: { by: userId, at: timestamp }             // soft-delete; measurements are NEVER
                                                     // removed as map entries — see §9 CRDT row
 ```
@@ -50,6 +53,24 @@ verification?: { method: 'two-point' | 'auto', samples: [{printedText, printedFt
 ```
 
 **Provenance flows to every export** (CSV/XLSX/PDF deliverable): an `origin` column per line item and per-page scale source + verification status on the summary sheet. Provenance in the deliverable is what makes AI-assisted numbers defensible to a client or a GC.
+
+Add a `Condition` collection to the document (a top-level map, sibling to the `Measurement` map):
+
+```
+Condition {
+  id
+  name
+  color                                             // document state; measurements inherit it
+  kind: 'area' | 'linear' | 'count'                 // only measurements of this kind may join
+  assemblyId?                                        // references the assembly library (§ assemblies);
+                                                     // the condition's default assembly for its members
+  deleted?: { by: userId, at: timestamp }           // soft-delete, same discipline as Measurement —
+                                                     // deleting a condition unassigns its members,
+                                                     // it NEVER deletes measurements
+}
+```
+
+> **Why Condition:** it is the industry model for taking off multiple products from one print — the estimator defines a condition per product (e.g. *Epoxy*, area; *Polish*, area) and every trace joins the **active** condition, inheriting its colour (so the drawing reads as a colour-coded takeoff) and its assembly (so the BOM is right by default). `conditionId` is the grouping key for the measurement list (per-condition subtotals) and for the material list (per-condition rollup, so epoxy vs polish read separately). Colour and assembly are **derived** from the condition — a per-measurement `color`/`assemblyId` is an override, not the norm — so changing a condition re-colours and re-costs its members without touching stored measurement geometry (invariant 5 holds: quantities stay derived). `conditionId` is nullable and additive: a measurement without one is *unassigned*, and pre-Condition documents load unchanged.
 
 ---
 
