@@ -57,8 +57,22 @@
   .bomOv .ovRow label { min-width: 12em; color: #57534e; }
   .bomOv input { width: 6em; font-size: 0.78rem; }
   .bomOv .ovHdr { color: #78716c; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
-  #projectPanel, #assemblyPanel { background: #fff; border: 1px solid #d6d3d1; padding: 8px;
-                  margin: 6px 0; max-width: 720px; font-size: 0.85rem; }
+  #projectPanel, #assemblyPanel, #conditionPanel { background: #fff; border: 1px solid #d6d3d1;
+                  padding: 8px; margin: 6px 0; max-width: 720px; font-size: 0.85rem; }
+  .condSwatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px;
+                border: 1px solid #78716c; vertical-align: middle; }
+  #activeCondChip { font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
+  .condRow { display: flex; align-items: center; gap: 8px; padding: 4px;
+             border-bottom: 1px solid #e7e5e4; flex-wrap: wrap; }
+  .condRow .condName { width: 9em; }
+  .condRow .condColor { width: 24px; height: 22px; padding: 0; border: 1px solid #78716c; border-radius: 3px; }
+  .condRow .condActive { display: inline-flex; align-items: center; gap: 3px; }
+  .measGroup { margin-top: 6px; }
+  .measGroupHdr { display: flex; align-items: center; gap: 6px; font-weight: 600;
+                  padding: 3px 4px; background: #f5f5f4; border-radius: 3px; position: sticky; top: 0; }
+  .measGroupHdr .gSub { font-weight: normal; color: #57534e; font-size: 0.8rem; margin-left: auto; }
+  .measColor.overridden { box-shadow: 0 0 0 2px #f59e0b; }
+  .measRow .colReset { color: #78716c; font-size: 0.72rem; }
   .asmRow { display: flex; align-items: baseline; gap: 10px; padding: 4px;
             border-bottom: 1px solid #e7e5e4; }
   .asmRow .asmName { font-weight: 500; flex: 1 1 auto; }
@@ -109,6 +123,10 @@
     <button class="tool" data-tool="wall">wall</button>
     <button class="tool" data-tool="count">count</button>
   </span>
+  <span id="activeCondChip" title="active condition — every new trace joins it and inherits its colour + assembly">
+    cond: <span id="activeCondSwatch" class="condSwatch"></span>
+    <select id="activeCondSel"></select>
+  </span>
   <button id="calibBtn">Calibrate (2 clicks)</button>
   <span id="calibEntry" hidden>feet: <input id="calibFeet" type="number" min="0.1" step="0.5" value="10">
     <button id="calibApply">Apply</button></span>
@@ -116,6 +134,7 @@
   <span id="saveState" title="autosave status">—</span>
   <button id="projectsBtn" title="saved projects">Projects</button>
   <button id="assembliesBtn" title="assembly library">Assemblies</button>
+  <button id="conditionsBtn" title="conditions (takeoff line-item types)">Conditions</button>
 </div>
 <div id="projectPanel" hidden>
   <div id="projectQuota" class="origin"></div>
@@ -125,6 +144,12 @@
   <b>Assembly library</b>
   <button id="newAssembly" style="float:right">+ New assembly</button>
   <div id="assemblyList"></div>
+</div>
+<div id="conditionPanel" hidden>
+  <b>Conditions</b>
+  <button id="newCondition" style="float:right">+ New condition</button>
+  <div id="conditionHint" class="origin">Define a condition per product; pick it active before measuring — traces inherit its colour + assembly.</div>
+  <div id="conditionList"></div>
 </div>
 <div id="assemblyEditor" hidden>
   <div class="editorBox">
@@ -238,10 +263,22 @@ let draft = null;           // {verts:[{x,y,snapped}], anySnap} while line/area 
 let countDraft = [];        // in-progress count markers, base units (count tool)
 let chainPreview = null;    // parsed chain_json result awaiting commit
 let hover = null;           // {x, y, snap} last cursor position (base units)
-let measurements = [];      // {id, kind, name, value, valueText, origin, geometry}
+let measurements = [];      // {id, kind, name, value, valueText, origin, geometry, conditionId}
 let hoverMeas = null;       // measurement id emphasized from the list panel
 let measSeq = { Line: 0, Area: 0, Deduct: 0, 'Wall run': 0, Room: 0, Count: 0 };
 let nextMeasId = 1;
+
+// ---- conditions (§A2): per-project takeoff line-item types. A measurement
+// inherits its condition's colour + assembly (a per-measurement value
+// overrides). Stored in the project record; null conditionId = unassigned. ----
+let conditions = [];        // {id, name, color, kind:'area'|'linear'|'count', assemblyId}
+let activeConditionId = null;
+let nextCondId = 1;
+const condOf = m => conditions.find(c => c.id === m.conditionId) ?? null;
+/// Effective colour/assembly: per-measurement override first, else the
+/// condition's, else the harness default / none.
+const effColor = m => m.color ?? condOf(m)?.color ?? '#1e3a8a';
+const effAssemblyId = m => m.assemblyId ?? condOf(m)?.assemblyId ?? null;
 let lastClick = null;       // {t, cx, cy} — double-click debounce
 
 // ---- persistence (harness-only IndexedDB; see store.js / README) ----
@@ -521,7 +558,7 @@ function render() {
   for (const m of measurements) {
     if (m.page !== currentPage()) continue; // page-scoped rendering
     const hot = m.id === hoverMeas;
-    const col = m.color;
+    const col = effColor(m); // condition colour unless per-measurement override
     if (m.kind === 'count') {
       drawCountMarkers(m.geometry, col, hot);
       continue;
@@ -693,13 +730,17 @@ function applyCalibration(feet) {
 // ---- measurement list ----
 function addMeasurement(kind, family, value, valueText, origin, geometry, extra = {}) {
   measSeq[family] += 1;
+  // Join the active condition when its kind matches (deducts never join).
+  const active = conditions.find(c => c.id === activeConditionId);
+  const conditionId = active && active.kind === kind ? active.id : null;
   measurements.push({
     id: nextMeasId++,
     kind,
     name: `${family} ${measSeq[family]}`,
     value, valueText, origin,
     page: currentPage(), // authoritative at commit time (§A2)
-    color: '#1e3a8a',    // user-recolourable (measurement editing)
+    color: null,         // no override → colour derives from the condition
+    conditionId,
     geometry: Float64Array.from(geometry),
     ...extra, // deduct: parentId, includePerimeter
   });
@@ -769,7 +810,8 @@ function toStored(m) {
     // inputs, not derived — net/gross recompute on load (invariant 5).
     parentId: m.parentId ?? null,
     includePerimeter: m.includePerimeter ? true : null,
-    color: m.color,
+    conditionId: m.conditionId ?? null,
+    color: m.color ?? null, // per-measurement colour OVERRIDE only (null = inherit)
     // Assembly attachment: the library id + per-application overrides ONLY.
     // The BOM is never stored — it is re-derived on load (invariant 5).
     assemblyId: m.assemblyId ?? null,
@@ -779,13 +821,14 @@ function toStored(m) {
 function fromStored(r) {
   return {
     id: r.id, kind: r.kind, name: r.label, origin: r.origin, page: r.page,
-    color: r.color ?? '#1e3a8a',
+    color: r.color ?? null, // null = inherit from condition (migration: old rows kept their colour)
     value: 0, valueText: '', // recomputed below
     geometry: Float64Array.from(r.geometry),
     assemblyId: r.assemblyId ?? null,
     overrides: r.overrides ?? {},
     parentId: r.parentId ?? null,
     includePerimeter: r.includePerimeter ?? false,
+    conditionId: r.conditionId ?? null,
   };
 }
 /// Rebuild derived quantity/text after restore or import (invariant 5).
@@ -823,19 +866,36 @@ function exportJson() {
     version: 1, sha: currentSha, name: currentName,
     pageScales: scalesToStored(),
     measurements: measurements.map(toStored),
+    conditions: conditions.map(condToStored),
+    activeConditionId,
     minWidthOverride,
   }, null, 2);
 }
 function importJson(str) {
   const data = JSON.parse(str);
   scalesFromStored(data.pageScales ?? []);
+  conditionsFromStored(data.conditions, data.activeConditionId);
   measurements = (data.measurements ?? []).map(fromStored);
   minWidthOverride = data.minWidthOverride ?? null;
   reindexAfterRestore();
   refreshScaleUI();
+  refreshConditionUI();
   renderMeasList();
   render();
   markDirty();
+}
+
+/// Conditions are all-input records (no derived values) — stored verbatim.
+function condToStored(c) {
+  return { id: c.id, name: c.name, color: c.color, kind: c.kind, assemblyId: c.assemblyId ?? null };
+}
+/// Restore conditions (migration: a project with no `conditions` key → []),
+/// clamp the active id to something that still exists, and advance the id
+/// counter past what was restored.
+function conditionsFromStored(arr, active) {
+  conditions = (arr ?? []).map(condToStored);
+  activeConditionId = conditions.some(c => c.id === active) ? active : null;
+  nextCondId = 1 + conditions.reduce((mx, c) => Math.max(mx, c.id), 0);
 }
 
 function projectRecord() {
@@ -843,6 +903,8 @@ function projectRecord() {
     sha: currentSha, name: currentName,
     pageScales: scalesToStored(),
     measurements: measurements.map(toStored),
+    conditions: conditions.map(condToStored),
+    activeConditionId,
     minWidthOverride, updatedAt: Date.now(),
   };
 }
@@ -1011,7 +1073,7 @@ function driversFor(m) {
 /// Recompute a measurement's BOM from geometry + scale + assembly + overrides.
 /// Pure derivation (invariant 5); returns { ok, bom } or { ok:false, ... }.
 function computeBom(m) {
-  const asm = assemblyCache.find(a => a.id === m.assemblyId);
+  const asm = assemblyCache.find(a => a.id === effAssemblyId(m));
   if (!asm) return { ok: false, reason: '(assembly not in library)' };
   const drivers = driversFor(m);
   if (!drivers) return { ok: false, reason: '(set a page scale to compute this BOM)' };
@@ -1332,6 +1394,106 @@ function refreshScaleUI() {
   $('preset').value = '';
 }
 
+// ---- conditions palette ----
+const COND_KINDS = ['area', 'linear', 'count'];
+const COND_PALETTE = ['#1d4ed8', '#dc2626', '#15803d', '#b45309', '#7c3aed', '#0891b2', '#db2777', '#4d7c0f'];
+function pickCondColor() {
+  const used = new Set(conditions.map(c => c.color));
+  return COND_PALETTE.find(c => !used.has(c)) ?? COND_PALETTE[conditions.length % COND_PALETTE.length];
+}
+
+/// Light refresh after any condition change: the active chip, the measurement
+/// list (colours/groups/assembly inheritance) and the canvas. Deliberately does
+/// NOT rebuild the condition panel, so editing a name/colour keeps focus.
+function refreshConditionUI() {
+  renderActiveCondChip();
+  renderMeasList();
+  render();
+}
+
+function renderActiveCondChip() {
+  const sel = $('activeCondSel');
+  sel.innerHTML = '<option value="">— unassigned —</option>'
+    + conditions.map(c => `<option value="${c.id}"${c.id === activeConditionId ? ' selected' : ''}>${c.name} (${c.kind})</option>`).join('');
+  const active = conditions.find(c => c.id === activeConditionId);
+  const sw = $('activeCondSwatch');
+  sw.style.background = active ? active.color : 'transparent';
+  sw.style.visibility = active ? 'visible' : 'hidden';
+}
+
+function setActiveCondition(id) {
+  activeConditionId = id;
+  refreshConditionUI();
+  if (!$('conditionPanel').hidden) renderConditionPanel(); // sync the radios
+  markDirty();
+}
+
+function addCondition(seed = {}) {
+  const c = {
+    id: nextCondId++,
+    name: seed.name || `Condition ${conditions.length + 1}`,
+    color: seed.color || pickCondColor(),
+    kind: seed.kind || 'area',
+    assemblyId: seed.assemblyId ?? null,
+  };
+  conditions.push(c);
+  if (activeConditionId == null) activeConditionId = c.id; // first one becomes active
+  refreshConditionUI(); renderConditionPanel(); markDirty();
+  return c;
+}
+
+function deleteCondition(id) {
+  conditions = conditions.filter(c => c.id !== id);
+  for (const m of measurements) if (m.conditionId === id) m.conditionId = null; // unassign, never delete
+  if (activeConditionId === id) activeConditionId = conditions[0]?.id ?? null;
+  refreshConditionUI(); renderConditionPanel(); markDirty();
+}
+
+function renderConditionPanel() {
+  const list = $('conditionList');
+  list.textContent = '';
+  if (!conditions.length) {
+    list.textContent = '(no conditions yet — add one to start a colour-coded takeoff)';
+    return;
+  }
+  for (const c of conditions) {
+    const row = document.createElement('div');
+    row.className = 'condRow';
+    const act = document.createElement('label'); act.className = 'condActive';
+    const radio = document.createElement('input');
+    radio.type = 'radio'; radio.name = 'activeCond'; radio.checked = c.id === activeConditionId;
+    radio.addEventListener('change', () => setActiveCondition(c.id));
+    act.append(radio, document.createTextNode('active'));
+    const color = document.createElement('input');
+    color.type = 'color'; color.className = 'condColor'; color.value = c.color;
+    color.addEventListener('input', () => { c.color = color.value; refreshConditionUI(); markDirty(); });
+    const name = document.createElement('input');
+    name.className = 'condName'; name.value = c.name;
+    name.addEventListener('input', () => { c.name = name.value; refreshConditionUI(); markDirty(); });
+    const kind = document.createElement('select');
+    kind.innerHTML = COND_KINDS.map(k => `<option${k === c.kind ? ' selected' : ''}>${k}</option>`).join('');
+    kind.addEventListener('change', () => {
+      c.kind = kind.value;
+      if (c.assemblyId && !assembliesFor(c.kind).some(a => a.id === c.assemblyId)) c.assemblyId = null;
+      refreshConditionUI(); renderConditionPanel(); markDirty();
+    });
+    const asm = document.createElement('select');
+    const opts = assembliesFor(c.kind);
+    asm.innerHTML = '<option value="">— no assembly —</option>'
+      + opts.map(a => `<option value="${a.id}"${a.id === c.assemblyId ? ' selected' : ''}>${a.name}</option>`).join('');
+    asm.addEventListener('change', () => { c.assemblyId = asm.value || null; refreshConditionUI(); markDirty(); });
+    const del = document.createElement('button');
+    del.textContent = '✕'; del.style.color = '#dc2626';
+    del.title = 'delete condition (its measurements become unassigned)';
+    del.addEventListener('click', () => {
+      if (!confirm(`Delete condition "${c.name}"? Its measurements become unassigned.`)) return;
+      deleteCondition(c.id);
+    });
+    row.append(act, color, name, kind, document.createTextNode('→'), asm, del);
+    list.append(row);
+  }
+}
+
 /// Same-page areas that geometrically contain this deduct — the valid parents
 /// it may be (re)assigned to.
 function parentOptionsFor(deduct) {
@@ -1393,11 +1555,24 @@ function buildMeasRow(m, indent) {
     return { row, panel: null };
   }
 
+  // Colour swatch: shows the EFFECTIVE colour (condition unless overridden).
+  // Picking a colour sets a per-measurement override; a ↺ clears it back to the
+  // condition (shown only while overriding).
   const colour = document.createElement('input');
-  colour.type = 'color'; colour.className = 'measColor'; colour.value = m.color;
-  colour.title = 'measurement colour';
-  colour.addEventListener('input', () => { m.color = colour.value; render(); markDirty(); });
-  row.append(colour, del);
+  colour.type = 'color'; colour.className = 'measColor'; colour.value = effColor(m);
+  const overriding = m.color != null && condOf(m) != null;
+  colour.classList.toggle('overridden', overriding);
+  colour.title = overriding ? 'measurement colour (overrides the condition) — click to change'
+    : 'measurement colour — click to change';
+  colour.addEventListener('input', () => { m.color = colour.value; render(); renderMeasList(); markDirty(); });
+  row.append(colour);
+  if (overriding) {
+    const reset = document.createElement('button');
+    reset.className = 'colReset'; reset.textContent = '↺'; reset.title = 'revert to the condition colour';
+    reset.addEventListener('click', () => { m.color = null; render(); renderMeasList(); markDirty(); });
+    row.append(reset);
+  }
+  row.append(del);
 
   // Area net-over warning (deducts exceed gross → clamped to 0).
   if (m.kind === 'area') {
@@ -1419,24 +1594,29 @@ function buildMeasRow(m, indent) {
   if (choices.length) {
     const sel = document.createElement('select');
     sel.className = 'asmSel';
-    sel.innerHTML = '<option value="">— no assembly —</option>'
+    // First option = inherit (clear the override). If the condition supplies an
+    // assembly, name it so the inherited default is legible.
+    const condAsm = assemblyCache.find(a => a.id === condOf(m)?.assemblyId);
+    const inheritLabel = condAsm ? `↳ inherit (${condAsm.name})` : '— no assembly —';
+    sel.innerHTML = `<option value="">${inheritLabel}</option>`
       + choices.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
-    sel.value = m.assemblyId ?? '';
+    sel.value = m.assemblyId ?? ''; // the OVERRIDE ('' = inheriting from condition)
     sel.addEventListener('change', () => {
       m.assemblyId = sel.value || null;
       m.overrides = {};
       markDirty();
       renderMeasList();
     });
+    const effAsm = effAssemblyId(m);
     const toggle = document.createElement('button');
     toggle.className = 'bomToggle';
     toggle.textContent = m._bomOpen ? '▾' : '▸';
     toggle.title = 'show/hide bill of materials';
     toggle.style.color = '#2563eb';
-    toggle.disabled = !m.assemblyId;
+    toggle.disabled = !effAsm;
     toggle.addEventListener('click', () => { m._bomOpen = !m._bomOpen; renderMeasList(); });
     row.append(sel, toggle);
-    if (m.assemblyId && m._bomOpen && choices.some(a => a.id === m.assemblyId)) {
+    if (effAsm && m._bomOpen && choices.some(a => a.id === effAsm)) {
       panel = renderBomPanel(m);
     }
   }
@@ -1909,6 +2089,7 @@ async function loadPdf(data, name) {
   try { proj = await store.getProject(currentSha); } catch { /* read-only failure: start fresh */ }
   if (proj) {
     scalesFromStored(proj.pageScales);
+    conditionsFromStored(proj.conditions, proj.activeConditionId); // migration-safe
     measurements = proj.measurements.map(fromStored);
     minWidthOverride = proj.minWidthOverride ?? null;
     reindexAfterRestore();
@@ -1916,9 +2097,11 @@ async function loadPdf(data, name) {
   } else {
     pageScales.clear(); pageScales.set(0, { fpi: 4.0, source: 'synthetic' });
     measurements = []; nextMeasId = 1;
+    conditions = []; activeConditionId = null; nextCondId = 1;
     measSeq = { Line: 0, Area: 0, Deduct: 0, 'Wall run': 0, Room: 0, Count: 0 };
     setSaveState('—'); // no project until the first mutation
   }
+  refreshConditionUI();
 
   const base = (await pdfDoc.getPage(1)).getViewport({ scale: 1 });
   pageDims = { w: base.width, h: base.height };
@@ -1995,6 +2178,13 @@ $('assembliesBtn').addEventListener('click', () => {
   if (!panel.hidden) renderAssemblyPanel();
 });
 $('newAssembly').addEventListener('click', () => openAssemblyEditor(null));
+$('conditionsBtn').addEventListener('click', () => {
+  const panel = $('conditionPanel');
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) renderConditionPanel();
+});
+$('newCondition').addEventListener('click', () => addCondition());
+$('activeCondSel').addEventListener('change', ev => setActiveCondition(ev.target.value ? Number(ev.target.value) : null));
 $('addParam').addEventListener('click', () => addParamRow());
 $('addPart').addEventListener('click', () => addPartRow());
 $('saveAssembly').addEventListener('click', saveAssembly);
@@ -2125,6 +2315,17 @@ window.__harness = {
     const m = measurements.find(x => x.id === id);
     if (m) { m.includePerimeter = !!on; markDirty(); renderMeasList(); }
   },
+  // Conditions (§A2): palette-free drivers for the suite.
+  conditions: () => conditions.map(c => ({ ...c })),
+  activeCondition: () => activeConditionId,
+  addCondition: seed => { const c = addCondition(seed); return c.id; },
+  setActiveCondition: id => setActiveCondition(id),
+  deleteCondition: id => deleteCondition(id),
+  effColor: id => { const m = measurements.find(x => x.id === id); return m ? effColor(m) : null; },
+  effAssemblyId: id => { const m = measurements.find(x => x.id === id); return m ? effAssemblyId(m) : null; },
+  conditionIdOf: id => measurements.find(x => x.id === id)?.conditionId ?? null,
+  setMeasColor: (id, color) => { const m = measurements.find(x => x.id === id); if (m) { m.color = color; renderMeasList(); render(); markDirty(); } },
+  setMeasAssembly: (id, asmId) => { const m = measurements.find(x => x.id === id); if (m) { m.assemblyId = asmId; renderMeasList(); markDirty(); } },
 };
 
 // ---- boot ----
@@ -2132,6 +2333,7 @@ await init();
 store.requestPersist(); // best-effort: keep our storage across eviction
 await seedAssembliesOnce(); // populate the library from engine-core seeds
 await refreshAssemblyCache(); // load the library into the sync render cache
+refreshConditionUI(); // populate the active-condition chip (empty until conditions exist)
 for (const p of JSON.parse(scale_presets_json())) {
   const o = document.createElement('option');
   o.value = p.fpi; o.textContent = p.label;

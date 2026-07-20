@@ -1031,6 +1031,116 @@ await run('layout: the per-row colour swatch is a visible, bordered affordance',
   assert.notEqual(sw.borderStyle, 'none', 'swatch has a visible border');
 });
 
+await run('condition: a new trace inherits the active condition’s colour + assembly', async page => {
+  const condId = await page.evaluate(() =>
+    window.__harness.addCondition({ name: 'Epoxy', color: '#15803d', kind: 'area', assemblyId: 'epoxy_coating' }));
+  await page.evaluate(id => window.__harness.setActiveCondition(id), condId);
+  // Trace an area under the active condition.
+  await snapOff(page);
+  await setTool(page, 'area');
+  for (const [x, y] of [[100, 100], [300, 100], [300, 250], [100, 250]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  const st = await page.evaluate(() => {
+    const m = window.__harness.measurements().find(x => x.kind === 'area');
+    return { conditionId: m.conditionId, color: window.__harness.effColor(m.id),
+             asm: window.__harness.effAssemblyId(m.id) };
+  });
+  assert.equal(st.conditionId, condId, 'measurement joined the active condition');
+  assert.equal(st.color, '#15803d', 'colour derives from the condition');
+  assert.equal(st.asm, 'epoxy_coating', 'assembly derives from the condition');
+});
+
+await run('condition: per-measurement colour/assembly override beats the condition', async page => {
+  const condId = await page.evaluate(() =>
+    window.__harness.addCondition({ name: 'Epoxy', color: '#15803d', kind: 'area', assemblyId: 'epoxy_coating' }));
+  await page.evaluate(id => window.__harness.setActiveCondition(id), condId);
+  await snapOff(page);
+  await setTool(page, 'area');
+  for (const [x, y] of [[100, 100], [300, 100], [300, 250], [100, 250]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  const id = await page.evaluate(() => window.__harness.measurements().find(x => x.kind === 'area').id);
+  await page.evaluate(i => window.__harness.setMeasColor(i, '#dc2626'), id);
+  await page.evaluate(i => window.__harness.setMeasAssembly(i, 'commercial_flooring'), id);
+  const eff = await page.evaluate(i => ({ c: window.__harness.effColor(i), a: window.__harness.effAssemblyId(i) }), id);
+  assert.equal(eff.c, '#dc2626', 'per-measurement colour overrides the condition');
+  assert.equal(eff.a, 'commercial_flooring', 'per-measurement assembly overrides the condition');
+});
+
+await run('condition: the BOM uses the condition’s assembly when no per-measurement override', async page => {
+  // 400×300 pt room = 1200 SF; condition supplies commercial_flooring.
+  const condId = await page.evaluate(() =>
+    window.__harness.addCondition({ name: 'Floor', color: '#1d4ed8', kind: 'area', assemblyId: 'commercial_flooring' }));
+  await page.evaluate(id => window.__harness.setActiveCondition(id), condId);
+  await snapOff(page);
+  await setTool(page, 'area');
+  for (const [x, y] of [[100, 100], [300, 100], [300, 250], [100, 250]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  const id = await page.evaluate(() => window.__harness.measurements().find(x => x.kind === 'area').id);
+  const bom = await page.evaluate(i => window.__harness.applyBom(i), id);
+  // No per-measurement assemblyId, yet the BOM computes from the condition's.
+  assert.ok(bom.ok, `BOM derives from the condition assembly: ${JSON.stringify(bom).slice(0, 120)}`);
+  assert.ok(bom.bom.line_items.some(l => l.part_name === 'Flooring boxes'), 'flooring parts present');
+});
+
+await run('condition: kind guard — a line under an area condition stays unassigned', async page => {
+  const condId = await page.evaluate(() =>
+    window.__harness.addCondition({ name: 'Epoxy', color: '#15803d', kind: 'area' }));
+  await page.evaluate(id => window.__harness.setActiveCondition(id), condId);
+  await snapOff(page);
+  await setTool(page, 'line');
+  await clickBase(page, 120, 300); await clickBase(page, 280, 300);
+  await page.keyboard.press('Enter');
+  const cid = await page.evaluate(() => {
+    const m = window.__harness.measurements().find(x => x.kind === 'linear');
+    return window.__harness.conditionIdOf(m.id);
+  });
+  assert.equal(cid, null, 'a linear trace does not join an area condition');
+});
+
+await run('condition: migration — a pre-conditions project loads and renders', async page => {
+  // No `conditions` key, measurement with no conditionId (the old shape).
+  await page.evaluate(() => window.__harness.importJson(JSON.stringify({
+    version: 1, sha: 'x', name: 'legacy',
+    pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
+    measurements: [{ id: 1, page: 1, kind: 'area', label: 'Old Room', origin: 'manual',
+      color: '#1e3a8a', geometry: [0, 0, 400, 0, 400, 300, 0, 300] }],
+  })));
+  const st = await page.evaluate(() => ({
+    n: window.__harness.measurements().length,
+    conds: window.__harness.conditions().length,
+    cid: window.__harness.conditionIdOf(1),
+    color: window.__harness.effColor(1),
+  }));
+  assert.equal(st.n, 1, 'legacy measurement loaded');
+  assert.equal(st.conds, 0, 'no conditions');
+  assert.equal(st.cid, null, 'legacy measurement is unassigned');
+  assert.equal(st.color, '#1e3a8a', 'legacy colour preserved');
+});
+
+await run('condition: reload restores conditions, active id, and conditionId', async page => {
+  const condId = await page.evaluate(() =>
+    window.__harness.addCondition({ name: 'Polish', color: '#7c3aed', kind: 'area', assemblyId: 'epoxy_coating' }));
+  await page.evaluate(id => window.__harness.setActiveCondition(id), condId);
+  await snapOff(page);
+  await setTool(page, 'area');
+  for (const [x, y] of [[100, 100], [300, 100], [300, 250], [100, 250]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.goto(URL);
+  await waitReady(page);
+  const st = await page.evaluate(() => {
+    const conds = window.__harness.conditions();
+    const m = window.__harness.measurements().find(x => x.kind === 'area');
+    return { conds, active: window.__harness.activeCondition(),
+             cid: m?.conditionId, color: m ? window.__harness.effColor(m.id) : null };
+  });
+  assert.equal(st.conds.length, 1, 'condition restored');
+  assert.equal(st.conds[0].name, 'Polish', 'condition fields restored');
+  assert.equal(st.active, st.conds[0].id, 'active condition restored');
+  assert.equal(st.cid, st.conds[0].id, 'measurement conditionId restored');
+  assert.equal(st.color, '#7c3aed', 'colour still derives after reload');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();
