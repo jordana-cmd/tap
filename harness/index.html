@@ -7,7 +7,14 @@
   body { font-family: system-ui, sans-serif; margin: 16px; background: #f5f5f4; color: #1c1917; }
   h1 { font-size: 1.05rem; }
   #status { font-family: ui-monospace, monospace; white-space: pre-line; background: #fff;
-            border: 1px solid #d6d3d1; padding: 8px 12px; min-height: 5.5em; margin-top: 8px; }
+            border: 1px solid #d6d3d1; padding: 8px 12px; min-height: 2.4em; margin-top: 8px; }
+  #advanced { margin: 6px 0; background: #fafaf9; border: 1px solid #e7e5e4; border-radius: 4px; }
+  #advanced > summary { cursor: pointer; padding: 5px 10px; font-size: 0.85rem; color: #57534e;
+                        user-select: none; }
+  #advanced[open] > summary { border-bottom: 1px solid #e7e5e4; }
+  #advanced .bar { margin: 6px 10px; }
+  .advDetail { font-family: ui-monospace, monospace; font-size: 0.75rem; color: #57534e;
+               white-space: pre-line; padding: 4px 10px 8px; }
   canvas { border: 1px solid #a8a29e; background: #fff; cursor: crosshair; display: block; }
   #canvasWrap { overflow: auto; max-height: 70vh; flex: 1 1 auto; min-width: 0; }
   .bar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 6px 0; font-size: 0.9rem; }
@@ -171,24 +178,28 @@
     </div>
   </div>
 </div>
-<div class="bar">
-  <label>wall_threshold: <input id="thresh" type="range" min="0" max="255" step="5" value="200">
-    <span id="threshVal">200</span></label>
-  <label>door_gap_ft: <input id="doorGap" type="range" min="1" max="15" step="0.5" value="3.5">
-    <span id="doorGapVal">3.5</span> ft</label>
-</div>
-<div class="bar">
-  <span>mask:
-    <label><input type="radio" name="maskSrc" id="maskRaster" value="raster" checked> raster</label>
-    <label><input type="radio" name="maskSrc" id="maskVector" value="vector" disabled> vector</label>
-  </span>
-  <label>min_width: <input id="minWidth" type="range" min="0" max="2" step="0.01" value="0" disabled>
-    <span id="minWidthVal">–</span> pts</label>
-  <button id="minWidthReset" hidden title="reset min_width to the per-page derived default">↺ derived</button>
-  <label><input id="snapChk" type="checkbox" checked> snap calib clicks</label>
-  <label><input id="hideHatch" type="checkbox" checked disabled> hide hatch</label>
-  <span id="vecInfo">no vector geometry</span>
-</div>
+<details id="advanced">
+  <summary>Advanced — detection tuning</summary>
+  <div class="bar">
+    <label>wall_threshold: <input id="thresh" type="range" min="0" max="255" step="5" value="200">
+      <span id="threshVal">200</span></label>
+    <label>door_gap_ft: <input id="doorGap" type="range" min="1" max="15" step="0.5" value="3.5">
+      <span id="doorGapVal">3.5</span> ft</label>
+  </div>
+  <div class="bar">
+    <span>mask:
+      <label><input type="radio" name="maskSrc" id="maskRaster" value="raster" checked> raster</label>
+      <label><input type="radio" name="maskSrc" id="maskVector" value="vector" disabled> vector</label>
+    </span>
+    <label>min_width: <input id="minWidth" type="range" min="0" max="2" step="0.01" value="0" disabled>
+      <span id="minWidthVal">–</span> pts</label>
+    <button id="minWidthReset" hidden title="reset min_width to the per-page derived default">↺ derived</button>
+    <label><input id="snapChk" type="checkbox" checked> snap calib clicks</label>
+    <label><input id="hideHatch" type="checkbox" checked disabled> hide hatch</label>
+    <span id="vecInfo">no vector geometry</span>
+  </div>
+  <div id="advDetail" class="advDetail">–</div>
+</details>
 <div id="workRow">
   <div id="canvasWrap"><canvas id="plan" width="900" height="650"></canvas></div>
   <div id="measPanel">
@@ -290,6 +301,9 @@ let storageBlocked = false; // set on a write failure — blocks further edits
 
 const pxPerFoot = () => (72 / curFpi()) * s;
 const say = t => { status.textContent = t; };
+/// Verbose diagnostic detail (detect stats, cross-checks) → the Advanced pane,
+/// keeping the status line to one clear message.
+const sayDetail = t => { const el = $('advDetail'); if (el) el.textContent = t; };
 
 // ---- synthetic fallback plan (unchanged demo) ----
 function drawSynthetic() {
@@ -689,18 +703,21 @@ async function runDetect(baseX, baseY) {
     const viaPolyline = measure_polyline(closed, curFpi());
     // Detected rooms land in the SAME list as manual measurements —
     // interchangeable rows, provenance preserved (origin 'floodfill').
-    addMeasurement('area', 'Room', r.area_sf,
+    const m = addMeasurement('area', 'Room', r.area_sf,
       `${r.area_sf.toFixed(1)} SF (${r.perimeter_lf.toFixed(1)} LF)`, 'floodfill', c);
     const knobs = src === 'vector'
       ? `min_width ${minWidthPts().toFixed(2)} pts`
       : `threshold ${threshold}`;
-    say(`click (${x}, ${y}) det-px | mask ${src} | fpi ${curFpi().toFixed(3)} | ` +
-        `det ppf ${ppfUsed.toFixed(2)} | ${knobs} | door_gap ${doorGap}\n` +
-        `area_sf       = ${r.area_sf.toFixed(1)} SF\n` +
-        `perimeter_lf  = ${r.perimeter_lf.toFixed(1)} LF\n` +
-        `measure_polyline(closed contour) = ${viaPolyline.toFixed(1)} LF  (cross-check: ` +
-        `${Math.abs(viaPolyline - r.perimeter_lf) < 1e-6 ? 'MATCH' : 'MISMATCH'})\n` +
-        `contour vertices = ${c.length / 2}`);
+    // One clear message; the diagnostic goes to the Advanced pane.
+    say(`${m.name} detected — ${r.area_sf.toFixed(1)} SF, ${r.perimeter_lf.toFixed(1)} LF ✓`);
+    sayDetail(
+      `click (${x}, ${y}) det-px | mask ${src} | fpi ${curFpi().toFixed(3)} | ` +
+      `det ppf ${ppfUsed.toFixed(2)} | ${knobs} | door_gap ${doorGap}\n` +
+      `area_sf       = ${r.area_sf.toFixed(1)} SF\n` +
+      `perimeter_lf  = ${r.perimeter_lf.toFixed(1)} LF\n` +
+      `measure_polyline(closed contour) = ${viaPolyline.toFixed(1)} LF  (cross-check: ` +
+      `${Math.abs(viaPolyline - r.perimeter_lf) < 1e-6 ? 'MATCH' : 'MISMATCH'})\n` +
+      `contour vertices = ${c.length / 2}`);
   } catch (e) {
     render();
     if (e && e.code === 'REGION_NOT_ENCLOSED') {

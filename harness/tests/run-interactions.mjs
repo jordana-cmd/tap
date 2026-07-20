@@ -69,6 +69,9 @@ const snapOff = page => page.evaluate(() => {
   const c = document.querySelector('#snapChk');
   if (c.checked) c.click();
 });
+// Detection-tuning controls live behind a collapsed <details id="advanced">;
+// open it before driving them with Puppeteer (which needs them visible).
+const openAdvanced = page => page.evaluate(() => { document.querySelector('#advanced').open = true; });
 const near = (a, b, tol) => Math.abs(a - b) <= tol;
 
 async function run(name, fn) {
@@ -192,6 +195,7 @@ await run('detect: hatched room traps without hide-hatch, detects with it', asyn
 });
 
 await run('Enter still finishes after focusing a control (slider)', async page => {
+  await openAdvanced(page); // #doorGap lives under Advanced; open so focus lands
   await setTool(page, 'area');
   await snapOff(page);
   for (const [x, y] of SQ) await clickBase(page, x, y);
@@ -428,6 +432,7 @@ await run('CSV quotes free-text names containing commas', async page => {
 });
 
 await run('min_width override sticks across pages; reset re-derives', async page => {
+  await openAdvanced(page); // the min_width slider + reset live under Advanced now
   assert.ok(await page.$eval('#minWidth', el => !el.disabled),
     'min_width slider enabled on a vector page');
   const read = () => page.evaluate(() => ({
@@ -600,8 +605,10 @@ await run('storage write failure blocks edits until acknowledged', async page =>
   await page.evaluate(() => window.__harness.simulateStorageError());
   assert.equal(await page.evaluate(() => window.__harness.storageBlocked()), true);
   assert.equal(await page.$eval('#storageModal', el => el.hidden), false, 'modal shown');
-  // A canvas edit attempt while blocked does nothing (guard + overlay).
-  await clickBase(page, 600, 300);
+  // A canvas edit attempt while blocked does nothing (guard + overlay). Use a
+  // canvas point that maps onto the modal BACKDROP (a corner), not its centred
+  // dismiss/export buttons — otherwise the attempt would close the modal.
+  await clickBase(page, 100, 600);
   await page.keyboard.press('Enter');
   assert.equal((await state(page)).meas.length, 1, 'no new measurement while blocked');
   // Dismiss (the modal button is on top) → unblocked, edits resume.
@@ -1199,6 +1206,32 @@ await run('condition: the material list separates products (per-condition rollup
   assert.ok(lines.some(l => l.startsWith('Polish,Flooring boxes,BOX,')), 'polish flooring line present');
   // No row mixes the two products.
   assert.ok(!lines.some(l => l.startsWith('Epoxy,Flooring boxes')), 'epoxy has no flooring parts');
+});
+
+await run('advanced: detection tuning is collapsed by default and holds the knobs + stats', async page => {
+  const st = await page.evaluate(() => {
+    const adv = document.querySelector('#advanced');
+    const ids = ['thresh', 'doorGap', 'maskRaster', 'maskVector', 'minWidth', 'snapChk', 'hideHatch', 'vecInfo'];
+    return { tag: adv.tagName, open: adv.open,
+             contains: ids.every(id => adv.contains(document.getElementById(id))) };
+  });
+  assert.equal(st.tag, 'DETAILS', 'Advanced is a disclosure');
+  assert.equal(st.open, false, 'collapsed by default — tuning knobs are not daily controls');
+  assert.ok(st.contains, 'the tuning knobs + segment stats live inside Advanced');
+});
+
+await run('status: a detect shows ONE message; the diagnostic moves to Advanced', async page => {
+  await setTool(page, 'detect');
+  await clickBase(page, 675, 225); // hatched room; hide-hatch is on by default → recovers
+  const st = await page.evaluate(() => ({
+    status: document.querySelector('#status').textContent,
+    detail: document.querySelector('#advDetail').textContent,
+    n: window.__harness.measurements().length,
+  }));
+  assert.equal(st.n, 1, 'a room was detected');
+  assert.ok(!st.status.includes('\n'), `status is one line, not a wall of stats: ${JSON.stringify(st.status)}`);
+  assert.match(st.status, /detected —.*SF.*LF/, 'a concise headline');
+  assert.match(st.detail, /cross-check/, 'the verbose diagnostic landed in the Advanced pane');
 });
 
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
