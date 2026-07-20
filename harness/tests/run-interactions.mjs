@@ -1379,6 +1379,93 @@ await run('stacking UI: a Linear add-on is not offered on an area row', async pa
   assert.ok(!opts.some(o => o.includes('Joint Fill')), 'the Linear caulk add-on is not offered on an area');
 });
 
+// Two priced rooms for scope tests: one Epoxy+HW, one Polished Concrete.
+const twoRooms = () => ({
+  version: 1, sha: 'x', name: 'scope',
+  pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
+  measurements: [
+    { id: 1, page: 1, kind: 'area', label: 'Main', origin: 'manual', color: '#1e3a8a',
+      geometry: [0, 0, 400, 0, 400, 300, 0, 300], assemblyId: 'epoxy_hw' },
+    { id: 2, page: 1, kind: 'area', label: 'Bathroom', origin: 'manual', color: '#1e3a8a',
+      geometry: [0, 0, 200, 0, 200, 150, 0, 150], assemblyId: 'polish' },
+  ],
+});
+
+await run('scope: a measurement defaults to Base Bid (migration) and can move to an alternate', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), twoRooms());
+  // Migration: pre-scope import → both base.
+  assert.deepEqual(await page.evaluate(() => window.__harness.scopeOf(1)), { scope: 'base', alternateGroupId: null });
+  const t0 = await page.evaluate(() => window.__harness.scopeTotals());
+  assert.equal(t0.alternates.length, 0, 'no alternates yet');
+  assert.ok(t0.base > 0, 'base bid has both rooms');
+  // Move the bathroom into a new alternate.
+  const gid = await page.evaluate(() => window.__harness.addAlternateGroup('Add bathroom'));
+  await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
+  const t1 = await page.evaluate(() => window.__harness.scopeTotals());
+  assert.equal(t1.alternates.length, 1, 'one alternate');
+  assert.equal(t1.alternates[0].name, 'Add bathroom');
+  // The alternate's cost left the base bid and stands alone.
+  assert.ok(Math.abs(t1.base - (t0.base - t1.alternates[0].total)) < 1e-6, 'alternate no longer folded into base');
+  assert.ok(t1.alternates[0].total > 0, 'alternate priced standalone');
+});
+
+await run('scope: include/exclude changes the combined number, not the measurement scope', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), twoRooms());
+  const gid = await page.evaluate(() => window.__harness.addAlternateGroup('Alt 1'));
+  await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
+  const excluded = await page.evaluate(() => window.__harness.scopeTotals());
+  assert.ok(Math.abs(excluded.combined - excluded.base) < 1e-6, 'combined = base while alternate excluded');
+  await page.evaluate(g => window.__harness.setIncluded([g]), gid);
+  const included = await page.evaluate(() => window.__harness.scopeTotals());
+  assert.ok(Math.abs(included.combined - (included.base + included.alternates[0].total)) < 1e-6,
+    'combined = base + alternate when included');
+  // Toggling inclusion did NOT change the measurement's scope.
+  assert.deepEqual(await page.evaluate(g => window.__harness.scopeOf(2), gid), { scope: 'alternate', alternateGroupId: gid });
+});
+
+await run('scope: the list groups by scope (Base Bid then alternate), condition-nested', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), twoRooms());
+  const gid = await page.evaluate(() => window.__harness.addAlternateGroup('Add bathroom'));
+  await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
+  const headers = await page.evaluate(() =>
+    [...document.querySelectorAll('#measList .scopeHdr .scopeName')].map(e => e.textContent));
+  assert.deepEqual(headers, ['Base Bid', 'Alternate — Add bathroom'], 'Base Bid first, then the alternate');
+  // The bid-totals panel shows both plus a combined row.
+  const st = await page.evaluate(() => document.querySelector('#scopeTotals').textContent);
+  assert.match(st, /Base Bid/);
+  assert.match(st, /Add bathroom/);
+  assert.match(st, /Combined/);
+});
+
+await run('scope: deleting an alternate returns its members to the base bid', async page => {
+  page.on('dialog', d => d.accept());
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), twoRooms());
+  const gid = await page.evaluate(() => window.__harness.addAlternateGroup('Alt 1'));
+  await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
+  await page.evaluate(g => window.__harness.deleteAlternateGroup(g), gid);
+  assert.deepEqual(await page.evaluate(() => window.__harness.scopeOf(2)), { scope: 'base', alternateGroupId: null }, 'member back to base');
+  assert.equal((await page.evaluate(() => window.__harness.scopeTotals())).alternates.length, 0, 'alternate gone');
+});
+
+await run('scope: reload restores scope + alternate groups', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), twoRooms());
+  const gid = await page.evaluate(() => window.__harness.addAlternateGroup('Add bathroom'));
+  await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.goto(URL);
+  await waitReady(page);
+  const st = await page.evaluate(() => ({
+    groups: window.__harness.alternateGroups(),
+    scope2: window.__harness.scopeOf(2),
+    totals: window.__harness.scopeTotals(),
+  }));
+  assert.equal(st.groups.length, 1, 'alternate group restored');
+  assert.equal(st.groups[0].name, 'Add bathroom');
+  assert.equal(st.scope2.scope, 'alternate', 'measurement scope restored');
+  assert.equal(st.scope2.alternateGroupId, st.groups[0].id, 'still in its group');
+  assert.equal(st.totals.alternates.length, 1, 're-derived alternate total');
+});
+
 await run('advanced: detection tuning is collapsed by default and holds the knobs + stats', async page => {
   const st = await page.evaluate(() => {
     const adv = document.querySelector('#advanced');

@@ -105,6 +105,21 @@
   .condRow .condName { width: 9em; }
   .condRow .condColor { width: 24px; height: 22px; padding: 0; border: 1px solid #78716c; border-radius: 3px; }
   .condRow .condActive { display: inline-flex; align-items: center; gap: 3px; }
+  .scopeHdr { display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+              font-weight: 700; padding: 4px 5px; margin-top: 8px; background: #1c1917; color: #fff;
+              border-radius: 3px; }
+  .scopeHdr.altHdr { background: #92400e; }
+  .scopeHdr .scopeTot { font-variant-numeric: tabular-nums; }
+  .measRow .scopeSel { font-size: 0.75rem; }
+  #scopeTotals { border: 1px solid #d6d3d1; border-radius: 4px; padding: 5px 8px; margin: 4px 0;
+                 background: #fafaf9; font-size: 0.82rem; }
+  #scopeTotals .stHdr { font-weight: 600; color: #57534e; font-size: 0.72rem; text-transform: uppercase;
+                        letter-spacing: 0.04em; margin-bottom: 2px; }
+  .scopeTotRow { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+  .scopeTotRow .stLabel { flex: 1 1 auto; }
+  .scopeTotRow .stVal { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .scopeTotRow.stCombined { border-top: 1px solid #cbd5e1; margin-top: 3px; padding-top: 3px; font-weight: 700; }
+  .scopeTotRow .stDel { border: none; background: none; color: #dc2626; cursor: pointer; font-size: 0.7rem; }
   .measGroup { margin-top: 6px; }
   .measGroupHdr { display: flex; align-items: center; gap: 6px; font-weight: 600;
                   padding: 3px 4px; background: #f5f5f4; border-radius: 3px; position: sticky; top: 0; }
@@ -261,8 +276,10 @@
         <button id="exportJson" title="download a JSON backup of this project">export JSON</button>
         <label id="importJsonLabel" title="restore a project from a JSON backup">
           import JSON<input id="importJson" type="file" accept="application/json,.json" hidden></label>
+        <button id="newAlternate" title="create a named alternate scope">+ alternate</button>
       </div>
     </div>
+    <div id="scopeTotals" hidden></div>
     <div id="measList">(none yet)</div>
   </div>
 </div>
@@ -335,6 +352,16 @@ let conditions = [];        // {id, name, color, kind:'area'|'linear'|'count', a
 let activeConditionId = null;
 let nextCondId = 1;
 const condOf = m => conditions.find(c => c.id === m.conditionId) ?? null;
+
+// ---- alternate scopes (§A2, phase 3): a measurement is in the Base Bid or a
+// named Alternate priced standalone. alternateGroups are per-project.
+// `includedAlternates` is VIEW state (which alternates to add to the combined
+// number) — not the persisted scope truth. ----
+let alternateGroups = [];   // {id, name}
+let nextAltId = 1;
+let includedAlternates = new Set(); // session-only: alternate ids toggled into "combined"
+const altGroupOf = m => (m.scope === 'alternate'
+  ? alternateGroups.find(g => g.id === m.alternateGroupId) ?? null : null);
 /// Effective colour/assembly: per-measurement override first, else the
 /// condition's, else the harness default / none.
 const effColor = m => m.color ?? condOf(m)?.color ?? '#1e3a8a';
@@ -877,6 +904,9 @@ function toStored(m) {
     parentId: m.parentId ?? null,
     includePerimeter: m.includePerimeter ? true : null,
     conditionId: m.conditionId ?? null,
+    // Bid scope (§A2): base bid vs a named alternate. Default base.
+    scope: m.scope === 'alternate' ? 'alternate' : 'base',
+    alternateGroupId: m.scope === 'alternate' ? (m.alternateGroupId ?? null) : null,
     color: m.color ?? null, // per-measurement colour OVERRIDE only (null = inherit)
     // Assembly attachment: the base library id, the STACK of additional
     // assembly ids (add-ons/consumables), and per-application overrides ONLY.
@@ -904,6 +934,9 @@ function fromStored(r) {
     parentId: r.parentId ?? null,
     includePerimeter: r.includePerimeter ?? false,
     conditionId: r.conditionId ?? null,
+    // Migration: a pre-scope measurement loads into the base bid.
+    scope: r.scope === 'alternate' ? 'alternate' : 'base',
+    alternateGroupId: r.scope === 'alternate' ? (r.alternateGroupId ?? null) : null,
   };
 }
 
@@ -953,6 +986,7 @@ function exportJson() {
     measurements: measurements.map(toStored),
     conditions: conditions.map(condToStored),
     activeConditionId,
+    alternateGroups: alternateGroups.map(g => ({ id: g.id, name: g.name })),
     minWidthOverride,
   }, null, 2);
 }
@@ -960,6 +994,7 @@ function importJson(str) {
   const data = JSON.parse(str);
   scalesFromStored(data.pageScales ?? []);
   conditionsFromStored(data.conditions, data.activeConditionId);
+  alternateGroupsFromStored(data.alternateGroups);
   measurements = (data.measurements ?? []).map(fromStored);
   minWidthOverride = data.minWidthOverride ?? null;
   reindexAfterRestore();
@@ -985,6 +1020,13 @@ function conditionsFromStored(arr, active) {
   nextCondId = 1 + conditions.reduce((mx, c) => Math.max(mx, c.id), 0);
 }
 
+/// Restore alternate groups (migration: no `alternateGroups` key → []).
+function alternateGroupsFromStored(arr) {
+  alternateGroups = (arr ?? []).map(g => ({ id: g.id, name: g.name }));
+  nextAltId = 1 + alternateGroups.reduce((mx, g) => Math.max(mx, g.id), 0);
+  includedAlternates = new Set(); // view state resets on load (persisted truth is scope)
+}
+
 function projectRecord() {
   return {
     sha: currentSha, name: currentName,
@@ -992,6 +1034,7 @@ function projectRecord() {
     measurements: measurements.map(toStored),
     conditions: conditions.map(condToStored),
     activeConditionId,
+    alternateGroups: alternateGroups.map(g => ({ id: g.id, name: g.name })),
     minWidthOverride, updatedAt: Date.now(),
   };
 }
@@ -1816,6 +1859,27 @@ function buildMeasRow(m, indent) {
   }
   row.append(del);
 
+  // Bid scope: Base Bid or a named alternate (whose members price standalone).
+  const scopeSel = document.createElement('select');
+  scopeSel.className = 'scopeSel';
+  scopeSel.title = 'bid scope — Base Bid, or a named alternate';
+  const alt = m.scope === 'alternate' ? m.alternateGroupId : null;
+  scopeSel.innerHTML = '<option value="base">Base Bid</option>'
+    + alternateGroups.map(g => `<option value="alt:${g.id}"${alt === g.id ? ' selected' : ''}>Alt: ${g.name}</option>`).join('')
+    + '<option value="new">+ new alternate…</option>';
+  if (alt == null) scopeSel.value = 'base';
+  scopeSel.addEventListener('change', () => {
+    if (scopeSel.value === 'base') setMeasScope(m, 'base');
+    else if (scopeSel.value === 'new') {
+      const name = prompt('New alternate name:', `Alternate ${alternateGroups.length + 1}`);
+      if (name == null) { renderMeasList(); return; }
+      setMeasScope(m, 'alternate', addAlternateGroup(name).id);
+    } else {
+      setMeasScope(m, 'alternate', Number(scopeSel.value.slice(4)));
+    }
+  });
+  row.append(scopeSel);
+
   // Area net-over warning (deducts exceed gross → clamped to 0).
   if (m.kind === 'area') {
     const info = netInfo(m);
@@ -1952,35 +2016,27 @@ function buildGroupHeader(cond, members) {
   return hdr;
 }
 
-function renderMeasList() {
-  renderLegend(); // colour key tracks the current page's drawing
-  const list = $('measList');
-  list.textContent = '';
-  const all = $('allPages').checked;
-  const visible = measurements.filter(m => all || m.page === currentPage());
-  if (!visible.length) {
-    list.textContent = all ? '(none yet)' : `(none on ${pdfDoc ? `page ${currentPage()}` : 'this sheet'})`;
-    return;
-  }
-  const shown = new Set();
-  // Group non-deduct measurements by condition (conditions in order, then an
-  // Unassigned bucket for null/dangling conditionId). Deducts are emitted under
-  // their parent, inside the parent's group.
-  const nonDeduct = visible.filter(m => m.kind !== 'deduct');
+/// A measurement's grand cost (materials + auto consumables) — 0 without a stack.
+function measurementGrand(m) {
+  if (m.kind === 'deduct' || !effectiveStack(m).length) return 0;
+  return computeStackedBom(m).grandTotal ?? 0;
+}
+
+/// Emit the per-condition groups for a set of measurements into `container`.
+/// Deducts nest under their parent (which is in this same scope partition).
+function renderConditionGroups(container, members, visible, shown) {
   const groups = [];
   for (const c of conditions) {
-    const members = nonDeduct.filter(m => m.conditionId === c.id);
-    if (members.length) groups.push({ cond: c, members });
+    const cmem = members.filter(m => m.conditionId === c.id);
+    if (cmem.length) groups.push({ cond: c, members: cmem });
   }
-  const unassigned = nonDeduct.filter(m => condOf(m) == null);
+  const unassigned = members.filter(m => condOf(m) == null);
   if (unassigned.length) groups.push({ cond: null, members: unassigned });
-
   for (const g of groups) {
     const box = document.createElement('div');
     box.className = 'measGroup';
-    list.append(box);
+    container.append(box);
     box.append(buildGroupHeader(g.cond, g.members));
-    // Re-point emit's appends at the group box for this group.
     const groupEmit = (m, indent) => {
       const { row, panel } = buildMeasRow(m, indent);
       box.append(row);
@@ -1991,7 +2047,51 @@ function renderMeasList() {
     };
     for (const m of g.members) groupEmit(m, false);
   }
-  // Orphan deducts (no visible parent / unassigned parent) — never lose them.
+}
+
+/// Scope header — "Base Bid" or an alternate's name — with the scope's standalone
+/// total (materials + consumables of its members).
+function buildScopeHeader(scope) {
+  const hdr = document.createElement('div');
+  hdr.className = scope.alternate ? 'scopeHdr altHdr' : 'scopeHdr';
+  const nm = document.createElement('span');
+  nm.className = 'scopeName';
+  nm.textContent = scope.alternate ? `Alternate — ${scope.name}` : 'Base Bid';
+  const tot = document.createElement('span');
+  tot.className = 'scopeTot';
+  tot.textContent = usd(scope.members.reduce((s, m) => s + measurementGrand(m), 0));
+  hdr.append(nm, tot);
+  return hdr;
+}
+
+function renderMeasList() {
+  renderLegend(); // colour key tracks the current page's drawing
+  renderScopeTotals(); // bid totals across the whole project
+  const list = $('measList');
+  list.textContent = '';
+  const all = $('allPages').checked;
+  const visible = measurements.filter(m => all || m.page === currentPage());
+  if (!visible.length) {
+    list.textContent = all ? '(none yet)' : `(none on ${pdfDoc ? `page ${currentPage()}` : 'this sheet'})`;
+    return;
+  }
+  const shown = new Set();
+  // Partition non-deduct measurements by SCOPE: Base Bid first, then each
+  // alternate group in order. The per-condition grouping nests inside each scope.
+  const nonDeduct = visible.filter(m => m.kind !== 'deduct');
+  const baseMembers = nonDeduct.filter(m => m.scope !== 'alternate'
+    || !alternateGroups.some(g => g.id === m.alternateGroupId)); // dangling alt → base
+  const partitions = [{ name: 'Base Bid', members: baseMembers }];
+  for (const g of alternateGroups) {
+    const members = nonDeduct.filter(m => m.scope === 'alternate' && m.alternateGroupId === g.id);
+    if (members.length) partitions.push({ name: g.name, members, alternate: true });
+  }
+  for (const p of partitions) {
+    if (!p.members.length) continue;
+    list.append(buildScopeHeader(p));
+    renderConditionGroups(list, p.members, visible, shown);
+  }
+  // Orphan deducts (no visible parent) — never lose them.
   const orphans = visible.filter(m => m.kind === 'deduct' && !shown.has(m.id));
   if (orphans.length) {
     const box = document.createElement('div');
@@ -1999,6 +2099,81 @@ function renderMeasList() {
     list.append(box);
     for (const m of orphans) { const { row } = buildMeasRow(m, true); box.append(row); }
   }
+}
+
+// ---- alternate scopes: create/delete/assign + bid totals ----
+function addAlternateGroup(name) {
+  const g = { id: nextAltId++, name: (name || '').trim() || `Alternate ${alternateGroups.length + 1}` };
+  alternateGroups.push(g);
+  markDirty(); renderMeasList();
+  return g;
+}
+function deleteAlternateGroup(id) {
+  alternateGroups = alternateGroups.filter(g => g.id !== id);
+  for (const m of measurements) {
+    if (m.scope === 'alternate' && m.alternateGroupId === id) { m.scope = 'base'; m.alternateGroupId = null; }
+  }
+  includedAlternates.delete(id);
+  markDirty(); renderMeasList(); render();
+}
+function setMeasScope(m, scope, groupId) {
+  if (scope === 'alternate' && groupId != null) { m.scope = 'alternate'; m.alternateGroupId = groupId; }
+  else { m.scope = 'base'; m.alternateGroupId = null; }
+  markDirty(); renderMeasList(); render();
+}
+
+/// Bid totals across the WHOLE project: Base Bid, each alternate standalone, and
+/// Combined = base + the alternates toggled in. Include/exclude is VIEW state —
+/// it never changes a measurement's scope.
+function renderScopeTotals() {
+  const panel = $('scopeTotals');
+  panel.textContent = '';
+  const nonDeduct = measurements.filter(m => m.kind !== 'deduct');
+  const inBase = m => m.scope !== 'alternate' || !alternateGroups.some(g => g.id === m.alternateGroupId);
+  const baseTotal = nonDeduct.filter(inBase).reduce((s, m) => s + measurementGrand(m), 0);
+  const altTotals = alternateGroups.map(g => ({
+    g,
+    total: nonDeduct.filter(m => m.scope === 'alternate' && m.alternateGroupId === g.id)
+      .reduce((s, m) => s + measurementGrand(m), 0),
+  }));
+  if (!alternateGroups.length && baseTotal === 0) { panel.hidden = true; return; }
+  panel.hidden = false;
+  const addRow = (label, value, opts = {}) => {
+    const r = document.createElement('div');
+    r.className = 'scopeTotRow' + (opts.cls ? ' ' + opts.cls : '');
+    if (opts.check) {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.className = 'stInc'; cb.checked = includedAlternates.has(opts.id);
+      cb.title = 'include this alternate in the combined total';
+      cb.addEventListener('change', () => {
+        if (cb.checked) includedAlternates.add(opts.id); else includedAlternates.delete(opts.id);
+        renderScopeTotals();
+      });
+      r.append(cb);
+    }
+    const l = document.createElement('span'); l.className = 'stLabel'; l.textContent = label;
+    const v = document.createElement('span'); v.className = 'stVal'; v.textContent = usd(value);
+    r.append(l, v);
+    if (opts.del) {
+      const d = document.createElement('button');
+      d.className = 'stDel'; d.textContent = '✕';
+      d.title = 'delete alternate (its measurements move to the base bid)';
+      d.addEventListener('click', () => {
+        if (confirm(`Delete alternate "${label}"? Its measurements move to the base bid.`)) deleteAlternateGroup(opts.id);
+      });
+      r.append(d);
+    }
+    panel.append(r);
+  };
+  const hdr = document.createElement('div'); hdr.className = 'stHdr'; hdr.textContent = 'Bid totals';
+  panel.append(hdr);
+  addRow('Base Bid', baseTotal, { cls: 'stBase' });
+  let combined = baseTotal;
+  for (const { g, total } of altTotals) {
+    if (includedAlternates.has(g.id)) combined += total;
+    addRow(g.name, total, { check: true, id: g.id, del: true, cls: 'stAlt' });
+  }
+  if (altTotals.length) addRow('Combined (base + included)', combined, { cls: 'stCombined' });
 }
 
 const UNIT = { linear: 'LF', area: 'SF', count: 'EA', deduct: 'SF' };
@@ -2433,6 +2608,7 @@ async function loadPdf(data, name) {
   if (proj) {
     scalesFromStored(proj.pageScales);
     conditionsFromStored(proj.conditions, proj.activeConditionId); // migration-safe
+    alternateGroupsFromStored(proj.alternateGroups);
     measurements = proj.measurements.map(fromStored);
     minWidthOverride = proj.minWidthOverride ?? null;
     reindexAfterRestore();
@@ -2441,6 +2617,7 @@ async function loadPdf(data, name) {
     pageScales.clear(); pageScales.set(0, { fpi: 4.0, source: 'synthetic' });
     measurements = []; nextMeasId = 1;
     conditions = []; activeConditionId = null; nextCondId = 1;
+    alternateGroups = []; nextAltId = 1; includedAlternates = new Set();
     measSeq = { Line: 0, Area: 0, Deduct: 0, 'Wall run': 0, Room: 0, Count: 0 };
     setSaveState('—'); // no project until the first mutation
   }
@@ -2527,6 +2704,10 @@ $('conditionsBtn').addEventListener('click', () => {
   if (!panel.hidden) renderConditionPanel();
 });
 $('newCondition').addEventListener('click', () => addCondition());
+$('newAlternate').addEventListener('click', () => {
+  const name = prompt('New alternate name:', `Alternate ${alternateGroups.length + 1}`);
+  if (name != null) addAlternateGroup(name);
+});
 $('activeCondSel').addEventListener('change', ev => setActiveCondition(ev.target.value ? Number(ev.target.value) : null));
 $('addParam').addEventListener('click', () => addParamRow());
 $('addPart').addEventListener('click', () => addPartRow());
@@ -2689,6 +2870,25 @@ window.__harness = {
     const un = measurements.filter(m => m.kind !== 'deduct' && condOf(m) == null);
     g.push({ id: null, name: 'Unassigned', kind: null, count: un.length, total: un.reduce((s, m) => s + m.value, 0) });
     return g;
+  },
+  // Alternate scopes (phase 3).
+  alternateGroups: () => alternateGroups.map(g => ({ ...g })),
+  addAlternateGroup: name => addAlternateGroup(name).id,
+  deleteAlternateGroup: id => deleteAlternateGroup(id),
+  scopeOf: measId => { const m = measurements.find(x => x.id === measId); return m ? { scope: m.scope, alternateGroupId: m.alternateGroupId ?? null } : null; },
+  setMeasScope: (measId, scope, groupId) => { const m = measurements.find(x => x.id === measId); if (m) setMeasScope(m, scope, groupId); },
+  setIncluded: ids => { includedAlternates = new Set(ids); renderScopeTotals(); },
+  includedAlternates: () => [...includedAlternates],
+  scopeTotals: () => {
+    const nonDeduct = measurements.filter(m => m.kind !== 'deduct');
+    const inBase = m => m.scope !== 'alternate' || !alternateGroups.some(g => g.id === m.alternateGroupId);
+    const base = nonDeduct.filter(inBase).reduce((s, m) => s + measurementGrand(m), 0);
+    const alternates = alternateGroups.map(g => ({
+      id: g.id, name: g.name,
+      total: nonDeduct.filter(m => m.scope === 'alternate' && m.alternateGroupId === g.id).reduce((s, m) => s + measurementGrand(m), 0),
+    }));
+    const combined = base + alternates.filter(a => includedAlternates.has(a.id)).reduce((s, a) => s + a.total, 0);
+    return { base, alternates, combined };
   },
 };
 
