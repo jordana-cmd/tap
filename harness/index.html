@@ -16,7 +16,14 @@
   .tool.active { background: #1d4ed8; color: #fff; }
   #workRow { display: flex; gap: 12px; align-items: flex-start; }
   #measPanel { flex: 0 0 285px; background: #fff; border: 1px solid #d6d3d1;
-               padding: 8px; font-size: 0.85rem; max-height: 655px; overflow-y: auto; }
+               padding: 8px; font-size: 0.85rem; max-height: 655px;
+               display: flex; flex-direction: column; min-height: 0; }
+  #measHeader { flex: 0 0 auto; border-bottom: 1px solid #d6d3d1; padding-bottom: 6px; margin-bottom: 4px; }
+  #measControls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+  #measControls button { font-size: 0.8rem; }
+  #measControls .allPagesLbl { font-weight: normal; }
+  #importJsonLabel { cursor: pointer; }
+  #measList { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
   .measRow { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap;
              padding: 3px 4px; border-bottom: 1px solid #e7e5e4; }
   .measRow:hover { background: #eff6ff; }
@@ -24,7 +31,9 @@
   .measName:hover { text-decoration: underline dotted; }
   .measVal { flex: 1 1 auto; }
   .measRow .origin { color: #78716c; font-size: 0.75rem; }
-  .measRow .measColor { width: 22px; height: 16px; padding: 0; border: none; cursor: pointer; }
+  .measRow .measColor { width: 20px; height: 20px; padding: 0; cursor: pointer;
+                        border: 1px solid #78716c; border-radius: 3px; box-shadow: 0 0 0 1px #fff inset; }
+  .measRow .measColor:hover { box-shadow: 0 0 0 2px #93c5fd; }
   .renameInput { flex: 1 1 100%; font-size: 0.85rem; }
   .measRow button { border: none; background: none; color: #dc2626; cursor: pointer; }
   .measRow.deductRow { margin-left: 16px; border-left: 2px solid #fca5a5; }
@@ -157,14 +166,20 @@
 </div>
 <div id="workRow">
   <div id="canvasWrap"><canvas id="plan" width="900" height="650"></canvas></div>
-  <div id="measPanel"><b>Measurements</b>
-    <button id="exportCsv" style="float:right" title="download all measurements as CSV">export CSV</button>
-    <button id="exportMaterialList" style="float:right;margin-right:6px" title="download a consolidated material list (BOM rollup) as CSV">export material list</button>
-    <button id="exportJson" style="float:right;margin-right:6px" title="download a JSON backup of this project">export JSON</button>
-    <label id="importJsonLabel" style="float:right;margin-right:6px;cursor:pointer" title="restore a project from a JSON backup">
-      import JSON<input id="importJson" type="file" accept="application/json,.json" hidden></label>
-    <label style="float:right;font-weight:normal;margin-right:8px"><input id="allPages" type="checkbox"> all pages</label>
-    <div id="measList">(none yet)</div></div>
+  <div id="measPanel">
+    <div id="measHeader">
+      <b>Measurements</b>
+      <div id="measControls">
+        <label class="allPagesLbl"><input id="allPages" type="checkbox"> all pages</label>
+        <button id="exportCsv" title="download all measurements as CSV">export CSV</button>
+        <button id="exportMaterialList" title="download a consolidated material list (BOM rollup) as CSV">export material list</button>
+        <button id="exportJson" title="download a JSON backup of this project">export JSON</button>
+        <label id="importJsonLabel" title="restore a project from a JSON backup">
+          import JSON<input id="importJson" type="file" accept="application/json,.json" hidden></label>
+      </div>
+    </div>
+    <div id="measList">(none yet)</div>
+  </div>
 </div>
 <div id="status">loading wasm…</div>
 <div id="storageModal" hidden>

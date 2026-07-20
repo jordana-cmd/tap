@@ -998,6 +998,39 @@ await run('deduct: takeoff.csv breaks out gross/deduct/net and names the deduct�
   assert.equal(ded[idx.gross] + ded[idx.deduct] + ded[idx.net], '', 'no gross/deduct/net on a deduct row');
 });
 
+await run('layout: export controls sit in a header above the list — no overlap; list scrolls', async page => {
+  // Give the list content so it renders alongside the header controls.
+  await setTool(page, 'count');
+  await clickBase(page, 600, 400);
+  await page.keyboard.press('Enter');
+  const geo = await page.evaluate(() => {
+    const listTop = document.querySelector('#measList').getBoundingClientRect().top;
+    const ids = ['allPages', 'exportCsv', 'exportMaterialList', 'exportJson', 'importJsonLabel'];
+    const maxBottom = Math.max(...ids.map(id => document.getElementById(id).getBoundingClientRect().bottom));
+    return { listTop, maxBottom, overflowY: getComputedStyle(document.querySelector('#measList')).overflowY };
+  });
+  // Every export control ends at or above the list's top edge (header block,
+  // not floated over the rows).
+  assert.ok(geo.maxBottom <= geo.listTop + 1,
+    `controls end (${geo.maxBottom.toFixed(1)}) at/above list top (${geo.listTop.toFixed(1)})`);
+  assert.equal(geo.overflowY, 'auto', 'the list scrolls independently');
+});
+
+await run('layout: the per-row colour swatch is a visible, bordered affordance', async page => {
+  await setTool(page, 'count');
+  await clickBase(page, 600, 400);
+  await page.keyboard.press('Enter');
+  const sw = await page.evaluate(() => {
+    const el = document.querySelector('.measRow .measColor');
+    if (!el) return null;
+    const cs = getComputedStyle(el);
+    return { w: el.getBoundingClientRect().width, borderStyle: cs.borderTopStyle };
+  });
+  assert.ok(sw, 'the row has a colour swatch');
+  assert.ok(sw.w >= 18, `swatch is visibly sized (${sw?.w}px ≥ 18)`);
+  assert.notEqual(sw.borderStyle, 'none', 'swatch has a visible border');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();
