@@ -27,8 +27,24 @@
   .measRow .measColor { width: 22px; height: 16px; padding: 0; border: none; cursor: pointer; }
   .renameInput { flex: 1 1 100%; font-size: 0.85rem; }
   .measRow button { border: none; background: none; color: #dc2626; cursor: pointer; }
-  #projectPanel { background: #fff; border: 1px solid #d6d3d1; padding: 8px; margin: 6px 0;
-                  max-width: 640px; font-size: 0.85rem; }
+  #projectPanel, #assemblyPanel { background: #fff; border: 1px solid #d6d3d1; padding: 8px;
+                  margin: 6px 0; max-width: 720px; font-size: 0.85rem; }
+  .asmRow { display: flex; align-items: baseline; gap: 10px; padding: 4px;
+            border-bottom: 1px solid #e7e5e4; }
+  .asmRow .asmName { font-weight: 500; flex: 1 1 auto; }
+  .asmRow .asmMeta { color: #78716c; font-size: 0.78rem; }
+  #assemblyEditor:not([hidden]) { position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+                  z-index: 900; display: flex; align-items: flex-start; justify-content: center;
+                  overflow: auto; }
+  .editorBox { background: #fff; margin: 24px; padding: 16px; border-radius: 6px;
+               max-width: 760px; width: 100%; font-size: 0.85rem; }
+  .editorBox h2 { font-size: 1rem; margin: 0 0 8px; }
+  .editorBox .actions { margin-top: 14px; display: flex; gap: 10px; }
+  .paramRow, .partRow { display: flex; gap: 6px; align-items: center; margin: 3px 0; flex-wrap: wrap; }
+  .partRow input.formula { flex: 1 1 14em; font-family: ui-monospace, monospace; }
+  .partRow .fcheck { font-size: 0.78rem; min-width: 9em; }
+  .fcheck.ok { color: #15803d; } .fcheck.bad { color: #dc2626; }
+  .editorError { color: #dc2626; margin-top: 8px; min-height: 1.2em; }
   .projRow { display: flex; align-items: baseline; gap: 10px; padding: 4px;
              border-bottom: 1px solid #e7e5e4; }
   .projRow .projName { font-weight: 500; flex: 1 1 auto; }
@@ -66,10 +82,36 @@
   <span>fpi = <b id="fpiLabel">4.0 (synthetic)</b></span>
   <span id="saveState" title="autosave status">—</span>
   <button id="projectsBtn" title="saved projects">Projects</button>
+  <button id="assembliesBtn" title="assembly library">Assemblies</button>
 </div>
 <div id="projectPanel" hidden>
   <div id="projectQuota" class="origin"></div>
   <div id="projectList"></div>
+</div>
+<div id="assemblyPanel" hidden>
+  <b>Assembly library</b>
+  <button id="newAssembly" style="float:right">+ New assembly</button>
+  <div id="assemblyList"></div>
+</div>
+<div id="assemblyEditor" hidden>
+  <div class="editorBox">
+    <h2 id="editorTitle">New assembly</h2>
+    <label>name <input id="asmName" type="text" style="width:16em"></label>
+    <div style="margin:6px 0">applies to:
+      <label><input type="checkbox" class="asmApplies" value="area" checked> area</label>
+      <label><input type="checkbox" class="asmApplies" value="linear"> linear</label>
+      <label><input type="checkbox" class="asmApplies" value="count"> count</label>
+    </div>
+    <div><b>Parameters</b> <button id="addParam">+ parameter</button>
+      <div id="paramRows"></div></div>
+    <div style="margin-top:8px"><b>Parts</b> <button id="addPart">+ part</button>
+      <div id="partRows"></div></div>
+    <div id="editorError" class="editorError"></div>
+    <div class="actions">
+      <button id="saveAssembly">Save</button>
+      <button id="cancelAssembly">Cancel</button>
+    </div>
+  </div>
 </div>
 <div class="bar">
   <label>wall_threshold: <input id="thresh" type="range" min="0" max="255" step="5" value="200">
@@ -113,7 +155,8 @@
 
 <script type="module">
 import init, { detect_room, measure_polyline, measure_polygon_area, calibrate_two_point,
-  scale_presets_json, PageGeometry } from './pkg/engine_web.js';
+  scale_presets_json, PageGeometry, apply_assembly, eval_formula, seed_assemblies_json }
+  from './pkg/engine_web.js';
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
 import { extractSegments } from './extract.js';
 import * as store from './store.js';
@@ -830,6 +873,199 @@ async function renderProjectPanel() {
   }
 }
 
+// ---- assembly library (persisted in IndexedDB, one across all projects) ----
+const KIND_LABELS = { Area: 'area', Linear: 'linear', Count: 'count' };
+const UNITS = ['SF', 'LF', 'EA', 'GAL', 'HR', 'BOX'];
+
+/// Seed the library from engine-core's seeds ONCE (a flag makes deletes
+/// stick — no resurrection on reload).
+async function seedAssembliesOnce() {
+  if (await store.getMeta('assembliesSeeded')) return;
+  for (const asm of JSON.parse(seed_assemblies_json())) await store.putAssembly(asm);
+  await store.setMeta('assembliesSeeded', true);
+}
+
+async function renderAssemblyPanel() {
+  const list = $('assemblyList');
+  list.textContent = '';
+  const asms = await store.listAssemblies();
+  if (!asms.length) { list.textContent = '(no assemblies)'; return; }
+  for (const a of asms) {
+    const row = document.createElement('div');
+    row.className = 'asmRow';
+    const name = document.createElement('span');
+    name.className = 'asmName'; name.textContent = a.name;
+    const meta = document.createElement('span');
+    meta.className = 'asmMeta';
+    meta.textContent = `${(a.applies_to || []).map(k => KIND_LABELS[k] ?? k).join('/')} · ${a.parts.length} part(s)`;
+    const edit = document.createElement('button');
+    edit.textContent = 'edit';
+    edit.addEventListener('click', () => openAssemblyEditor(a));
+    const del = document.createElement('button');
+    del.textContent = '✕'; del.style.color = '#dc2626';
+    del.addEventListener('click', async () => {
+      if (!confirm(`Delete assembly "${a.name}"? This cannot be undone.`)) return;
+      await store.deleteAssembly(a.id);
+      renderAssemblyPanel();
+    });
+    row.append(name, meta, edit, del);
+    list.append(row);
+  }
+}
+
+// ---- authoring editor ----
+const SAMPLE_DRIVERS = { area_sf: 1000, perimeter_lf: 100, length_lf: 100, count_ea: 10 };
+
+/// Representative variable context for live validation: sample drivers +
+/// the current default of each parameter row.
+function editorSampleVars() {
+  const vars = { ...SAMPLE_DRIVERS };
+  for (const row of $('paramRows').querySelectorAll('.paramRow')) {
+    const name = row.querySelector('.pName').value.trim();
+    const def = parseFloat(row.querySelector('.pDefault').value);
+    if (name) vars[name] = Number.isFinite(def) ? def : 0;
+  }
+  return vars;
+}
+
+/// Validate one part's formula against the sample context; paint the
+/// inline ✓/✗ and return whether it is valid.
+function validateFormulaRow(row) {
+  const formula = row.querySelector('.formula').value.trim();
+  const chk = row.querySelector('.fcheck');
+  if (!formula) { chk.textContent = '(empty)'; chk.className = 'fcheck bad'; return false; }
+  try {
+    const v = eval_formula(formula, JSON.stringify(editorSampleVars()));
+    chk.textContent = `✓ = ${(+v.toFixed(3))}`; chk.className = 'fcheck ok';
+    return true;
+  } catch (e) {
+    chk.textContent = `✗ ${e.message ?? e}`; chk.className = 'fcheck bad';
+    return false;
+  }
+}
+
+function revalidateAllFormulas() {
+  for (const row of $('partRows').querySelectorAll('.partRow')) validateFormulaRow(row);
+}
+
+function addParamRow(p = { name: '', default: 0, unit: 'SF' }) {
+  const row = document.createElement('div');
+  row.className = 'paramRow';
+  row.innerHTML =
+    `<input class="pName" placeholder="name" style="width:14em">
+     <input class="pDefault" type="number" step="any" placeholder="default" style="width:6em">
+     <select class="pUnit">${UNITS.map(u => `<option${u === p.unit ? ' selected' : ''}>${u}</option>`).join('')}</select>
+     <button class="pDel">✕</button>`;
+  row.querySelector('.pName').value = p.name;
+  row.querySelector('.pDefault').value = p.default == null ? '' : p.default;
+  row.querySelector('.pDel').addEventListener('click', () => { row.remove(); revalidateAllFormulas(); });
+  // Editing a parameter changes the sample context → re-check formulas.
+  row.querySelector('.pName').addEventListener('input', revalidateAllFormulas);
+  row.querySelector('.pDefault').addEventListener('input', revalidateAllFormulas);
+  $('paramRows').append(row);
+}
+
+function addPartRow(p = { id: '', name: '', unit: 'SF', formula: '', waste_pct: null, rounding: 'None' }) {
+  const row = document.createElement('div');
+  row.className = 'partRow';
+  const roundMult = typeof p.rounding === 'object' ? p.rounding.CeilToMultiple : '';
+  const roundKind = typeof p.rounding === 'object' ? 'mult' : (p.rounding || 'None');
+  row.innerHTML =
+    `<input class="ptName" placeholder="part name" style="width:10em">
+     <select class="ptUnit">${UNITS.map(u => `<option${u === p.unit ? ' selected' : ''}>${u}</option>`).join('')}</select>
+     <input class="formula" placeholder="formula">
+     <input class="ptWaste" type="number" step="any" placeholder="waste%" style="width:5em">
+     <select class="ptRound">
+       <option value="None"${roundKind === 'None' ? ' selected' : ''}>no round</option>
+       <option value="Ceil"${roundKind === 'Ceil' ? ' selected' : ''}>ceil</option>
+       <option value="mult"${roundKind === 'mult' ? ' selected' : ''}>ceil ×N</option>
+     </select>
+     <input class="ptMult" type="number" step="any" placeholder="N" style="width:4em">
+     <span class="fcheck"></span>
+     <button class="ptDel">✕</button>`;
+  row.querySelector('.ptName').value = p.name;
+  row.querySelector('.formula').value = p.formula;
+  row.querySelector('.ptWaste').value = p.waste_pct == null ? '' : p.waste_pct;
+  row.querySelector('.ptMult').value = roundMult;
+  row.querySelector('.formula').addEventListener('input', () => validateFormulaRow(row));
+  row.querySelector('.ptDel').addEventListener('click', () => row.remove());
+  $('partRows').append(row);
+  validateFormulaRow(row);
+}
+
+let editingAssemblyId = null;
+
+function openAssemblyEditor(asm) {
+  editingAssemblyId = asm ? asm.id : null;
+  $('editorTitle').textContent = asm ? `Edit ${asm.name}` : 'New assembly';
+  $('asmName').value = asm ? asm.name : '';
+  const applies = new Set(asm ? asm.applies_to : ['Area']);
+  for (const cb of document.querySelectorAll('.asmApplies')) {
+    cb.checked = applies.has(cb.value.charAt(0).toUpperCase() + cb.value.slice(1));
+  }
+  $('paramRows').textContent = ''; $('partRows').textContent = '';
+  (asm ? asm.parameters : []).forEach(addParamRow);
+  (asm ? asm.parts : [{}]).forEach(p => addPartRow({ unit: 'SF', rounding: 'None', ...p }));
+  if (!asm && !$('partRows').children.length) addPartRow();
+  $('editorError').textContent = '';
+  $('assemblyEditor').hidden = false;
+  revalidateAllFormulas();
+}
+
+/// Read the editor into an engine-core-shaped assembly record.
+function readEditorAssembly() {
+  const applies_to = [...document.querySelectorAll('.asmApplies:checked')]
+    .map(cb => cb.value.charAt(0).toUpperCase() + cb.value.slice(1));
+  const parameters = [...$('paramRows').querySelectorAll('.paramRow')].map(r => {
+    const def = parseFloat(r.querySelector('.pDefault').value);
+    return {
+      name: r.querySelector('.pName').value.trim(),
+      default: Number.isFinite(def) ? def : null,
+      unit: r.querySelector('.pUnit').value,
+    };
+  }).filter(p => p.name);
+  const parts = [...$('partRows').querySelectorAll('.partRow')].map((r, i) => {
+    const waste = parseFloat(r.querySelector('.ptWaste').value);
+    const rk = r.querySelector('.ptRound').value;
+    const mult = parseFloat(r.querySelector('.ptMult').value);
+    const rounding = rk === 'mult' ? { CeilToMultiple: Number.isFinite(mult) ? mult : 1 } : rk;
+    const name = r.querySelector('.ptName').value.trim() || `Part ${i + 1}`;
+    return {
+      id: name.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+      name,
+      unit: r.querySelector('.ptUnit').value,
+      formula: r.querySelector('.formula').value.trim(),
+      waste_pct: Number.isFinite(waste) ? waste : null,
+      rounding,
+    };
+  });
+  return {
+    id: editingAssemblyId || `asm_${Date.now()}_${asmIdSeq++}`,
+    name: $('asmName').value.trim() || 'Untitled assembly',
+    applies_to, parameters, parts,
+  };
+}
+let asmIdSeq = 0;
+
+async function saveAssembly() {
+  const err = $('editorError');
+  if (![...document.querySelectorAll('.asmApplies:checked')].length) {
+    err.textContent = 'Pick at least one "applies to" kind.'; return;
+  }
+  const rows = [...$('partRows').querySelectorAll('.partRow')];
+  if (!rows.length) { err.textContent = 'Add at least one part.'; return; }
+  // Validate EVERY formula against the sample context before saving.
+  const bad = rows.find(r => !validateFormulaRow(r));
+  if (bad) {
+    err.textContent = 'Fix the highlighted formula before saving.';
+    bad.querySelector('.formula').focus();
+    return;
+  }
+  await store.putAssembly(readEditorAssembly());
+  $('assemblyEditor').hidden = true;
+  renderAssemblyPanel();
+}
+
 /// Sync the scale chip to the current page (page switches, file loads).
 function refreshScaleUI() {
   const f = scaleOf(currentPage());
@@ -1284,6 +1520,16 @@ $('projectsBtn').addEventListener('click', () => {
   panel.hidden = !panel.hidden;
   if (!panel.hidden) renderProjectPanel();
 });
+$('assembliesBtn').addEventListener('click', () => {
+  const panel = $('assemblyPanel');
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) renderAssemblyPanel();
+});
+$('newAssembly').addEventListener('click', () => openAssemblyEditor(null));
+$('addParam').addEventListener('click', () => addParamRow());
+$('addPart').addEventListener('click', () => addPartRow());
+$('saveAssembly').addEventListener('click', saveAssembly);
+$('cancelAssembly').addEventListener('click', () => { $('assemblyEditor').hidden = true; });
 $('storageExport').addEventListener('click', () => $('exportJson').click());
 $('storageDismiss').addEventListener('click', () => {
   storageBlocked = false;
@@ -1356,11 +1602,15 @@ window.__harness = {
   importJson: str => importJson(str),
   simulateStorageError: () => onStorageError(new Error('simulated quota exceeded')),
   storageBlocked: () => storageBlocked,
+  listAssemblies: () => store.listAssemblies(),
+  getAssembly: id => store.getAssembly(id),
+  deleteAssembly: id => store.deleteAssembly(id),
 };
 
 // ---- boot ----
 await init();
 store.requestPersist(); // best-effort: keep our storage across eviction
+await seedAssembliesOnce(); // populate the library from engine-core seeds
 for (const p of JSON.parse(scale_presets_json())) {
   const o = document.createElement('option');
   o.value = p.fpi; o.textContent = p.label;

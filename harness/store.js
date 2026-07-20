@@ -10,7 +10,7 @@
 // the Node test rig drives it through the page, never imports it.
 
 const DB_NAME = 'takeoff-harness';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 /// Hex SHA-256 of the PDF bytes — the content-addressed project key.
 export async function sha256(bytes) {
@@ -28,6 +28,10 @@ export function openDb() {
       const db = req.result;
       if (!db.objectStoreNames.contains('files')) db.createObjectStore('files', { keyPath: 'sha' });
       if (!db.objectStoreNames.contains('projects')) db.createObjectStore('projects', { keyPath: 'sha' });
+      // v2: the assembly LIBRARY (one across all projects) + a meta store
+      // for one-time flags (e.g. seeded-once so deletes stick).
+      if (!db.objectStoreNames.contains('assemblies')) db.createObjectStore('assemblies', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -68,6 +72,30 @@ export async function deleteProject(sha) {
   const db = await openDb();
   await tx(db, 'projects', 'readwrite', s => s.delete(sha));
   await tx(db, 'files', 'readwrite', s => s.delete(sha));
+}
+
+// ---- assembly library (one library across all projects) ----
+export async function putAssembly(rec) {
+  return tx(await openDb(), 'assemblies', 'readwrite', s => s.put(rec));
+}
+export async function getAssembly(id) {
+  return tx(await openDb(), 'assemblies', 'readonly', s => s.get(id));
+}
+export async function listAssemblies() {
+  const all = await tx(await openDb(), 'assemblies', 'readonly', s => s.getAll());
+  return (all ?? []).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+}
+export async function deleteAssembly(id) {
+  return tx(await openDb(), 'assemblies', 'readwrite', s => s.delete(id));
+}
+
+// ---- meta flags (one-time bookkeeping) ----
+export async function getMeta(key) {
+  const rec = await tx(await openDb(), 'meta', 'readonly', s => s.get(key));
+  return rec ? rec.value : undefined;
+}
+export async function setMeta(key, value) {
+  return tx(await openDb(), 'meta', 'readwrite', s => s.put({ key, value }));
 }
 
 /// Best-effort storage estimate (bytes used / quota); nulls if unsupported.

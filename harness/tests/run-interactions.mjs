@@ -611,6 +611,41 @@ await run('storage write failure blocks edits until acknowledged', async page =>
   assert.equal((await state(page)).meas.length, 2, 'edits resume after acknowledge');
 });
 
+await run('assembly library seeds the two engine assemblies', async page => {
+  const names = await page.evaluate(async () =>
+    (await window.__harness.listAssemblies()).map(a => a.name).sort());
+  assert.deepEqual(names, ['Commercial Flooring', 'Epoxy Coating'], 'library seeded from engine seeds');
+});
+
+await run('author: invalid formula blocked, valid formula accepted', async page => {
+  await page.click('#assembliesBtn');
+  await page.click('#newAssembly');
+  await page.waitForSelector('#assemblyEditor:not([hidden])', { timeout: 5000 });
+  await page.type('#asmName', 'Test Coating');
+  // The editor starts with one part row; give it a name and a BAD formula.
+  await page.type('.partRow .ptName', 'Bad');
+  await page.type('.partRow .formula', 'area_sf / (');
+  // Live validation shows an error; Save is refused (nothing persisted).
+  let chk = await page.$eval('.partRow .fcheck', el => el.className + '|' + el.textContent);
+  assert.match(chk, /bad/, `invalid formula flagged: ${chk}`);
+  await page.click('#saveAssembly');
+  assert.equal(await page.$eval('#assemblyEditor', el => el.hidden), false, 'editor stays open on invalid');
+  assert.match(await page.$eval('#editorError', el => el.textContent), /Fix/, 'save blocked with message');
+  let count = await page.evaluate(async () => (await window.__harness.listAssemblies()).length);
+  assert.equal(count, 2, 'nothing persisted while invalid');
+
+  // Fix the formula → validates ✓ → Save persists it.
+  await page.click('.partRow .formula', { clickCount: 3 });
+  await page.type('.partRow .formula', 'area_sf / 250');
+  chk = await page.$eval('.partRow .fcheck', el => el.className + '|' + el.textContent);
+  assert.match(chk, /ok/, `valid formula accepted: ${chk}`);
+  await page.click('#saveAssembly');
+  await page.waitForSelector('#assemblyEditor[hidden]', { timeout: 5000 });
+  const names = await page.evaluate(async () =>
+    (await window.__harness.listAssemblies()).map(a => a.name));
+  assert.ok(names.includes('Test Coating'), 'valid assembly persisted to the library');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();
