@@ -1641,6 +1641,37 @@ function deleteMeasurement(m) {
   renderMeasList(); render(); markDirty();
 }
 
+const KIND_NOUN = { area: 'area', linear: 'line', count: 'count' };
+const fmtQty = n => n.toLocaleString(undefined, { maximumFractionDigits: 1 });
+
+/// Per-kind counts + summed quantity for a group of measurements, e.g.
+/// "4 areas, 3,204 SF" (a condition is single-kind; the Unassigned group may
+/// mix kinds, so each is summed separately).
+function groupSubtotal(members) {
+  const byKind = {};
+  for (const m of members) {
+    (byKind[m.kind] ??= { count: 0, sum: 0 });
+    byKind[m.kind].count++; byKind[m.kind].sum += m.value;
+  }
+  return Object.entries(byKind).map(([k, v]) =>
+    `${v.count} ${KIND_NOUN[k]}${v.count === 1 ? '' : 's'}, ${fmtQty(v.sum)} ${UNIT[k]}`).join(' · ');
+}
+
+function buildGroupHeader(cond, members) {
+  const hdr = document.createElement('div');
+  hdr.className = 'measGroupHdr';
+  const sw = document.createElement('span');
+  sw.className = 'condSwatch';
+  sw.style.background = cond ? cond.color : '#d6d3d1';
+  const name = document.createElement('span');
+  name.textContent = cond ? cond.name : 'Unassigned';
+  const sub = document.createElement('span');
+  sub.className = 'gSub';
+  sub.textContent = groupSubtotal(members);
+  hdr.append(sw, name, sub);
+  return hdr;
+}
+
 function renderMeasList() {
   const list = $('measList');
   list.textContent = '';
@@ -1651,24 +1682,41 @@ function renderMeasList() {
     return;
   }
   const shown = new Set();
-  const emit = (m, indent) => {
-    const { row, panel } = buildMeasRow(m, indent);
-    list.append(row);
-    // A deduct nests directly under its parent; an area's BOM panel follows its
-    // deduct children.
-    if (m.kind === 'area') {
-      for (const d of deductsOf(m)) { if (visible.includes(d)) { shown.add(d.id); emit(d, true); } }
-    }
-    if (panel) list.append(panel);
-  };
-  for (const m of visible) {
-    if (m.kind === 'deduct') continue; // emitted under its parent
-    emit(m, false);
+  // Group non-deduct measurements by condition (conditions in order, then an
+  // Unassigned bucket for null/dangling conditionId). Deducts are emitted under
+  // their parent, inside the parent's group.
+  const nonDeduct = visible.filter(m => m.kind !== 'deduct');
+  const groups = [];
+  for (const c of conditions) {
+    const members = nonDeduct.filter(m => m.conditionId === c.id);
+    if (members.length) groups.push({ cond: c, members });
   }
-  // Unassigned deducts (ambiguous) and any whose parent isn't visible: surface
-  // them at top level so they're never lost.
-  for (const m of visible) {
-    if (m.kind === 'deduct' && !shown.has(m.id)) emit(m, true);
+  const unassigned = nonDeduct.filter(m => condOf(m) == null);
+  if (unassigned.length) groups.push({ cond: null, members: unassigned });
+
+  for (const g of groups) {
+    const box = document.createElement('div');
+    box.className = 'measGroup';
+    list.append(box);
+    box.append(buildGroupHeader(g.cond, g.members));
+    // Re-point emit's appends at the group box for this group.
+    const groupEmit = (m, indent) => {
+      const { row, panel } = buildMeasRow(m, indent);
+      box.append(row);
+      if (m.kind === 'area') {
+        for (const d of deductsOf(m)) { if (visible.includes(d)) { shown.add(d.id); groupEmit(d, true); } }
+      }
+      if (panel) box.append(panel);
+    };
+    for (const m of g.members) groupEmit(m, false);
+  }
+  // Orphan deducts (no visible parent / unassigned parent) — never lose them.
+  const orphans = visible.filter(m => m.kind === 'deduct' && !shown.has(m.id));
+  if (orphans.length) {
+    const box = document.createElement('div');
+    box.className = 'measGroup';
+    list.append(box);
+    for (const m of orphans) { const { row } = buildMeasRow(m, true); box.append(row); }
   }
 }
 
@@ -1728,25 +1776,26 @@ function buildCsv() {
 /// cannot be quantified (no page scale, or its assembly left the library) is
 /// skipped and its names counted so the caller can surface the gap.
 function buildMaterialList() {
-  const roll = new Map(); // "part unit" -> { part, unit, total, names }
+  const roll = new Map(); // "cond part unit" -> { cond, part, unit, total, names }
   const skipped = [];
   for (const m of measurements) {
-    if (!m.assemblyId) continue;
+    if (m.kind === 'deduct' || !effAssemblyId(m)) continue;
     const res = computeBom(m);
     if (!res.ok) { skipped.push(m.name); continue; }
+    const cond = condOf(m)?.name ?? '(unassigned)';
     for (const li of res.bom.line_items) {
-      const key = `${li.part_name} ${li.unit}`;
-      const agg = roll.get(key) ?? { part: li.part_name, unit: li.unit, total: 0, names: [] };
+      const key = `${cond} ${li.part_name} ${li.unit}`;
+      const agg = roll.get(key) ?? { cond, part: li.part_name, unit: li.unit, total: 0, names: [] };
       agg.total += li.final_quantity;
       agg.names.push(m.name);
       roll.set(key, agg);
     }
   }
-  const rows = [['part', 'unit', 'total_quantity', 'measurements'].join(',')];
+  const rows = [['condition', 'part', 'unit', 'total_quantity', 'measurements'].join(',')];
   const sorted = [...roll.values()].sort((a, b) =>
-    a.part.localeCompare(b.part) || a.unit.localeCompare(b.unit));
+    a.cond.localeCompare(b.cond) || a.part.localeCompare(b.part) || a.unit.localeCompare(b.unit));
   for (const r of sorted) {
-    rows.push([csvCell(r.part), csvCell(r.unit), niceNum(r.total),
+    rows.push([csvCell(r.cond), csvCell(r.part), csvCell(r.unit), niceNum(r.total),
                csvCell(r.names.join('; '))].join(','));
   }
   return { csv: rows.join('\n') + '\n', lineCount: sorted.length, skipped };
@@ -2206,8 +2255,8 @@ $('exportCsv').addEventListener('click', () => {
   say(`exported ${measurements.length} measurement(s) to takeoff.csv`);
 });
 $('exportMaterialList').addEventListener('click', () => {
-  if (!measurements.some(m => m.assemblyId)) {
-    say('attach an assembly to a measurement first — nothing to roll up');
+  if (!measurements.some(m => m.kind !== 'deduct' && effAssemblyId(m))) {
+    say('attach an assembly (directly or via a condition) first — nothing to roll up');
     return;
   }
   const { csv, lineCount, skipped } = buildMaterialList();
@@ -2326,6 +2375,15 @@ window.__harness = {
   conditionIdOf: id => measurements.find(x => x.id === id)?.conditionId ?? null,
   setMeasColor: (id, color) => { const m = measurements.find(x => x.id === id); if (m) { m.color = color; renderMeasList(); render(); markDirty(); } },
   setMeasAssembly: (id, asmId) => { const m = measurements.find(x => x.id === id); if (m) { m.assemblyId = asmId; renderMeasList(); markDirty(); } },
+  conditionSubtotals: () => {
+    const g = conditions.map(c => {
+      const mem = measurements.filter(m => m.kind !== 'deduct' && m.conditionId === c.id);
+      return { id: c.id, name: c.name, kind: c.kind, count: mem.length, total: mem.reduce((s, m) => s + m.value, 0) };
+    });
+    const un = measurements.filter(m => m.kind !== 'deduct' && condOf(m) == null);
+    g.push({ id: null, name: 'Unassigned', kind: null, count: un.length, total: un.reduce((s, m) => s + m.value, 0) });
+    return g;
+  },
 };
 
 // ---- boot ----

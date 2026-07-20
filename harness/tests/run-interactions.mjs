@@ -786,14 +786,14 @@ await run('material list: rolls up line items across measurements by (part, unit
   await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), proj);
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const lines = out.csv.trim().split('\n');
-  assert.equal(lines[0], 'part,unit,total_quantity,measurements', 'header');
-  // Adhesive: ceil(2475/150)=17 GAL per room, summed across both rooms = 34,
-  // with both contributing measurements listed.
-  const adhesive = lines.filter(l => l.startsWith('Adhesive,'));
+  assert.equal(lines[0], 'condition,part,unit,total_quantity,measurements', 'header');
+  // No condition on these rooms → "(unassigned)" condition column.
+  // Adhesive: ceil(2475/150)=17 GAL per room, summed across both rooms = 34.
+  const adhesive = lines.filter(l => l.includes(',Adhesive,'));
   assert.equal(adhesive.length, 1, 'exactly one Adhesive/GAL row (rolled up, not duplicated)');
-  assert.equal(adhesive[0], 'Adhesive,GAL,34,Room 1; Room 2', `adhesive rollup: ${adhesive[0]}`);
-  // Boxes: 137 each → 274. Rows are sorted by part name for a stable sheet.
-  assert.ok(lines.includes('Flooring boxes,BOX,274,Room 1; Room 2'), 'boxes summed to 274');
+  assert.equal(adhesive[0], '(unassigned),Adhesive,GAL,34,Room 1; Room 2', `adhesive rollup: ${adhesive[0]}`);
+  // Boxes: 137 each → 274. Rows are sorted by condition then part.
+  assert.ok(lines.includes('(unassigned),Flooring boxes,BOX,274,Room 1; Room 2'), 'boxes summed to 274');
   assert.equal(out.skipped.length, 0, 'both rooms quantifiable');
 });
 
@@ -967,9 +967,9 @@ await run('deduct: "include perimeter" flag changes the cove-base LF by the dedu
 await run('deduct: the material list inherits net (rolls up from the net BOM)', async page => {
   await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), flooringRoomWithDeduct());
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
-  const line = out.csv.trim().split('\n').find(l => l.startsWith('Flooring material,'));
+  const line = out.csv.trim().split('\n').find(l => l.includes(',Flooring material,'));
   // Net-based material quantity (1210), same as the BOM — no separate rollup path.
-  assert.equal(line, 'Flooring material,SF,1210,Room 1', `material list uses net: ${line}`);
+  assert.equal(line, '(unassigned),Flooring material,SF,1210,Room 1', `material list uses net: ${line}`);
 });
 
 await run('deduct: takeoff.csv breaks out gross/deduct/net and names the deduct’s parent', async page => {
@@ -1139,6 +1139,66 @@ await run('condition: reload restores conditions, active id, and conditionId', a
   assert.equal(st.active, st.conds[0].id, 'active condition restored');
   assert.equal(st.cid, st.conds[0].id, 'measurement conditionId restored');
   assert.equal(st.color, '#7c3aed', 'colour still derives after reload');
+});
+
+await run('condition: the list groups by condition with per-condition subtotals', async page => {
+  // Two area conditions + one unassigned area, imported directly.
+  await page.evaluate(() => window.__harness.importJson(JSON.stringify({
+    version: 1, sha: 'x', name: 'grp',
+    pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
+    conditions: [
+      { id: 1, name: 'Epoxy', color: '#15803d', kind: 'area', assemblyId: null },
+      { id: 2, name: 'Polish', color: '#7c3aed', kind: 'area', assemblyId: null },
+    ],
+    activeConditionId: 1,
+    measurements: [
+      // 400×300 = 1200 SF and 200×300 = 600 SF under Epoxy → 1800 SF, 2 areas.
+      { id: 1, page: 1, kind: 'area', label: 'E1', origin: 'manual', geometry: [0, 0, 400, 0, 400, 300, 0, 300], conditionId: 1 },
+      { id: 2, page: 1, kind: 'area', label: 'E2', origin: 'manual', geometry: [0, 0, 200, 0, 200, 300, 0, 300], conditionId: 1 },
+      // 100×300 = 300 SF under Polish.
+      { id: 3, page: 1, kind: 'area', label: 'P1', origin: 'manual', geometry: [0, 0, 100, 0, 100, 300, 0, 300], conditionId: 2 },
+      // Unassigned area.
+      { id: 4, page: 1, kind: 'area', label: 'U1', origin: 'manual', geometry: [0, 0, 100, 0, 100, 100, 0, 100] },
+    ],
+  })));
+  // Group headers render, in condition order then Unassigned.
+  const headers = await page.evaluate(() =>
+    [...document.querySelectorAll('.measGroupHdr')].map(h => h.textContent));
+  assert.equal(headers.length, 3, 'Epoxy, Polish, Unassigned group headers');
+  assert.match(headers[0], /Epoxy.*2 areas, 1,800 SF/, `epoxy subtotal: ${headers[0]}`);
+  assert.match(headers[1], /Polish.*1 area, 300 SF/, `polish subtotal: ${headers[1]}`);
+  assert.match(headers[2], /Unassigned/, `unassigned header: ${headers[2]}`);
+  // The hook subtotals agree.
+  const subs = await page.evaluate(() => window.__harness.conditionSubtotals());
+  assert.deepEqual(subs.map(s => [s.name, s.count, Math.round(s.total)]),
+    [['Epoxy', 2, 1800], ['Polish', 1, 300], ['Unassigned', 1, 100]]);
+});
+
+await run('condition: the material list separates products (per-condition rollup)', async page => {
+  // Epoxy → epoxy_coating; Polish → commercial_flooring; each a 1200 SF room.
+  await page.evaluate(() => window.__harness.importJson(JSON.stringify({
+    version: 1, sha: 'x', name: 'ml',
+    pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
+    conditions: [
+      { id: 1, name: 'Epoxy', color: '#15803d', kind: 'area', assemblyId: 'epoxy_coating' },
+      { id: 2, name: 'Polish', color: '#7c3aed', kind: 'area', assemblyId: 'commercial_flooring' },
+    ],
+    activeConditionId: 1,
+    measurements: [
+      { id: 1, page: 1, kind: 'area', label: 'E1', origin: 'manual', geometry: [0, 0, 400, 0, 400, 300, 0, 300], conditionId: 1 },
+      { id: 2, page: 1, kind: 'area', label: 'P1', origin: 'manual', geometry: [0, 0, 400, 0, 400, 300, 0, 300], conditionId: 2 },
+    ],
+  })));
+  const out = await page.evaluate(() => window.__harness.buildMaterialList());
+  const lines = out.csv.trim().split('\n');
+  assert.equal(lines[0], 'condition,part,unit,total_quantity,measurements');
+  // Every data row is tagged with its condition; Epoxy and Polish are separate.
+  assert.ok(lines.slice(1).every(l => l.startsWith('Epoxy,') || l.startsWith('Polish,')),
+    'every row carries its condition');
+  assert.ok(lines.some(l => l.startsWith('Epoxy,Epoxy,GAL,')), `epoxy line present: ${lines.join(' | ')}`);
+  assert.ok(lines.some(l => l.startsWith('Polish,Flooring boxes,BOX,')), 'polish flooring line present');
+  // No row mixes the two products.
+  assert.ok(!lines.some(l => l.startsWith('Epoxy,Flooring boxes')), 'epoxy has no flooring parts');
 });
 
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
