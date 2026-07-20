@@ -1,0 +1,69 @@
+# Consumable profiles — assignment & membership
+
+Consumables are **not selectable**. They're auto-derived from the assemblies on
+a measurement, via each assembly's consumable profile. This file is the readable
+mirror of the seeded data in `crates/engine-core/src/assembly/seeds.rs`
+(`consumable_profiles()`, `mcfc_systems()`, `mcfc_addons()`).
+
+> ⚠ **UNVALIDATED DOMAIN PROPOSAL.** The MCFC quoting tool applied *all*
+> consumables to *every* job — it did not split them by system. The
+> coating/grinding/repair split below (membership **and** scope) is a proposal
+> that needs review against real jobs. The **grinding** membership is the least
+> certain.
+
+## Scope of each consumable
+
+`PerApplication` scales with each profile-bearing assembly stacked (two coats
+use two sets); `PerArea` is charged once per area, deduped across the whole
+effective stack.
+
+| consumable | scope | note |
+|---|---|---|
+| 10-Quart Cups | PerApplication | |
+| 5-Quart Cups | PerApplication | |
+| 2.5-Quart Cups | PerApplication | |
+| Quart Cups | PerApplication | |
+| Brushes | PerApplication | |
+| Roller Covers | PerApplication | |
+| Mini Roller Covers | PerApplication | |
+| Trowels | PerApplication | ⚠ semi-durable — per broadcast; drives most of the stacking swing |
+| Whips | PerApplication | ⚠ mixing paddle; cost ≈ $0 |
+| Rags | PerArea | |
+| Gloves | PerArea | |
+| Trash Bags | PerArea | |
+
+## Profile membership
+
+- **Coating** — the full process (mix / apply / broadcast / clean): all 12.
+- **Grinding** ⚠ — Quart Cups, Brushes, Roller Covers, Mini Roller Covers, Rags,
+  Gloves, Trash Bags. (No large mixing cups, no trowel, no whips.)
+- **Repair** — Trowels, Quart Cups, Brushes, Gloves, Rags, Trash Bags. A
+  localized patch, not a coat: no rollers, no large mixing cups.
+
+## Assembly → profile
+
+| assembly | kind | profile | behavior |
+|---|---|---|---|
+| Epoxy 2-Coat | system | coating | full-area coat |
+| Epoxy + High Wear Urethane | system | coating | full-area coat |
+| Polyurea Flake | system | coating | full-area coat |
+| Flake Double Broadcast | system | coating | full-area coat |
+| Quartz Double Broadcast | system | coating | full-area coat |
+| Polished Concrete | system | **grinding** ⚠ | grind |
+| Grind & Seal | system | **grinding** ⚠ | grind |
+| Moisture Mitigation (H2 Out) | add-on | coating | full-area coat |
+| Crack Repair (Mender + Sand) | add-on | repair | localized repair |
+| Crack Stitching | add-on | repair | localized repair |
+| Joint Fill (Polyurea Caulk) | add-on (Linear) | repair | localized; area-driven consumables ⇒ none on a Linear job |
+| Anti-Slip (Shark Grip) | add-on | **none** | additive — broadcast onto a coat already billed |
+| Fast Cure Activator | add-on | **none** | additive — mixed into a coat already billed |
+
+## What this changed (validation)
+
+The phase-2 stacking fixture (Epoxy+HW + Crack Repair, 5,000 SF) moved from
+**$6,196.27** → **$6,573.25** (+$376.98). The swing is Crack Repair's second
+application adding its own repair-profile per-application set (trowel + quart
+cups + brush); per-area items (gloves/rags/trash) stay charged once. A
+single-system job is unchanged (per-app once + per-area once = the old flat
+rate). Trowels ($329.90/application here) dominate the swing — a good place to
+sanity-check the trowel scope/rate.

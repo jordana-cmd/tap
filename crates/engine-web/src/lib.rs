@@ -964,11 +964,11 @@ mod tests {
         // Seeds deserialize back into engine-core Assemblies: the two synthetic
         // examples first (order relied on below), then the MCFC catalog.
         let seeds: Vec<engine_core::assembly::Assembly> = serde_json::from_str(&json).unwrap();
-        assert_eq!(seeds.len(), 2 + 7 + 6 + 1); // synthetic + systems + add-ons + consumables
+        assert_eq!(seeds.len(), 2 + 7 + 6); // synthetic + systems + add-ons (consumables auto)
         assert_eq!(seeds[0].name, "Commercial Flooring");
         assert_eq!(seeds[1].name, "Epoxy Coating");
         assert!(seeds.iter().any(|s| s.name == "Epoxy + High Wear Urethane"));
-        assert!(seeds.iter().any(|s| s.name == "Job Consumables"));
+        assert!(!seeds.iter().any(|s| s.name == "Job Consumables"), "consumables are not a selectable assembly");
         // Every area seed applies cleanly; the caulk add-on is linear.
         let dj = r#"{"kind":"area","area_sf":1000,"perimeter_lf":130}"#;
         assert!(apply_assembly_core(&serde_json::to_string(&seeds[0]).unwrap(), dj, "{}").is_ok());

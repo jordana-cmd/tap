@@ -18,8 +18,8 @@ pub mod traits;
 pub mod units;
 
 pub use assembly::{
-    apply, apply_with_manual, Assembly, AssemblyError, BillOfMaterials, ExprError, LineItem,
-    MeasureKind, MeasurementInput, Parameter, Part, Rounding, Unit,
+    apply, apply_with_manual, Assembly, AssemblyError, BillOfMaterials, Category, ConsumableProfile,
+    ExprError, LineItem, MeasureKind, MeasurementInput, Parameter, Part, Rounding, Scope, Unit,
 };
 pub use detect::{
     classify_hatch, default_min_width, detect_candidates, detect_room, detect_room_from_mask,

@@ -71,6 +71,42 @@ pub enum MeasureKind {
     Count,
 }
 
+/// Whether a part is a job MATERIAL (billed as materials) or a CONSUMABLE
+/// (cups, rollers, gloves — billed separately, driven by an assembly's
+/// [`ConsumableProfile`], never a standalone line).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum Category {
+    #[default]
+    Material,
+    Consumable,
+}
+
+/// How a consumable scales across a STACK of assemblies (load-bearing now that
+/// stacking ships). Ignored for [`Category::Material`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum Scope {
+    /// Charged once per profile-bearing assembly applied — two stacked coats
+    /// really do use a second set of cups/rollers.
+    #[default]
+    PerApplication,
+    /// Charged ONCE per area regardless of how many assemblies stack — gloves,
+    /// rags, trash bags. Deduped across the whole effective stack.
+    PerArea,
+}
+
+/// A named set of consumable part ids. An [`Assembly`] references one via
+/// `consumable_profile_id`; applying the assembly auto-includes the profile's
+/// consumables (per the stack scope rules), so they are never picked by hand.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ConsumableProfile {
+    pub id: String,
+    pub name: String,
+    pub part_ids: Vec<String>,
+}
+
 /// A named assembly parameter with an optional default. A parameter with
 /// no default is UNBOUND until a caller supplies one — applying then
 /// errors rather than guessing (this step uses defaults only).
@@ -113,6 +149,13 @@ pub struct Part {
     pub supplier: Option<String>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub sku: Option<String>,
+    /// Material (billed as materials) or consumable (billed separately via a
+    /// profile). Defaults to Material so pre-profile parts load unchanged.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub category: Category,
+    /// How a consumable scales across a stack. Ignored for materials.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub scope: Scope,
 }
 
 /// A reusable recipe: parameters + formula-driven parts, applicable to
@@ -125,6 +168,11 @@ pub struct Assembly {
     pub applies_to: Vec<MeasureKind>,
     pub parameters: Vec<Parameter>,
     pub parts: Vec<Part>,
+    /// The consumable profile whose consumables applying this assembly auto-
+    /// includes (None = adds no consumables — e.g. additives mixed into a coat
+    /// already billed). Serde-default None so pre-profile assemblies load.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub consumable_profile_id: Option<String>,
 }
 
 /// The driving quantities from a measurement. Only the fields relevant to
@@ -361,6 +409,8 @@ mod tests {
             manual: false,
             supplier: None,
             sku: None,
+            category: Category::Material,
+            scope: Scope::PerApplication,
         }
     }
 
@@ -371,7 +421,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             applies_to: vec![MeasureKind::Area],
-            parameters: vec![],
+            consumable_profile_id: None,            parameters: vec![],
             parts: vec![part("Boxes", Unit::BOX, "area_sf / 20", Some(10.0), Rounding::Ceil)],
         };
         let bom = apply(&a, &MeasurementInput::area(2475.0, 0.0)).unwrap();
@@ -388,7 +438,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             applies_to: vec![MeasureKind::Area],
-            parameters: vec![],
+            consumable_profile_id: None,            parameters: vec![],
             parts: vec![part("P", Unit::BOX, formula, None, r)],
         };
         let final_of = |a: &Assembly, sf: f64| {
@@ -411,7 +461,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             applies_to: vec![MeasureKind::Area],
-            parameters: vec![],
+            consumable_profile_id: None,            parameters: vec![],
             parts: vec![part("P", Unit::SF, "area_sf", None, Rounding::None)],
         };
         assert!(matches!(
@@ -423,7 +473,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             applies_to: vec![MeasureKind::Area],
-            parameters: vec![Parameter { name: "k".into(), default: None, unit: Unit::EA }],
+            consumable_profile_id: None,            parameters: vec![Parameter { name: "k".into(), default: None, unit: Unit::EA }],
             parts: vec![part("P", Unit::SF, "area_sf * k", None, Rounding::None)],
         };
         assert_eq!(
@@ -438,7 +488,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             applies_to: vec![MeasureKind::Area],
-            parameters: vec![],
+            consumable_profile_id: None,            parameters: vec![],
             parts: vec![part("Bad", Unit::SF, "area_sf / 0", None, Rounding::None)],
         };
         match apply(&a, &MeasurementInput::area(10.0, 0.0)) {
@@ -457,7 +507,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             applies_to: vec![MeasureKind::Area],
-            parameters: vec![],
+            consumable_profile_id: None,            parameters: vec![],
             parts: vec![
                 priced_part("Paint", Unit::GAL, "area_sf * 0.01", None, Rounding::None, 42.4),
                 priced_part("Primer", Unit::GAL, "area_sf * 0.005", None, Rounding::Ceil, 30.0),
@@ -476,7 +526,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             applies_to: vec![MeasureKind::Area],
-            parameters: vec![],
+            consumable_profile_id: None,            parameters: vec![],
             parts: vec![
                 priced_part("Flake thrown", Unit::BOX, "area_sf * 0.0075", None, Rounding::None, 74.0),
                 priced_part("Flake recovered", Unit::BOX, "area_sf * 0.00425", None, Rounding::None, -74.0),
@@ -501,7 +551,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             applies_to: vec![MeasureKind::Area],
-            parameters: vec![],
+            consumable_profile_id: None,            parameters: vec![],
             parts: vec![stitch],
         };
         let manual = BTreeMap::from([("crack_stitch".to_string(), 12.0)]);
@@ -520,7 +570,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             applies_to: vec![MeasureKind::Area],
-            parameters: vec![],
+            consumable_profile_id: None,            parameters: vec![],
             parts: vec![stitch],
         };
         // No quantity supplied → a clear error, never a silent zero line.
@@ -537,7 +587,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             applies_to: vec![MeasureKind::Count],
-            parameters: vec![],
+            consumable_profile_id: None,            parameters: vec![],
             parts: vec![part("P", Unit::LF, "perimeter_lf", None, Rounding::None)],
         };
         match apply(&a, &MeasurementInput::count(5.0)) {
