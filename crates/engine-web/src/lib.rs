@@ -74,6 +74,7 @@ impl WebError {
                     ExprError::TypeError(_) => "FORMULA_TYPE",
                     ExprError::ArgCount { .. } => "FORMULA_ARG_COUNT",
                 },
+                AssemblyError::MissingManualQuantity(_) => "MISSING_QUANTITY",
             },
         }
     }
@@ -418,6 +419,12 @@ fn unit_str(u: Unit) -> &'static str {
         Unit::GAL => "GAL",
         Unit::HR => "HR",
         Unit::BOX => "BOX",
+        Unit::L => "L",
+        Unit::Cup => "Cup",
+        Unit::Cap => "Cap",
+        Unit::Stitch => "Stitch",
+        Unit::Tube => "Tube",
+        Unit::Lb => "lb",
     }
 }
 

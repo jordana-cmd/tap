@@ -16,6 +16,10 @@ fn part(id: &str, name: &str, unit: Unit, formula: &str, waste: Option<f64>, r: 
         formula: formula.to_string(),
         waste_pct: waste,
         rounding: r,
+        unit_cost: 0.0, // priced catalog lands in the next commit
+        manual: false,
+        supplier: None,
+        sku: None,
     }
 }
 

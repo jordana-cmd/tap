@@ -34,6 +34,18 @@ pub enum Unit {
     HR,
     /// Boxes (packaged material).
     BOX,
+    /// Litres (liquid coating components).
+    L,
+    /// Cups (measured additive volume).
+    Cup,
+    /// Caps (measured additive volume).
+    Cap,
+    /// Stitches (discrete crack-stitching count).
+    Stitch,
+    /// Tubes (caulk / joint fill).
+    Tube,
+    /// Pounds (broadcast aggregate).
+    Lb,
 }
 
 /// Packaging rule applied AFTER waste, to turn a fractional quantity into
@@ -79,13 +91,28 @@ pub struct Part {
     pub name: String,
     pub unit: Unit,
     /// Expression over `area_sf`, `perimeter_lf`, `length_lf`, `count_ea`,
-    /// and the assembly's parameters.
+    /// and the assembly's parameters. Ignored when `manual` is set.
     pub formula: String,
     /// Waste percentage (e.g. `10.0` = +10%), applied to the raw formula
     /// result before rounding. `None` = no waste.
     pub waste_pct: Option<f64>,
     /// Packaging rule applied after waste.
     pub rounding: Rounding,
+    /// Cost per unit. MAY BE NEGATIVE — a recovered-material credit (e.g. the
+    /// −$74/box flake credit) reduces the materials total. Derived cost is
+    /// never persisted (invariant 5); this is a recipe input, not a quantity.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub unit_cost: f64,
+    /// The quantity is entered by the user, not formula-derived (e.g. crack
+    /// stitching is per-stitch). Applying then REQUIRES a supplied quantity —
+    /// a missing one errors rather than silently computing zero.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub manual: bool,
+    /// Optional procurement metadata (no cost impact).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub supplier: Option<String>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub sku: Option<String>,
 }
 
 /// A reusable recipe: parameters + formula-driven parts, applicable to
@@ -158,12 +185,20 @@ pub struct LineItem {
     pub final_quantity: f64,
     /// The source formula that produced `raw_quantity` (provenance).
     pub formula_text: String,
+    /// Cost per unit carried from the part (may be negative — a credit).
+    pub unit_cost: f64,
+    /// `final_quantity × unit_cost` — the line's contribution to the total.
+    /// Negative for a credit.
+    pub extended_cost: f64,
 }
 
 /// The full derived bill of materials for one applied assembly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BillOfMaterials {
     pub line_items: Vec<LineItem>,
+    /// Sum of every line's `extended_cost` (credits included). Derived, never
+    /// persisted (invariant 5).
+    pub materials_total: f64,
 }
 
 /// Applying an assembly failed. Every variant names what went wrong so a
@@ -183,6 +218,8 @@ pub enum AssemblyError {
         #[source]
         source: ExprError,
     },
+    #[error("part `{0}` needs a manually-entered quantity")]
+    MissingManualQuantity(String),
 }
 
 /// Round-up helper with an epsilon so an EXACT multiple does not over-round
@@ -195,17 +232,34 @@ fn ceil_eps(v: f64) -> f64 {
     }
 }
 
-/// Apply an assembly to a measurement, producing a [`BillOfMaterials`].
-///
-/// Per line the order is fixed and explicit:
-/// `raw = eval(formula)` → `waste_applied = raw × (1 + waste_pct/100)`
-/// → `final_quantity = round(waste_applied)` per the part's [`Rounding`].
-/// Waste is applied ONCE per part, to the raw result, before rounding; it
-/// does not compound across parts. Formulas parse and evaluate here — the
-/// recompute-on-read path (invariant 5); nothing is cached as truth.
+/// Apply an assembly to a measurement, producing a [`BillOfMaterials`] with no
+/// manual quantities supplied. A `manual` part errors — use
+/// [`apply_with_manual`] when the recipe has manual parts.
 pub fn apply(
     assembly: &Assembly,
     input: &MeasurementInput,
+) -> Result<BillOfMaterials, AssemblyError> {
+    apply_with_manual(assembly, input, &BTreeMap::new())
+}
+
+/// Apply an assembly, drawing manual-part quantities from `manual` (keyed by
+/// part id).
+///
+/// Per formula-driven line the order is fixed and explicit:
+/// `raw = eval(formula)` → `waste_applied = raw × (1 + waste_pct/100)`
+/// → `final_quantity = round(waste_applied)` per the part's [`Rounding`].
+/// A `manual` part instead takes `raw` from `manual[part.id]` — and errors
+/// [`MissingManualQuantity`] if absent, never silently computing zero — then
+/// runs the same waste → rounding pipeline.
+///
+/// Each line carries `unit_cost` from the part and `extended_cost =
+/// final_quantity × unit_cost` (negative for a credit); the BOM's
+/// `materials_total` sums them. Formulas parse and evaluate here — the
+/// recompute-on-read path (invariant 5); nothing is cached as truth.
+pub fn apply_with_manual(
+    assembly: &Assembly,
+    input: &MeasurementInput,
+    manual: &BTreeMap<String, f64>,
 ) -> Result<BillOfMaterials, AssemblyError> {
     if !assembly.applies_to.contains(&input.kind) {
         return Err(AssemblyError::WrongKind {
@@ -234,15 +288,24 @@ pub fn apply(
     }
 
     let mut line_items = Vec::with_capacity(assembly.parts.len());
+    let mut materials_total = 0.0;
     for part in &assembly.parts {
-        let ast = expr::parse(&part.formula).map_err(|source| AssemblyError::Formula {
-            part: part.name.clone(),
-            source,
-        })?;
-        let raw = ast.eval_num(&vars).map_err(|source| AssemblyError::Formula {
-            part: part.name.clone(),
-            source,
-        })?;
+        let (raw, formula_text) = if part.manual {
+            let q = *manual
+                .get(&part.id)
+                .ok_or_else(|| AssemblyError::MissingManualQuantity(part.id.clone()))?;
+            (q, "(manual quantity)".to_string())
+        } else {
+            let ast = expr::parse(&part.formula).map_err(|source| AssemblyError::Formula {
+                part: part.name.clone(),
+                source,
+            })?;
+            let raw = ast.eval_num(&vars).map_err(|source| AssemblyError::Formula {
+                part: part.name.clone(),
+                source,
+            })?;
+            (raw, part.formula.clone())
+        };
         let waste_applied = match part.waste_pct {
             Some(pct) => raw * (1.0 + pct / 100.0),
             None => raw,
@@ -252,16 +315,23 @@ pub fn apply(
             Rounding::Ceil => ceil_eps(waste_applied),
             Rounding::CeilToMultiple(n) => ceil_eps(waste_applied / n) * n,
         };
+        let extended_cost = final_quantity * part.unit_cost;
+        materials_total += extended_cost;
         line_items.push(LineItem {
             part_name: part.name.clone(),
             unit: part.unit,
             raw_quantity: raw,
             waste_applied,
             final_quantity,
-            formula_text: part.formula.clone(),
+            formula_text,
+            unit_cost: part.unit_cost,
+            extended_cost,
         });
     }
-    Ok(BillOfMaterials { line_items })
+    Ok(BillOfMaterials {
+        line_items,
+        materials_total,
+    })
 }
 
 #[cfg(test)]
@@ -269,6 +339,17 @@ mod tests {
     use super::*;
 
     fn part(name: &str, unit: Unit, formula: &str, waste: Option<f64>, r: Rounding) -> Part {
+        priced_part(name, unit, formula, waste, r, 0.0)
+    }
+
+    fn priced_part(
+        name: &str,
+        unit: Unit,
+        formula: &str,
+        waste: Option<f64>,
+        r: Rounding,
+        unit_cost: f64,
+    ) -> Part {
         Part {
             id: name.to_lowercase().replace(' ', "_"),
             name: name.to_string(),
@@ -276,6 +357,10 @@ mod tests {
             formula: formula.to_string(),
             waste_pct: waste,
             rounding: r,
+            unit_cost,
+            manual: false,
+            supplier: None,
+            sku: None,
         }
     }
 
@@ -363,6 +448,86 @@ mod tests {
             }
             other => panic!("expected Formula error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cost_extended_and_materials_total() {
+        // Waste/rounding still run BEFORE cost; extended = final × unit_cost.
+        let a = Assembly {
+            id: "t".into(),
+            name: "t".into(),
+            applies_to: vec![MeasureKind::Area],
+            parameters: vec![],
+            parts: vec![
+                priced_part("Paint", Unit::GAL, "area_sf * 0.01", None, Rounding::None, 42.4),
+                priced_part("Primer", Unit::GAL, "area_sf * 0.005", None, Rounding::Ceil, 30.0),
+            ],
+        };
+        let bom = apply(&a, &MeasurementInput::area(1000.0, 0.0)).unwrap();
+        assert_eq!(bom.line_items[0].unit_cost, 42.4);
+        assert!((bom.line_items[0].extended_cost - 424.0).abs() < 1e-9); // 10 × 42.4
+        assert!((bom.line_items[1].extended_cost - 150.0).abs() < 1e-9); // ceil(5) × 30
+        assert!((bom.materials_total - 574.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn negative_unit_cost_is_a_credit_that_reduces_the_total() {
+        let a = Assembly {
+            id: "t".into(),
+            name: "t".into(),
+            applies_to: vec![MeasureKind::Area],
+            parameters: vec![],
+            parts: vec![
+                priced_part("Flake thrown", Unit::BOX, "area_sf * 0.0075", None, Rounding::None, 74.0),
+                priced_part("Flake recovered", Unit::BOX, "area_sf * 0.00425", None, Rounding::None, -74.0),
+            ],
+        };
+        let bom = apply(&a, &MeasurementInput::area(1000.0, 0.0)).unwrap();
+        let thrown = bom.line_items[0].extended_cost; // 7.5 × 74 = 555.0
+        let credit = bom.line_items[1].extended_cost; // 4.25 × -74 = -314.5
+        assert!((thrown - 555.0).abs() < 1e-9);
+        assert!((credit - -314.5).abs() < 1e-9);
+        assert!(credit < 0.0, "the recovered-flake credit is negative");
+        assert!((bom.materials_total - 240.5).abs() < 1e-9);
+        assert!(bom.materials_total < thrown, "the credit reduced the total");
+    }
+
+    #[test]
+    fn manual_quantity_supplied_is_used() {
+        // "Crack stitch" → id "crack_stitch"; per-stitch, entered by the user.
+        let mut stitch = priced_part("Crack stitch", Unit::Stitch, "", None, Rounding::None, 4.0);
+        stitch.manual = true;
+        let a = Assembly {
+            id: "t".into(),
+            name: "t".into(),
+            applies_to: vec![MeasureKind::Area],
+            parameters: vec![],
+            parts: vec![stitch],
+        };
+        let manual = BTreeMap::from([("crack_stitch".to_string(), 12.0)]);
+        let bom = apply_with_manual(&a, &MeasurementInput::area(1000.0, 0.0), &manual).unwrap();
+        assert_eq!(bom.line_items[0].raw_quantity, 12.0);
+        assert_eq!(bom.line_items[0].final_quantity, 12.0);
+        assert_eq!(bom.line_items[0].formula_text, "(manual quantity)");
+        assert!((bom.materials_total - 48.0).abs() < 1e-9); // 12 × $4
+    }
+
+    #[test]
+    fn manual_quantity_missing_errors_not_zero() {
+        let mut stitch = priced_part("Crack stitch", Unit::Stitch, "", None, Rounding::None, 4.0);
+        stitch.manual = true;
+        let a = Assembly {
+            id: "t".into(),
+            name: "t".into(),
+            applies_to: vec![MeasureKind::Area],
+            parameters: vec![],
+            parts: vec![stitch],
+        };
+        // No quantity supplied → a clear error, never a silent zero line.
+        assert_eq!(
+            apply(&a, &MeasurementInput::area(1000.0, 0.0)),
+            Err(AssemblyError::MissingManualQuantity("crack_stitch".into()))
+        );
     }
 
     #[test]
