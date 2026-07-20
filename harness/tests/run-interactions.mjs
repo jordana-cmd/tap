@@ -812,6 +812,127 @@ await run('material list: skips measurements whose BOM cannot be quantified', as
   assert.deepEqual(out.skipped, ['Unscaled room'], 'the unquantifiable room is surfaced, not dropped silently');
 });
 
+// A project with one or more measurements on the scaled page 1 (fpi 7.2 →
+// 1 pt = 0.1 ft, so area_sf = pts² × 0.01). Injected through the real
+// persistence path so parentId/includePerimeter round-trip too.
+const deductProject = measurements => ({
+  version: 1, sha: 'x', name: 'deduct-test',
+  pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
+  measurements,
+});
+const rectFlat = (x, y, w, h) => [x, y, x + w, y, x + w, y + h, x, y + h];
+const area = (id, x, y, w, h) => ({
+  id, page: 1, kind: 'area', label: `Room ${id}`, origin: 'manual', color: '#1e3a8a',
+  geometry: rectFlat(x, y, w, h),
+});
+
+await run('deduct: net area drops by exactly the deduct area', async page => {
+  // 400×300 pt room = 1200 SF at fpi 7.2.
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)),
+    deductProject([area(1, 0, 0, 400, 300)]));
+  assert.ok(Math.abs((await page.evaluate(() => window.__harness.grossArea(1))) - 1200) < 1e-6, 'gross 1200');
+  // 100×100 pt column inside = 100 SF.
+  const res = await page.evaluate(() => window.__harness.addDeduct([50, 50, 150, 50, 150, 150, 50, 150]));
+  assert.equal(res.status, 'ok', 'attached');
+  assert.equal(res.parentId, 1, 'attached to the containing room');
+  assert.ok(Math.abs((await page.evaluate(() => window.__harness.deductArea(1))) - 100) < 1e-6, 'deduct 100');
+  assert.ok(Math.abs((await page.evaluate(() => window.__harness.netArea(1))) - 1100) < 1e-6,
+    'net = gross − deduct = 1100');
+});
+
+await run('deduct: two deducts under one parent sum', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)),
+    deductProject([area(1, 0, 0, 400, 300)]));
+  await page.evaluate(() => window.__harness.addDeduct([50, 50, 150, 50, 150, 150, 50, 150])); // 100 SF
+  await page.evaluate(() => window.__harness.addDeduct([200, 50, 260, 50, 260, 150, 200, 150])); // 60 SF
+  assert.ok(Math.abs((await page.evaluate(() => window.__harness.deductArea(1))) - 160) < 1e-6, 'deducts sum to 160');
+  assert.ok(Math.abs((await page.evaluate(() => window.__harness.netArea(1))) - 1040) < 1e-6, 'net 1040');
+  assert.equal((await page.evaluate(() => window.__harness.deductIdsOf(1))).length, 2, 'two children');
+});
+
+await run('deduct: concave L-room — attaches in the solid leg, rejects in the notch', async page => {
+  // 400×400 square minus the top-right 200×200 quadrant.
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), deductProject([{
+    id: 1, page: 1, kind: 'area', label: 'L Room', origin: 'manual', color: '#1e3a8a',
+    geometry: [0, 0, 400, 0, 400, 200, 200, 200, 200, 400, 0, 400],
+  }]));
+  const solid = await page.evaluate(() => window.__harness.addDeduct([50, 50, 150, 50, 150, 150, 50, 150]));
+  assert.equal(solid.status, 'ok', 'column in the solid leg attaches');
+  assert.equal(solid.parentId, 1);
+  const notch = await page.evaluate(() => window.__harness.addDeduct([250, 250, 350, 250, 350, 350, 250, 350]));
+  assert.equal(notch.status, 'rejected', 'column in the removed notch is rejected');
+});
+
+await run('deduct: outside every area is rejected, nothing committed', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)),
+    deductProject([area(1, 0, 0, 400, 300)]));
+  const before = await page.evaluate(() => window.__harness.measurements().length);
+  const res = await page.evaluate(() => window.__harness.addDeduct([500, 500, 560, 500, 560, 560, 500, 560]));
+  assert.equal(res.status, 'rejected', 'not inside any area');
+  assert.equal(await page.evaluate(() => window.__harness.measurements().length), before, 'no measurement added');
+});
+
+await run('deduct: deleting the parent cascades to its deducts (confirmed)', async page => {
+  page.on('dialog', d => d.accept()); // accept the cascade confirmation
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), deductProject([
+    area(1, 0, 0, 400, 300),
+    { id: 2, page: 1, kind: 'deduct', label: 'Deduct 1', origin: 'manual', color: '#1e3a8a',
+      geometry: rectFlat(50, 50, 100, 100), parentId: 1 },
+  ]));
+  assert.equal(await page.evaluate(() => window.__harness.measurements().length), 2, 'room + deduct');
+  // Click the parent row's ✕ (parent = the non-deduct row).
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('.measRow')].find(r => !r.classList.contains('deductRow'));
+    [...row.querySelectorAll('button')].find(b => b.textContent === '✕').click();
+  });
+  assert.equal(await page.evaluate(() => window.__harness.measurements().length), 0,
+    'deleting the parent removed it and its deduct');
+});
+
+await run('deduct: reload restores the parent/child link and re-derives net', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), deductProject([
+    area(1, 0, 0, 400, 300),
+    { id: 2, page: 1, kind: 'deduct', label: 'Deduct 1', origin: 'manual', color: '#1e3a8a',
+      geometry: rectFlat(50, 50, 100, 100), parentId: 1, includePerimeter: true },
+  ]));
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.goto(URL);
+  await waitReady(page);
+  const restored = await page.evaluate(() => {
+    const d = window.__harness.measurements().find(m => m.kind === 'deduct');
+    return { parentId: d?.parentId, includePerimeter: d?.includePerimeter,
+             net: window.__harness.netArea(1), bomStored: d ? 'bom' in d : false };
+  });
+  assert.equal(restored.parentId, 1, 'parentId restored');
+  assert.equal(restored.includePerimeter, true, 'includePerimeter restored');
+  assert.ok(Math.abs(restored.net - 1100) < 1e-6, 'net re-derived to 1100 (nothing derived was stored)');
+});
+
+await run('deduct tool: draw a column inside a room → attaches and nets (click-driven)', async page => {
+  await snapOff(page);
+  // Draw the room with the area tool.
+  await setTool(page, 'area');
+  for (const [x, y] of [[100, 100], [300, 100], [300, 250], [100, 250]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  // Draw a column inside with the deduct tool.
+  await setTool(page, 'deduct');
+  for (const [x, y] of [[150, 150], [200, 150], [200, 200], [150, 200]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  const st = await page.evaluate(() => {
+    const ms = window.__harness.measurements();
+    const areaM = ms.find(m => m.kind === 'area');
+    const ded = ms.find(m => m.kind === 'deduct');
+    return {
+      kinds: ms.map(m => m.kind),
+      parentMatches: ded && areaM && ded.parentId === areaM.id,
+      net: window.__harness.netArea(areaM.id), gross: window.__harness.grossArea(areaM.id),
+    };
+  });
+  assert.deepEqual(st.kinds, ['area', 'deduct'], 'an area and a deduct were committed');
+  assert.ok(st.parentMatches, 'the deduct attached to the room it was drawn inside');
+  assert.ok(st.net < st.gross, `net (${st.net}) is below gross (${st.gross})`);
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();

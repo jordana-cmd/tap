@@ -27,6 +27,12 @@
   .measRow .measColor { width: 22px; height: 16px; padding: 0; border: none; cursor: pointer; }
   .renameInput { flex: 1 1 100%; font-size: 0.85rem; }
   .measRow button { border: none; background: none; color: #dc2626; cursor: pointer; }
+  .measRow.deductRow { margin-left: 16px; border-left: 2px solid #fca5a5; }
+  .measRow.deductRow .measName::before { content: '↳ '; color: #dc2626; }
+  .measRow.needsParent { background: #fef2f2; }
+  .measRow .parentSel { font-size: 0.8rem; }
+  .measRow .perimChk { font-size: 0.75rem; color: #57534e; display: inline-flex; align-items: center; gap: 3px; }
+  .measRow .netWarn { color: #b91c1c; font-size: 0.75rem; }
   .measRow .asmSel { flex: 1 1 100%; font-size: 0.8rem; }
   .measRow .bomToggle { color: #2563eb; font-weight: 700; }
   .bomPanel { margin: 0 0 4px 10px; padding: 4px 8px; border-left: 2px solid #cbd5e1;
@@ -90,6 +96,7 @@
     <button class="tool active" data-tool="detect">detect</button>
     <button class="tool" data-tool="line">line</button>
     <button class="tool" data-tool="area">area</button>
+    <button class="tool" data-tool="deduct">deduct</button>
     <button class="tool" data-tool="wall">wall</button>
     <button class="tool" data-tool="count">count</button>
   </span>
@@ -218,7 +225,7 @@ let chainPreview = null;    // parsed chain_json result awaiting commit
 let hover = null;           // {x, y, snap} last cursor position (base units)
 let measurements = [];      // {id, kind, name, value, valueText, origin, geometry}
 let hoverMeas = null;       // measurement id emphasized from the list panel
-let measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
+let measSeq = { Line: 0, Area: 0, Deduct: 0, 'Wall run': 0, Room: 0, Count: 0 };
 let nextMeasId = 1;
 let lastClick = null;       // {t, cx, cy} — double-click debounce
 
@@ -504,26 +511,34 @@ function render() {
       drawCountMarkers(m.geometry, col, hot);
       continue;
     }
-    strokeFlat(m.geometry, m.kind === 'area');
+    const isPoly = m.kind === 'area' || m.kind === 'deduct';
+    strokeFlat(m.geometry, isPoly);
     if (m.kind === 'area') {
       ctx.fillStyle = hexToRgba(col, hot ? 0.4 : 0.28);
+      ctx.fill();
+    } else if (m.kind === 'deduct') {
+      // A deduct reads as a removed hole: translucent red fill, dashed outline.
+      ctx.fillStyle = hexToRgba('#dc2626', hot ? 0.32 : 0.2);
       ctx.fill();
     }
     // Hover emphasis is WIDTH-based, not a fixed colour, so any custom
     // measurement colour stays visible when highlighted from the list.
-    haloStroke(col, hot ? 5 : 3);
+    if (m.kind === 'deduct') haloStroke('#dc2626', hot ? 4 : 2.5, [6, 4]);
+    else haloStroke(col, hot ? 5 : 3);
     const g = m.geometry;
-    for (let i = 0; i < g.length; i += 2) vertexDot(g[i], g[i + 1], hot ? 5 : 4, col);
+    const dotCol = m.kind === 'deduct' ? '#dc2626' : col;
+    for (let i = 0; i < g.length; i += 2) vertexDot(g[i], g[i + 1], hot ? 5 : 4, dotCol);
   }
   if (countDraft.length) {
     drawCountMarkers(countDraft.flatMap(p => [p.x, p.y]), '#0e7490', false);
   }
   if (draft && draft.verts.length) {
+    const draftCol = tool === 'deduct' ? '#dc2626' : '#0e7490';
     const pts = draft.verts.flatMap(v => [v.x, v.y]);
     if (hover) pts.push(hover.x, hover.y);
     strokeFlat(pts, false);
-    haloStroke('#0e7490', 3, [7, 5]);
-    for (const v of draft.verts) vertexDot(v.x, v.y, 7, '#0e7490');
+    haloStroke(draftCol, 3, [7, 5]);
+    for (const v of draft.verts) vertexDot(v.x, v.y, 7, draftCol);
   }
   if (chainPreview) {
     ctx.beginPath();
@@ -661,7 +676,7 @@ function applyCalibration(feet) {
 }
 
 // ---- measurement list ----
-function addMeasurement(kind, family, value, valueText, origin, geometry) {
+function addMeasurement(kind, family, value, valueText, origin, geometry, extra = {}) {
   measSeq[family] += 1;
   measurements.push({
     id: nextMeasId++,
@@ -671,6 +686,7 @@ function addMeasurement(kind, family, value, valueText, origin, geometry) {
     page: currentPage(), // authoritative at commit time (§A2)
     color: '#1e3a8a',    // user-recolourable (measurement editing)
     geometry: Float64Array.from(geometry),
+    ...extra, // deduct: parentId, includePerimeter
   });
   renderMeasList();
   render();
@@ -678,26 +694,36 @@ function addMeasurement(kind, family, value, valueText, origin, geometry) {
   return measurements[measurements.length - 1];
 }
 
+/// Derive one measurement's displayed value + text from its geometry and the
+/// OWNING page's scale (invariant 5). An area nets out its deducts; a deduct
+/// shows as a negative SF; both derive live from geometry.
+function deriveValue(m) {
+  if (m.kind === 'count') { m.value = m.geometry.length / 2; m.valueText = `${m.value} EA`; return; }
+  const f = scaleOf(m.page);
+  if (f == null) { m.value = 0; m.valueText = '(no scale)'; return; }
+  const flat = Array.from(m.geometry);
+  if (m.kind === 'linear') {
+    m.value = measure_polyline(flat, f);
+    m.valueText = `${m.value.toFixed(1)} LF`;
+    return;
+  }
+  if (m.kind === 'deduct') {
+    m.value = measure_polygon_area(flat, f);
+    m.valueText = `−${m.value.toFixed(1)} SF`;
+    return;
+  }
+  const info = netInfo(m); // area
+  m.value = info.net; // the meaningful quantity is net (feeds CSV/BOM)
+  m.valueText = info.hasDeducts
+    ? `net ${info.net.toFixed(1)} SF (gross ${info.gross.toFixed(1)} − ${info.deduct.toFixed(1)}${info.over ? ' — over!' : ''})`
+    : `${info.gross.toFixed(1)} SF (${info.perim.toFixed(1)} LF)`;
+}
+
 /// Invariant 5: geometry is base units; feet values are DERIVED. On any
 /// fpi change, recompute every measurement's value in place — nothing on
 /// screen moves, only the numbers update.
 function revalueMeasurements() {
-  for (const m of measurements) {
-    if (m.kind === 'count') continue; // EA quantity is scale-independent
-    // Values derive from the OWNING page's scale, not the current page's.
-    const f = scaleOf(m.page);
-    if (f == null) continue; // committed under a scale; defensive only
-    const flat = Array.from(m.geometry);
-    if (m.kind === 'linear') {
-      m.value = measure_polyline(flat, f);
-      m.valueText = `${m.value.toFixed(1)} LF`;
-    } else {
-      const ring = flat.concat(flat.slice(0, 2));
-      m.value = measure_polygon_area(flat, f);
-      const lf = measure_polyline(ring, f);
-      m.valueText = `${m.value.toFixed(1)} SF (${lf.toFixed(1)} LF)`;
-    }
-  }
+  for (const m of measurements) deriveValue(m);
   renderMeasList();
 }
 
@@ -722,7 +748,12 @@ function toStored(m) {
   return {
     id: m.id, page: m.page, kind: m.kind, label: m.name, origin: m.origin,
     geometry: Array.from(m.geometry),
-    confirmedBy: null, parentId: null, deleted: null, // §A2 optionals, unused here
+    confirmedBy: null, deleted: null, // §A2 optionals, unused here
+    // Deduct linkage: parentId ties a deduction to the area it subtracts from;
+    // includePerimeter is the per-deduct trade policy (default off). Both are
+    // inputs, not derived — net/gross recompute on load (invariant 5).
+    parentId: m.parentId ?? null,
+    includePerimeter: m.includePerimeter ? true : null,
     color: m.color,
     // Assembly attachment: the library id + per-application overrides ONLY.
     // The BOM is never stored — it is re-derived on load (invariant 5).
@@ -738,24 +769,13 @@ function fromStored(r) {
     geometry: Float64Array.from(r.geometry),
     assemblyId: r.assemblyId ?? null,
     overrides: r.overrides ?? {},
+    parentId: r.parentId ?? null,
+    includePerimeter: r.includePerimeter ?? false,
   };
 }
 /// Rebuild derived quantity/text after restore or import (invariant 5).
 function recomputeAll() {
-  for (const m of measurements) {
-    if (m.kind === 'count') { m.value = m.geometry.length / 2; m.valueText = `${m.value} EA`; continue; }
-    const f = scaleOf(m.page);
-    const flat = Array.from(m.geometry);
-    if (f == null) { m.valueText = '(no scale)'; continue; }
-    if (m.kind === 'linear') {
-      m.value = measure_polyline(flat, f);
-      m.valueText = `${m.value.toFixed(1)} LF`;
-    } else {
-      const ring = flat.concat(flat.slice(0, 2));
-      m.value = measure_polygon_area(flat, f);
-      m.valueText = `${m.value.toFixed(1)} SF (${measure_polyline(ring, f).toFixed(1)} LF)`;
-    }
-  }
+  for (const m of measurements) deriveValue(m);
 }
 
 /// pageScales Map → stored array (§A2 ScaleState names) and back.
@@ -774,9 +794,9 @@ function scalesFromStored(arr) {
 function reindexAfterRestore() {
   recomputeAll();
   nextMeasId = 1 + measurements.reduce((mx, m) => Math.max(mx, m.id), 0);
-  measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
+  measSeq = { Line: 0, Area: 0, Deduct: 0, 'Wall run': 0, Room: 0, Count: 0 };
   for (const m of measurements) {
-    const mm = /^(Line|Area|Wall run|Room|Count) (\d+)$/.exec(m.name);
+    const mm = /^(Line|Area|Deduct|Wall run|Room|Count) (\d+)$/.exec(m.name);
     if (mm) measSeq[mm[1]] = Math.max(measSeq[mm[1]], +mm[2]);
   }
 }
@@ -929,14 +949,40 @@ function assembliesFor(kind) {
 /// Compute the assembly drivers for a measurement ON DEMAND from its stored
 /// geometry + the owning page's scale (invariant 5 — nothing derived is
 /// stored). Returns null when an area/linear measurement has no page scale.
+/// Deducts attached to a parent area (same-page children by parentId).
+function deductsOf(parent) {
+  return measurements.filter(m => m.kind === 'deduct' && m.parentId === parent.id);
+}
+
+/// Gross / deduct / net area (SF) and perimeter (LF) for an area, derived live
+/// from geometry + the owning page scale (invariant 5). `null` if unscaled.
+/// `net = max(0, gross − Σdeduct)`; `over` flags data where deducts exceed
+/// gross (clamped to 0). Perimeter here is the parent ring only; the per-deduct
+/// "include perimeter" policy is applied in the drivers (see driversFor).
+function netInfo(parent) {
+  const f = scaleOf(parent.page);
+  if (f == null) return null;
+  const flat = Array.from(parent.geometry);
+  const ring = flat.concat(flat.slice(0, 2));
+  const gross = measure_polygon_area(flat, f);
+  const deducts = deductsOf(parent);
+  const deduct = deducts.reduce((s, d) => s + measure_polygon_area(Array.from(d.geometry), f), 0);
+  const net = Math.max(0, gross - deduct);
+  const perim = measure_polyline(ring, f);
+  return { f, gross, deduct, net, perim, deducts, hasDeducts: deducts.length > 0, over: deduct > gross };
+}
+
 function driversFor(m) {
   const flat = Array.from(m.geometry);
   if (m.kind === 'count') return { kind: 'count', count_ea: m.geometry.length / 2 };
+  if (m.kind === 'deduct') return null; // a deduction never drives its own BOM
   const f = scaleOf(m.page);
   if (f == null) return null;
   if (m.kind === 'linear') return { kind: 'linear', length_lf: measure_polyline(flat, f) };
-  const ring = flat.concat(flat.slice(0, 2));
-  return { kind: 'area', area_sf: measure_polygon_area(flat, f), perimeter_lf: measure_polyline(ring, f) };
+  // Area: net (gross − deducts) feeds the assembly; perimeter is the parent
+  // ring only until the per-deduct perimeter policy lands (commit 3).
+  const info = netInfo(m);
+  return { kind: 'area', area_sf: info.net, perimeter_lf: info.perim };
 }
 
 /// Recompute a measurement's BOM from geometry + scale + assembly + overrides.
@@ -1263,6 +1309,135 @@ function refreshScaleUI() {
   $('preset').value = '';
 }
 
+/// Same-page areas that geometrically contain this deduct — the valid parents
+/// it may be (re)assigned to.
+function parentOptionsFor(deduct) {
+  const inner = Float64Array.from(Array.from(deduct.geometry));
+  return measurements.filter(a =>
+    a.kind === 'area' && a.page === deduct.page &&
+    (() => { try { return polygon_contains_flat(a.geometry, inner); } catch { return false; } })());
+}
+
+/// Build one measurement row (all controls). `indent` marks a nested deduct.
+function buildMeasRow(m, indent) {
+  const row = document.createElement('div');
+  row.className = indent ? 'measRow deductRow' : 'measRow';
+  if (m.kind === 'deduct' && !m.parentId) row.classList.add('needsParent');
+  // Name — click to rename inline (free text, flows to CSV export).
+  const name = document.createElement('span');
+  name.className = 'measName';
+  name.title = 'click to rename';
+  name.textContent = m.name;
+  name.addEventListener('click', () => beginRename(m, name));
+  const value = document.createElement('span');
+  value.className = 'measVal';
+  value.textContent = ` — ${m.valueText}`;
+  const origin = document.createElement('span');
+  origin.className = 'origin';
+  origin.textContent = `${m.origin} · ${m.page === 0 ? 'syn' : `p${m.page}`}`;
+  const del = document.createElement('button');
+  del.textContent = '✕';
+  del.addEventListener('click', () => deleteMeasurement(m));
+  row.addEventListener('mouseenter', () => { hoverMeas = m.id; render(); });
+  row.addEventListener('mouseleave', () => { hoverMeas = null; render(); });
+  row.append(name, value, origin);
+
+  if (m.kind === 'deduct') {
+    // A deduct is a red hole (no colour picker). It carries a parent select
+    // and the per-deduct "include perimeter" trade flag instead of assembly UI.
+    const opts = parentOptionsFor(m);
+    const sel = document.createElement('select');
+    sel.className = 'parentSel';
+    sel.innerHTML = (m.parentId ? '' : '<option value="">— pick parent —</option>')
+      + opts.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+    sel.value = m.parentId ?? '';
+    sel.title = 'parent area this deduction subtracts from';
+    sel.addEventListener('change', () => {
+      m.parentId = sel.value ? Number(sel.value) : null;
+      recomputeAll(); renderMeasList(); render(); markDirty();
+    });
+    const perim = document.createElement('label');
+    perim.className = 'perimChk';
+    perim.title = 'add this deduction’s perimeter to the parent (e.g. cove base wraps a cooler, not a drain)';
+    const chk = document.createElement('input');
+    chk.type = 'checkbox'; chk.checked = !!m.includePerimeter;
+    chk.addEventListener('change', () => {
+      m.includePerimeter = chk.checked;
+      renderMeasList(); markDirty(); // affects the parent's perimeter driver (BOM)
+    });
+    perim.append(chk, document.createTextNode('+perimeter'));
+    row.append(sel, perim, del);
+    return { row, panel: null };
+  }
+
+  const colour = document.createElement('input');
+  colour.type = 'color'; colour.className = 'measColor'; colour.value = m.color;
+  colour.title = 'measurement colour';
+  colour.addEventListener('input', () => { m.color = colour.value; render(); markDirty(); });
+  row.append(colour, del);
+
+  // Area net-over warning (deducts exceed gross → clamped to 0).
+  if (m.kind === 'area') {
+    const info = netInfo(m);
+    if (info && info.over) {
+      const warn = document.createElement('span');
+      warn.className = 'netWarn'; warn.textContent = 'deducts exceed gross';
+      row.append(warn);
+    }
+  }
+
+  // Assembly attachment: a select filtered to assemblies for this kind, plus a
+  // BOM expand toggle. (Deducts never reach here — they have no assembly.)
+  const choices = assembliesFor(m.kind);
+  if (m.assemblyId && !choices.some(a => a.id === m.assemblyId)) {
+    m.assemblyId = null; m.overrides = {}; // drop a stale attachment
+  }
+  let panel = null;
+  if (choices.length) {
+    const sel = document.createElement('select');
+    sel.className = 'asmSel';
+    sel.innerHTML = '<option value="">— no assembly —</option>'
+      + choices.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+    sel.value = m.assemblyId ?? '';
+    sel.addEventListener('change', () => {
+      m.assemblyId = sel.value || null;
+      m.overrides = {};
+      markDirty();
+      renderMeasList();
+    });
+    const toggle = document.createElement('button');
+    toggle.className = 'bomToggle';
+    toggle.textContent = m._bomOpen ? '▾' : '▸';
+    toggle.title = 'show/hide bill of materials';
+    toggle.style.color = '#2563eb';
+    toggle.disabled = !m.assemblyId;
+    toggle.addEventListener('click', () => { m._bomOpen = !m._bomOpen; renderMeasList(); });
+    row.append(sel, toggle);
+    if (m.assemblyId && m._bomOpen && choices.some(a => a.id === m.assemblyId)) {
+      panel = renderBomPanel(m);
+    }
+  }
+  return { row, panel };
+}
+
+/// Delete a measurement. Deleting a parent area cascades to its deducts (with
+/// confirmation); deleting a deduct recomputes its parent's net.
+function deleteMeasurement(m) {
+  if (m.kind === 'area') {
+    const kids = deductsOf(m);
+    if (kids.length && !confirm(`Delete ${m.name} and its ${kids.length} deduction(s)? This cannot be undone.`)) {
+      return;
+    }
+    const doomed = new Set([m.id, ...kids.map(k => k.id)]);
+    measurements = measurements.filter(x => !doomed.has(x.id));
+  } else {
+    measurements = measurements.filter(x => x.id !== m.id);
+  }
+  if (hoverMeas === m.id) hoverMeas = null;
+  recomputeAll(); // a removed deduct changes its parent's net
+  renderMeasList(); render(); markDirty();
+}
+
 function renderMeasList() {
   const list = $('measList');
   list.textContent = '';
@@ -1272,69 +1447,25 @@ function renderMeasList() {
     list.textContent = all ? '(none yet)' : `(none on ${pdfDoc ? `page ${currentPage()}` : 'this sheet'})`;
     return;
   }
-  for (const m of visible) {
-    const row = document.createElement('div');
-    row.className = 'measRow';
-    // Name — click to rename inline (free text, flows to CSV export).
-    const name = document.createElement('span');
-    name.className = 'measName';
-    name.title = 'click to rename';
-    name.textContent = m.name;
-    name.addEventListener('click', () => beginRename(m, name));
-    const value = document.createElement('span');
-    value.className = 'measVal';
-    value.textContent = ` — ${m.valueText}`;
-    const origin = document.createElement('span');
-    origin.className = 'origin';
-    origin.textContent = `${m.origin} · ${m.page === 0 ? 'syn' : `p${m.page}`}`;
-    const colour = document.createElement('input');
-    colour.type = 'color'; colour.className = 'measColor'; colour.value = m.color;
-    colour.title = 'measurement colour';
-    colour.addEventListener('input', () => { m.color = colour.value; render(); markDirty(); });
-    const del = document.createElement('button');
-    del.textContent = '✕';
-    del.addEventListener('click', () => {
-      measurements = measurements.filter(x => x.id !== m.id);
-      if (hoverMeas === m.id) hoverMeas = null;
-      renderMeasList(); render(); markDirty();
-    });
-    row.addEventListener('mouseenter', () => { hoverMeas = m.id; render(); });
-    row.addEventListener('mouseleave', () => { hoverMeas = null; render(); });
-    row.append(name, value, origin, colour, del);
-
-    // Assembly attachment: a select filtered to assemblies that apply to this
-    // measurement's kind, plus an expand toggle for the derived BOM.
-    const choices = assembliesFor(m.kind);
-    // Drop a stale attachment (assembly deleted, or kind no longer matches).
-    if (m.assemblyId && !choices.some(a => a.id === m.assemblyId)) {
-      m.assemblyId = null; m.overrides = {};
-    }
-    if (choices.length) {
-      const sel = document.createElement('select');
-      sel.className = 'asmSel';
-      sel.innerHTML = '<option value="">— no assembly —</option>'
-        + choices.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
-      sel.value = m.assemblyId ?? '';
-      sel.addEventListener('change', () => {
-        m.assemblyId = sel.value || null;
-        m.overrides = {}; // a different assembly's parameters don't carry over
-        markDirty();
-        renderMeasList();
-      });
-      const toggle = document.createElement('button');
-      toggle.className = 'bomToggle';
-      toggle.textContent = m._bomOpen ? '▾' : '▸';
-      toggle.title = 'show/hide bill of materials';
-      toggle.style.color = '#2563eb';
-      toggle.disabled = !m.assemblyId;
-      toggle.addEventListener('click', () => { m._bomOpen = !m._bomOpen; renderMeasList(); });
-      row.append(sel, toggle);
-    }
+  const shown = new Set();
+  const emit = (m, indent) => {
+    const { row, panel } = buildMeasRow(m, indent);
     list.append(row);
-
-    if (m.assemblyId && m._bomOpen && assembliesFor(m.kind).some(a => a.id === m.assemblyId)) {
-      list.append(renderBomPanel(m));
+    // A deduct nests directly under its parent; an area's BOM panel follows its
+    // deduct children.
+    if (m.kind === 'area') {
+      for (const d of deductsOf(m)) { if (visible.includes(d)) { shown.add(d.id); emit(d, true); } }
     }
+    if (panel) list.append(panel);
+  };
+  for (const m of visible) {
+    if (m.kind === 'deduct') continue; // emitted under its parent
+    emit(m, false);
+  }
+  // Unassigned deducts (ambiguous) and any whose parent isn't visible: surface
+  // them at top level so they're never lost.
+  for (const m of visible) {
+    if (m.kind === 'deduct' && !shown.has(m.id)) emit(m, true);
   }
 }
 
@@ -1434,6 +1565,7 @@ function setTool(next) {
     detect: 'detect: click inside a room to flood-fill it.',
     line: 'line: click vertices (Shift = H/V/45), Enter/double-click finishes, Backspace undoes, Esc cancels.',
     area: 'area: click vertices, Enter/double-click closes the polygon, Backspace undoes, Esc cancels.',
+    deduct: 'deduct: outline a column/cooler/drain INSIDE a room; Enter/double-click closes. It attaches to the area that contains it and subtracts from its net.',
     wall: 'wall: click near a wall to preview its collinear run, Enter/double-click commits, Esc clears.',
     count: 'count: click each symbol (doors, fixtures…), Enter commits the group as EA, Backspace removes last, Esc cancels. No scale needed.',
     calibrate: 'Calibration: click one end of a known printed dimension.',
@@ -1450,14 +1582,14 @@ function cursorPoint(ev) {
   const cx = (ev.clientX - rect.left) * canvas.width / rect.width;
   const cy = (ev.clientY - rect.top) * canvas.height / rect.height;
   let pt = { x: cx / s, y: cy / s, snap: null, closing: false };
-  if (tool === 'area' && draft && draft.verts.length >= 3) {
+  if ((tool === 'area' || tool === 'deduct') && draft && draft.verts.length >= 3) {
     const v0 = draft.verts[0];
     if (Math.hypot(pt.x - v0.x, pt.y - v0.y) <= 10 / s) {
       return { x: v0.x, y: v0.y, snap: null, closing: true };
     }
   }
   const last = draft && draft.verts.length ? draft.verts[draft.verts.length - 1] : null;
-  if (ev.shiftKey && last && (tool === 'line' || tool === 'area')) {
+  if (ev.shiftKey && last && (tool === 'line' || tool === 'area' || tool === 'deduct')) {
     // Constrain to the nearest of the 8 H/V/45° rays from the last vertex
     // (constraint replaces geometry snap while held — the two fight).
     const dx = pt.x - last.x, dy = pt.y - last.y;
@@ -1494,14 +1626,37 @@ function draftStatus() {
     const ring = flat.concat(flat.slice(0, 2));
     const sf = measure_polygon_area(flat, curFpi());
     const lf = measure_polyline(ring, curFpi());
-    say(`area: ${draft.verts.length} vertex(es), ${sf.toFixed(1)} SF, perimeter ${lf.toFixed(1)} LF — ` +
+    const noun = tool === 'deduct' ? 'deduct' : 'area';
+    say(`${noun}: ${draft.verts.length} vertex(es), ${sf.toFixed(1)} SF, perimeter ${lf.toFixed(1)} LF — ` +
         'Enter/double-click closes, Backspace undoes, Esc cancels.');
   }
 }
 
+/// Suggest the parent area for a just-drawn deduct, by geometric containment
+/// on the same page. Returns:
+///   { status:'none' }                       — inside no area (reject)
+///   { status:'ok', parent, count }           — attach (smallest of `count`)
+///   { status:'ambiguous', candidates }        — tie for smallest → user picks
+/// The smallest containing area wins (a column inside a small room inside a big
+/// floor); a genuine size tie is not guessed. Ordering uses points² (fpi
+/// cancels), so no page scale is required.
+function suggestParent(deductFlat, page) {
+  const inner = Float64Array.from(deductFlat);
+  const containing = measurements
+    .filter(m => m.kind === 'area' && m.page === page)
+    .filter(a => { try { return polygon_contains_flat(a.geometry, inner); } catch { return false; } })
+    .map(a => ({ a, area: measure_polygon_area(Array.from(a.geometry), 1) }))
+    .sort((x, y) => x.area - y.area);
+  if (!containing.length) return { status: 'none' };
+  const tie = containing.length > 1
+    && (containing[1].area - containing[0].area) <= 0.005 * containing[0].area;
+  if (tie) return { status: 'ambiguous', candidates: containing.map(c => c.a) };
+  return { status: 'ok', parent: containing[0].a, count: containing.length };
+}
+
 function finishDraft() {
   if (!draft) return;
-  const need = tool === 'area' ? 3 : 2;
+  const need = tool === 'area' || tool === 'deduct' ? 3 : 2;
   if (draft.verts.length < need) { say(`need at least ${need} vertices`); return; }
   const flat = draftFlat(false);
   const origin = draft.anySnap ? 'snap' : 'manual';
@@ -1509,6 +1664,26 @@ function finishDraft() {
     const lf = measure_polyline(flat, curFpi());
     const m = addMeasurement('linear', 'Line', lf, `${lf.toFixed(1)} LF`, origin, flat);
     say(`${m.name} committed: ${lf.toFixed(1)} LF — line tool armed, click to start the next one.`);
+  } else if (tool === 'deduct') {
+    const sf = measure_polygon_area(flat, curFpi());
+    const sug = suggestParent(flat, currentPage());
+    if (sug.status === 'none') {
+      // Reject: a deduct that sits inside no area has nothing to subtract from.
+      say(`That deduction isn't inside any area on this sheet — draw it inside a room (or add the room first). Nothing committed.`);
+      draft = null; render();
+      return;
+    }
+    const parentId = sug.status === 'ok' ? sug.parent.id : null; // ambiguous → unassigned
+    const m = addMeasurement('deduct', 'Deduct', sf, `−${sf.toFixed(1)} SF`, origin, flat,
+      { parentId, includePerimeter: false });
+    recomputeAll(); // refresh the parent's net
+    renderMeasList();
+    if (sug.status === 'ambiguous') {
+      say(`${m.name} (${sf.toFixed(1)} SF) is inside ${sug.candidates.length} overlapping areas — pick its parent in the list.`);
+    } else {
+      const more = sug.count > 1 ? ` (smallest of ${sug.count} containing — change in the list)` : '';
+      say(`${m.name} attached to ${sug.parent.name}: −${sf.toFixed(1)} SF from its net${more}.`);
+    }
   } else {
     const ring = flat.concat(flat.slice(0, 2));
     const sf = measure_polygon_area(flat, curFpi());
@@ -1573,9 +1748,9 @@ canvas.addEventListener('click', ev => {
     }
     return;
   }
-  if (tool === 'line' || tool === 'area') {
+  if (tool === 'line' || tool === 'area' || tool === 'deduct') {
     if (!scaleGuard()) return;
-    // Close gesture (area): clicking the first vertex closes and commits.
+    // Close gesture (area/deduct): clicking the first vertex closes and commits.
     if (pt.closing) { finishDraft(); return; }
     // Double-click debounce: the second click of a double-click must not
     // add a stray vertex — the dblclick event finishes the draft instead.
@@ -1625,7 +1800,7 @@ canvas.addEventListener('click', ev => {
 canvas.addEventListener('dblclick', () => {
   // The click debounce already swallowed the double-click's second click,
   // so no stray vertex exists to pop.
-  if (tool === 'line' || tool === 'area') finishDraft();
+  if (tool === 'line' || tool === 'area' || tool === 'deduct') finishDraft();
   else if (tool === 'wall') commitChain();
 });
 
@@ -1636,7 +1811,7 @@ window.addEventListener('keydown', ev => {
   if (ev.target === $('calibFeet') || ev.target === $('file')) return;
   if (storageBlocked) return; // edits blocked until the storage error is acknowledged
   if (ev.key === 'Enter') {
-    if (tool === 'line' || tool === 'area') { ev.preventDefault(); finishDraft(); }
+    if (tool === 'line' || tool === 'area' || tool === 'deduct') { ev.preventDefault(); finishDraft(); }
     else if (tool === 'wall') { ev.preventDefault(); commitChain(); }
     else if (tool === 'count') { ev.preventDefault(); commitCount(); }
   } else if (ev.key === 'Backspace') {
@@ -1702,7 +1877,7 @@ async function loadPdf(data, name) {
   } else {
     pageScales.clear(); pageScales.set(0, { fpi: 4.0, source: 'synthetic' });
     measurements = []; nextMeasId = 1;
-    measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
+    measSeq = { Line: 0, Area: 0, Deduct: 0, 'Wall run': 0, Room: 0, Count: 0 };
     setSaveState('—'); // no project until the first mutation
   }
 
@@ -1891,6 +2066,26 @@ window.__harness = {
     markDirty(); renderMeasList();
   },
   measOverrides: measId => measurements.find(x => x.id === measId)?.overrides ?? null,
+  // Deductions (commit 3+): net/gross/deduct area for a parent, and a
+  // tool-free deduct commit that runs the real containment/association path.
+  grossArea: id => { const m = measurements.find(x => x.id === id); const i = m && netInfo(m); return i ? i.gross : null; },
+  netArea: id => { const m = measurements.find(x => x.id === id); const i = m && netInfo(m); return i ? i.net : null; },
+  deductArea: id => { const m = measurements.find(x => x.id === id); const i = m && netInfo(m); return i ? i.deduct : null; },
+  deductIdsOf: parentId => deductsOf({ id: parentId }).map(d => d.id),
+  addDeduct: flat => {
+    const sf = measure_polygon_area(flat, curFpi());
+    const sug = suggestParent(flat, currentPage());
+    if (sug.status === 'none') return { status: 'rejected' };
+    const parentId = sug.status === 'ok' ? sug.parent.id : null;
+    const m = addMeasurement('deduct', 'Deduct', sf, `−${sf.toFixed(1)} SF`, 'manual', flat,
+      { parentId, includePerimeter: false });
+    recomputeAll(); renderMeasList(); render();
+    return { status: sug.status, id: m.id, parentId };
+  },
+  setIncludePerimeter: (id, on) => {
+    const m = measurements.find(x => x.id === id);
+    if (m) { m.includePerimeter = !!on; markDirty(); renderMeasList(); }
+  },
 };
 
 // ---- boot ----
