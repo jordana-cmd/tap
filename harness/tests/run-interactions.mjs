@@ -1234,6 +1234,25 @@ await run('status: a detect shows ONE message; the diagnostic moves to Advanced'
   assert.match(st.detail, /cross-check/, 'the verbose diagnostic landed in the Advanced pane');
 });
 
+await run('toolbar: grouped by function; active tool is uniquely indicated', async page => {
+  const groups = await page.evaluate(() =>
+    [...document.querySelectorAll('.toolbar .tgroup')].map(g => g.dataset.group));
+  assert.deepEqual(groups, ['file', 'zoom', 'scale', 'tools', 'data'],
+    'five functional groups in order');
+  // The tool buttons live inside the tools group.
+  assert.ok(await page.evaluate(() =>
+    document.querySelector('.tgroup[data-group="tools"]').contains(document.querySelector('#tools'))),
+    'tool buttons are in the tools group');
+  // Selecting a tool marks exactly that button active.
+  await setTool(page, 'area');
+  const st = await page.evaluate(() => ({
+    active: [...document.querySelectorAll('#tools .tool.active')].map(b => b.dataset.tool),
+    ring: getComputedStyle(document.querySelector('#tools .tool.active')).boxShadow,
+  }));
+  assert.deepEqual(st.active, ['area'], 'exactly one active tool, and it is the selected one');
+  assert.notEqual(st.ring, 'none', 'the active tool has a visible ring');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();

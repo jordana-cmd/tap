@@ -20,7 +20,17 @@
   .bar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 6px 0; font-size: 0.9rem; }
   button { font-size: 0.9rem; }
   #calibFeet { width: 5em; }
-  .tool.active { background: #1d4ed8; color: #fff; }
+  /* Toolbar grouped by function, with a divider + label per group. */
+  .toolbar { gap: 0; align-items: stretch; }
+  .toolbar .tgroup { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
+                     padding: 2px 14px; position: relative; }
+  .toolbar .tgroup + .tgroup { border-left: 1px solid #d6d3d1; }
+  .toolbar .glabel { color: #a8a29e; font-size: 0.66rem; text-transform: uppercase;
+                     letter-spacing: 0.05em; margin-right: 2px; }
+  #tools { display: inline-flex; gap: 3px; }
+  .tool { padding: 3px 9px; border: 1px solid #d6d3d1; background: #fff; border-radius: 4px; }
+  .tool.active { background: #1d4ed8; color: #fff; border-color: #1d4ed8; font-weight: 600;
+                 box-shadow: 0 0 0 2px #93c5fd; }
   #workRow { display: flex; gap: 12px; align-items: flex-start; }
   #measPanel { flex: 0 0 285px; background: #fff; border: 1px solid #d6d3d1;
                padding: 8px; font-size: 0.85rem; max-height: 655px;
@@ -116,32 +126,47 @@
 <!-- NOTE (§A8 guard): pdf.js here is a measurement INSTRUMENT for this
      throwaway harness only. The product renders server-side tile pyramids;
      client-side full-PDF rendering remains rejected for the product. -->
-<div class="bar">
-  <input id="file" type="file" accept="application/pdf">
-  <span><button id="prev">◀</button> page <span id="pageLabel">–</span> <button id="next">▶</button></span>
-  <span>zoom: <button id="zoomOut">−</button> <button id="zoomFit">fit</button>
-    <button id="zoomIn">+</button> <span id="zoomLabel">–</span></span>
-  <label>scale: <select id="preset"><option value="">— choose or calibrate —</option></select></label>
-  <span id="tools">
-    <button class="tool active" data-tool="detect">detect</button>
-    <button class="tool" data-tool="line">line</button>
-    <button class="tool" data-tool="area">area</button>
-    <button class="tool" data-tool="deduct">deduct</button>
-    <button class="tool" data-tool="wall">wall</button>
-    <button class="tool" data-tool="count">count</button>
+<div class="bar toolbar">
+  <span class="tgroup" data-group="file">
+    <span class="glabel">file / page</span>
+    <input id="file" type="file" accept="application/pdf">
+    <span class="grp"><button id="prev">◀</button> <span id="pageLabel">–</span> <button id="next">▶</button></span>
   </span>
-  <span id="activeCondChip" title="active condition — every new trace joins it and inherits its colour + assembly">
-    cond: <span id="activeCondSwatch" class="condSwatch"></span>
-    <select id="activeCondSel"></select>
+  <span class="tgroup" data-group="zoom">
+    <span class="glabel">zoom</span>
+    <button id="zoomOut">−</button><button id="zoomFit">fit</button><button id="zoomIn">+</button>
+    <span id="zoomLabel">–</span>
   </span>
-  <button id="calibBtn">Calibrate (2 clicks)</button>
-  <span id="calibEntry" hidden>feet: <input id="calibFeet" type="number" min="0.1" step="0.5" value="10">
-    <button id="calibApply">Apply</button></span>
-  <span>fpi = <b id="fpiLabel">4.0 (synthetic)</b></span>
-  <span id="saveState" title="autosave status">—</span>
-  <button id="projectsBtn" title="saved projects">Projects</button>
-  <button id="assembliesBtn" title="assembly library">Assemblies</button>
-  <button id="conditionsBtn" title="conditions (takeoff line-item types)">Conditions</button>
+  <span class="tgroup" data-group="scale">
+    <span class="glabel">scale</span>
+    <select id="preset"><option value="">— choose or calibrate —</option></select>
+    <button id="calibBtn">Calibrate (2 clicks)</button>
+    <span id="calibEntry" hidden>feet: <input id="calibFeet" type="number" min="0.1" step="0.5" value="10">
+      <button id="calibApply">Apply</button></span>
+    <span>fpi = <b id="fpiLabel">4.0 (synthetic)</b></span>
+  </span>
+  <span class="tgroup" data-group="tools">
+    <span class="glabel">tool</span>
+    <span id="tools">
+      <button class="tool active" data-tool="detect">detect</button>
+      <button class="tool" data-tool="line">line</button>
+      <button class="tool" data-tool="area">area</button>
+      <button class="tool" data-tool="deduct">deduct</button>
+      <button class="tool" data-tool="wall">wall</button>
+      <button class="tool" data-tool="count">count</button>
+    </span>
+    <span id="activeCondChip" title="active condition — every new trace joins it and inherits its colour + assembly">
+      cond: <span id="activeCondSwatch" class="condSwatch"></span>
+      <select id="activeCondSel"></select>
+    </span>
+  </span>
+  <span class="tgroup" data-group="data">
+    <span class="glabel">data</span>
+    <span id="saveState" title="autosave status">—</span>
+    <button id="projectsBtn" title="saved projects">Projects</button>
+    <button id="assembliesBtn" title="assembly library">Assemblies</button>
+    <button id="conditionsBtn" title="conditions (takeoff line-item types)">Conditions</button>
+  </span>
 </div>
 <div id="projectPanel" hidden>
   <div id="projectQuota" class="origin"></div>
