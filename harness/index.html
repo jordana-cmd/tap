@@ -979,10 +979,18 @@ function driversFor(m) {
   const f = scaleOf(m.page);
   if (f == null) return null;
   if (m.kind === 'linear') return { kind: 'linear', length_lf: measure_polyline(flat, f) };
-  // Area: net (gross − deducts) feeds the assembly; perimeter is the parent
-  // ring only until the per-deduct perimeter policy lands (commit 3).
+  // Area: net (gross − deducts) feeds the assembly. Perimeter is the parent
+  // ring PLUS the perimeter of each deduct flagged "include perimeter" — the
+  // trade policy (cove base wraps a walk-in cooler, but not a floor drain).
   const info = netInfo(m);
-  return { kind: 'area', area_sf: info.net, perimeter_lf: info.perim };
+  let perimeter = info.perim;
+  for (const d of info.deducts) {
+    if (d.includePerimeter) {
+      const df = Array.from(d.geometry);
+      perimeter += measure_polyline(df.concat(df.slice(0, 2)), info.f);
+    }
+  }
+  return { kind: 'area', area_sf: info.net, perimeter_lf: perimeter };
 }
 
 /// Recompute a measurement's BOM from geometry + scale + assembly + overrides.

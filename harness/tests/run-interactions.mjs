@@ -933,6 +933,44 @@ await run('deduct tool: draw a column inside a room → attaches and nets (click
   assert.ok(st.net < st.gross, `net (${st.net}) is below gross (${st.gross})`);
 });
 
+// Room (400×300 pt = 1200 SF gross, 140 LF perimeter) with commercial flooring
+// and a 100×100 pt deduct (100 SF, 40 LF perimeter) → net 1100 SF.
+const flooringRoomWithDeduct = () => deductProject([
+  { ...area(1, 0, 0, 400, 300), assemblyId: 'commercial_flooring' },
+  { id: 2, page: 1, kind: 'deduct', label: 'Deduct 1', origin: 'manual', color: '#1e3a8a',
+    geometry: rectFlat(50, 50, 100, 100), parentId: 1 },
+]);
+
+await run('deduct: a BOM on a room with deducts uses NET area, not gross', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), flooringRoomWithDeduct());
+  const mat = await page.evaluate(() =>
+    window.__harness.applyBom(1).bom.line_items.find(l => l.part_name === 'Flooring material').final_quantity);
+  // material = area_sf × 1.10 waste. Net 1100 → 1210, NOT gross 1200 → 1320.
+  assert.ok(Math.abs(mat - 1210) < 1e-6, `material uses net (1100·1.10=1210), got ${mat}`);
+});
+
+await run('deduct: "include perimeter" flag changes the cove-base LF by the deduct perimeter', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), flooringRoomWithDeduct());
+  // Flag OFF (default): cove = parent perimeter 140 × 1.05 = 147.
+  const coveOff = await page.evaluate(() => window.__harness.applyBom(1).bom.line_items
+    .find(l => l.part_name === 'Cove base').final_quantity);
+  assert.ok(Math.abs(coveOff - 147) < 1e-6, `cove off = 140·1.05 = 147, got ${coveOff}`);
+  // Flag ON: cove = (140 + deduct 40) × 1.05 = 189.
+  await page.evaluate(() => window.__harness.setIncludePerimeter(2, true));
+  const coveOn = await page.evaluate(() => window.__harness.applyBom(1).bom.line_items
+    .find(l => l.part_name === 'Cove base').final_quantity);
+  assert.ok(Math.abs(coveOn - 189) < 1e-6, `cove on = (140+40)·1.05 = 189, got ${coveOn}`);
+  assert.ok(Math.abs((coveOn - coveOff) - 42) < 1e-6, 'delta = deduct perimeter 40 × 1.05 = 42');
+});
+
+await run('deduct: the material list inherits net (rolls up from the net BOM)', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), flooringRoomWithDeduct());
+  const out = await page.evaluate(() => window.__harness.buildMaterialList());
+  const line = out.csv.trim().split('\n').find(l => l.startsWith('Flooring material,'));
+  // Net-based material quantity (1210), same as the BOM — no separate rollup path.
+  assert.equal(line, 'Flooring material,SF,1210,Room 1', `material list uses net: ${line}`);
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();
