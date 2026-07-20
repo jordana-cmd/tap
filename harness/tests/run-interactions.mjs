@@ -402,7 +402,8 @@ await run('CSV export: rows with §A2 provenance for area + line + count', async
   const csv = await page.evaluate(() => window.__harness.buildCsv());
   const lines = csv.trim().split('\n');
   assert.equal(lines[0],
-    'page,name,kind,quantity,unit,origin,page_scale_fpi,scale_source', 'header');
+    'page,name,kind,quantity,unit,origin,page_scale_fpi,scale_source,'
+    + 'gross_quantity,deduct_quantity,net_quantity,parent', 'header');
   assert.equal(lines.length, 4, 'header + 3 data rows');
   const cols = lines.slice(1).map(l => l.split(','));
   const area = cols.find(c => c[2] === 'area');
@@ -969,6 +970,32 @@ await run('deduct: the material list inherits net (rolls up from the net BOM)', 
   const line = out.csv.trim().split('\n').find(l => l.startsWith('Flooring material,'));
   // Net-based material quantity (1210), same as the BOM — no separate rollup path.
   assert.equal(line, 'Flooring material,SF,1210,Room 1', `material list uses net: ${line}`);
+});
+
+await run('deduct: takeoff.csv breaks out gross/deduct/net and names the deduct’s parent', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), deductProject([
+    area(1, 0, 0, 400, 300), // 1200 SF gross
+    { id: 2, page: 1, kind: 'deduct', label: 'Column A', origin: 'manual', color: '#1e3a8a',
+      geometry: rectFlat(50, 50, 100, 100), parentId: 1 }, // 100 SF
+  ]));
+  const lines = (await page.evaluate(() => window.__harness.buildCsv())).trim().split('\n');
+  const cols = lines.slice(1).map(l => l.split(','));
+  const idx = { gross: 8, deduct: 9, net: 10, parent: 11 };
+  const room = cols.find(c => c[2] === 'area');
+  const ded = cols.find(c => c[2] === 'deduct');
+  // Room: quantity column carries net; gross/deduct/net broken out; no parent.
+  assert.equal(room[3], '1100.00', 'quantity column = net');
+  assert.equal(room[idx.gross], '1200.00', 'gross_quantity');
+  assert.equal(room[idx.deduct], '100.00', 'deduct_quantity');
+  assert.equal(room[idx.net], '1100.00', 'net_quantity');
+  assert.equal(room[idx.parent], '', 'a room has no parent');
+  // gross − deduct = net, internally consistent.
+  assert.ok(Math.abs(Number(room[idx.gross]) - Number(room[idx.deduct]) - Number(room[idx.net])) < 1e-9);
+  // Deduct row: names its parent, quantity = its own area, breakout blank.
+  assert.equal(ded[1], 'Column A', 'the deduct row is Column A');
+  assert.equal(ded[idx.parent], 'Room 1', 'deduct names its parent room');
+  assert.equal(ded[3], '100.00', 'deduct quantity = its own SF');
+  assert.equal(ded[idx.gross] + ded[idx.deduct] + ded[idx.net], '', 'no gross/deduct/net on a deduct row');
 });
 
 await run('every wasm import in index.html exists in the module (class 4)', async page => {

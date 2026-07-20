@@ -1477,7 +1477,7 @@ function renderMeasList() {
   }
 }
 
-const UNIT = { linear: 'LF', area: 'SF', count: 'EA' };
+const UNIT = { linear: 'LF', area: 'SF', count: 'EA', deduct: 'SF' };
 
 /// One CSV cell: quote if it contains comma, quote, or newline; double
 /// internal quotes. Names are free text, so this is load-bearing.
@@ -1488,22 +1488,38 @@ function csvCell(v) {
 
 /// CSV of every measurement across all pages, with §A2 provenance: an
 /// estimator must see which numbers a human drew (manual/snap) vs the
-/// engine detected (floodfill), and under which page scale.
+/// engine detected (floodfill), and under which page scale. Areas with
+/// deductions break out gross/deduct/net (the `quantity` column carries net,
+/// so single-column consumers get the right number); deduct rows name their
+/// parent. All four extra columns are blank for a plain area, so existing
+/// consumers are unaffected.
 function buildCsv() {
   const header = ['page', 'name', 'kind', 'quantity', 'unit',
-                  'origin', 'page_scale_fpi', 'scale_source'];
+                  'origin', 'page_scale_fpi', 'scale_source',
+                  'gross_quantity', 'deduct_quantity', 'net_quantity', 'parent'];
   const rows = [header.join(',')];
   for (const m of measurements) {
     const fpiOf = scaleOf(m.page);          // blank for a count on an unscaled page
+    let gross = '', deduct = '', net = '', parent = '';
+    if (m.kind === 'area') {
+      const info = netInfo(m);
+      if (info && info.hasDeducts) {
+        gross = info.gross.toFixed(2); deduct = info.deduct.toFixed(2); net = info.net.toFixed(2);
+      }
+    } else if (m.kind === 'deduct') {
+      const p = measurements.find(x => x.id === m.parentId);
+      parent = p ? p.name : '(unassigned)';
+    }
     rows.push([
       m.page,
       csvCell(m.name),
       m.kind,
-      m.value.toFixed(2),
+      m.value.toFixed(2), // area-with-deducts: net (deriveValue); deduct: its own SF
       UNIT[m.kind] ?? '',
       m.origin,
       fpiOf == null ? '' : fpiOf.toFixed(4),
       csvCell(scaleSourceOf(m.page) ?? ''),
+      gross, deduct, net, csvCell(parent),
     ].join(','));
   }
   return rows.join('\n') + '\n';
