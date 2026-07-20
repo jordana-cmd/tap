@@ -38,6 +38,10 @@ parentId?: measurementId                            // deductions reference thei
 conditionId?: conditionId                           // takeoff grouping; null = unassigned.
                                                     // colour + assembly DERIVE from the condition
                                                     // (a per-measurement value overrides it)
+scope: 'base' | 'alternate'                         // bid structure; DEFAULT 'base'. An alternate
+                                                    // is priced standalone, never folded into base
+alternateGroupId?: alternateGroupId                 // which named alternate this belongs to
+                                                    // (set iff scope === 'alternate')
 deleted?: { by: userId, at: timestamp }             // soft-delete; measurements are NEVER
                                                     // removed as map entries — see §9 CRDT row
 ```
@@ -71,6 +75,20 @@ Condition {
 ```
 
 > **Why Condition:** it is the industry model for taking off multiple products from one print — the estimator defines a condition per product (e.g. *Epoxy*, area; *Polish*, area) and every trace joins the **active** condition, inheriting its colour (so the drawing reads as a colour-coded takeoff) and its assembly (so the BOM is right by default). `conditionId` is the grouping key for the measurement list (per-condition subtotals) and for the material list (per-condition rollup, so epoxy vs polish read separately). Colour and assembly are **derived** from the condition — a per-measurement `color`/`assemblyId` is an override, not the norm — so changing a condition re-colours and re-costs its members without touching stored measurement geometry (invariant 5 holds: quantities stay derived). `conditionId` is nullable and additive: a measurement without one is *unassigned*, and pre-Condition documents load unchanged.
+
+Add an `AlternateGroup` collection to the document (a top-level map, sibling to the `Measurement` and `Condition` maps):
+
+```
+AlternateGroup {
+  id
+  name                                              // e.g. "Add 2 bathrooms", "Alternate 1"
+  deleted?: { by: userId, at: timestamp }           // soft-delete, same discipline as Condition —
+                                                     // deleting a group returns its members to the
+                                                     // base bid, it NEVER deletes measurements
+}
+```
+
+> **Why scope / AlternateGroup:** this is the bid-structure model. A commercial bid is a **Base Bid** plus optional **Alternates**, and the GC's question is always "what would it cost to add *exactly this*?" — so each alternate must price **standalone** and never silently fold into the base. A measurement's `scope` places it in the base bid or an alternate; `alternateGroupId` names which alternate, so **several measurements can compose one alternate** ("Add 2 bathrooms" may be two rooms plus a deduction). Totals compute per scope — the base bid total, and each alternate's standalone total — and exports break out by scope so an alternate's materials are a separate block, never summed into the base. `scope` is orthogonal to `conditionId` (an alternate can contain any conditions) and defaults to `base`, so pre-scope documents load as an all-base bid unchanged; an included/excluded *view* toggle for combining alternates is UI state, not document state — the persisted truth is only which scope a measurement belongs to.
 
 ---
 
