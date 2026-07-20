@@ -71,7 +71,14 @@
   .bomLine:hover { background: #eef2ff; }
   .bomLine .bomQty { min-width: 6.5em; text-align: right; font-variant-numeric: tabular-nums;
                      font-weight: 600; }
-  .bomLine .bomWhy { color: #6d28d9; font-family: ui-monospace, monospace; font-size: 0.75rem; }
+  .bomLine .bomName { flex: 1 1 auto; }
+  .bomLine .bomWhy { color: #6d28d9; font-family: ui-monospace, monospace; font-size: 0.75rem; flex: 1 1 100%; }
+  .bomLine .bomUnitCost { color: #78716c; font-variant-numeric: tabular-nums; }
+  .bomLine .bomExt { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 5em; text-align: right; }
+  .bomLine .bomExt.credit { color: #15803d; }
+  .bomTotal { display: flex; justify-content: space-between; gap: 8px; font-weight: 700;
+              padding: 4px 0 2px; margin-top: 3px; border-top: 1px solid #cbd5e1; }
+  .bomTotal .credit { color: #15803d; }
   .bomErr { color: #b91c1c; }
   .bomOv { margin-top: 4px; padding-top: 4px; border-top: 1px dashed #cbd5e1; }
   .bomOv .ovRow { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; }
@@ -1046,7 +1053,7 @@ async function renderProjectPanel() {
 
 // ---- assembly library (persisted in IndexedDB, one across all projects) ----
 const KIND_LABELS = { Area: 'area', Linear: 'linear', Count: 'count' };
-const UNITS = ['SF', 'LF', 'EA', 'GAL', 'HR', 'BOX'];
+const UNITS = ['SF', 'LF', 'EA', 'GAL', 'HR', 'BOX', 'L', 'Cup', 'Cap', 'Stitch', 'Tube', 'lb'];
 
 /// Seed the library from engine-core's seeds ONCE (a flag makes deletes
 /// stick — no resurrection on reload).
@@ -1136,42 +1143,61 @@ function computeBom(m) {
 }
 
 const niceNum = n => (Math.abs(n - Math.round(n)) < 1e-9 ? String(Math.round(n)) : (+n.toFixed(3)).toString());
+/// USD to the cent, negatives shown as −$x (credits).
+const usd = n => (n < 0 ? '−$' : '$') + Math.abs(n).toFixed(2);
 
 /// Render the expandable BOM sub-panel for a measurement: one line per part
-/// (final quantity + unit; click reveals the source formula — the "why is
-/// this number what it is" affordance), then a per-application overrides
-/// editor. Overrides live on the MEASUREMENT, not the assembly.
+/// (final quantity + unit, unit cost, extended cost; click reveals the source
+/// formula), a materials total, then a per-application overrides editor
+/// (parameters, per-part waste, and manual-quantity inputs). Overrides live on
+/// the MEASUREMENT, not the assembly. The overrides editor renders even when
+/// apply fails — so a missing manual quantity can be entered to fix it.
 function renderBomPanel(m) {
   const panel = document.createElement('div');
   panel.className = 'bomPanel';
+  const asm = assemblyCache.find(a => a.id === effAssemblyId(m));
   const res = computeBom(m);
-  if (!res.ok) {
+  if (res.ok) {
+    for (const li of res.bom.line_items) {
+      const line = document.createElement('div');
+      line.className = 'bomLine';
+      line.title = `raw ${niceNum(li.raw_quantity)} → after waste ${niceNum(li.waste_applied)}`
+        + ` → ${niceNum(li.final_quantity)} @ ${usd(li.unit_cost)}`;
+      const qty = document.createElement('span');
+      qty.className = 'bomQty';
+      qty.textContent = `${niceNum(li.final_quantity)} ${li.unit}`;
+      const nm = document.createElement('span');
+      nm.className = 'bomName'; nm.textContent = li.part_name;
+      const uc = document.createElement('span');
+      uc.className = 'bomUnitCost'; uc.textContent = `@ ${usd(li.unit_cost)}`;
+      const ext = document.createElement('span');
+      ext.className = 'bomExt'; ext.textContent = usd(li.extended_cost);
+      if (li.extended_cost < 0) ext.classList.add('credit');
+      const why = document.createElement('span');
+      why.className = 'bomWhy'; why.hidden = true;
+      why.textContent = `= ${li.formula_text}`;
+      line.addEventListener('click', () => { why.hidden = !why.hidden; });
+      line.append(qty, nm, uc, ext, why);
+      panel.append(line);
+    }
+    // Materials total for this measurement.
+    const tot = document.createElement('div');
+    tot.className = 'bomTotal';
+    const lbl = document.createElement('span'); lbl.textContent = 'Materials';
+    const val = document.createElement('span');
+    val.textContent = usd(res.bom.materials_total);
+    if (res.bom.materials_total < 0) val.className = 'credit';
+    tot.append(lbl, val);
+    panel.append(tot);
+  } else {
     const e = document.createElement('div');
     e.className = res.error ? 'bomErr' : '';
     e.textContent = res.reason;
     panel.append(e);
-    return panel;
   }
-  for (const li of res.bom.line_items) {
-    const line = document.createElement('div');
-    line.className = 'bomLine';
-    line.title = `raw ${niceNum(li.raw_quantity)} → after waste ${niceNum(li.waste_applied)}`
-      + ` → ${niceNum(li.final_quantity)}`;
-    const qty = document.createElement('span');
-    qty.className = 'bomQty';
-    qty.textContent = `${niceNum(li.final_quantity)} ${li.unit}`;
-    const nm = document.createElement('span');
-    nm.textContent = li.part_name;
-    const why = document.createElement('span');
-    why.className = 'bomWhy'; why.hidden = true;
-    why.textContent = `= ${li.formula_text}`;
-    line.addEventListener('click', () => { why.hidden = !why.hidden; });
-    line.append(qty, nm, why);
-    panel.append(line);
-  }
-  // Overrides: assembly parameters (by name) + a per-part waste override
-  // (waste:<part_id>). Placeholder = the assembly default; a typed value
-  // writes m.overrides and re-derives.
+
+  // Overrides editor — always shown (from the assembly, not the BOM), so a
+  // manual-quantity part can be filled even when apply currently errors.
   const ov = document.createElement('div');
   ov.className = 'bomOv';
   const hdr = document.createElement('div');
@@ -1198,9 +1224,11 @@ function renderBomPanel(m) {
     rowEl.append(lab, inp);
     ov.append(rowEl);
   };
-  for (const p of res.assembly.parameters || []) addOv(p.name, p.name, p.default);
-  for (const p of res.assembly.parts || []) {
-    if (p.waste_pct != null) addOv(`${p.name} waste %`, `waste:${p.id}`, p.waste_pct);
+  for (const p of asm?.parameters || []) addOv(p.name, p.name, p.default);
+  for (const p of asm?.parts || []) {
+    // Manual-quantity parts get a required quantity input.
+    if (p.manual) addOv(`${p.name} qty`, `qty:${p.id}`, null);
+    else if (p.waste_pct != null) addOv(`${p.name} waste %`, `waste:${p.id}`, p.waste_pct);
   }
   panel.append(ov);
   return panel;
@@ -1256,6 +1284,10 @@ function editorSampleVars() {
 function validateFormulaRow(row) {
   const formula = row.querySelector('.formula').value.trim();
   const chk = row.querySelector('.fcheck');
+  // A manual-quantity part has no formula — its quantity is entered per job.
+  if (row.querySelector('.ptManual')?.checked) {
+    chk.textContent = '✓ manual qty'; chk.className = 'fcheck ok'; return true;
+  }
   if (!formula) { chk.textContent = '(empty)'; chk.className = 'fcheck bad'; return false; }
   try {
     const v = eval_formula(formula, JSON.stringify(editorSampleVars()));
@@ -1345,16 +1377,22 @@ function addPartRow(p = { id: '', name: '', unit: 'SF', formula: '', waste_pct: 
        <option value="mult"${roundKind === 'mult' ? ' selected' : ''}>ceil ×N</option>
      </select>
      <input class="ptMult" type="number" step="any" placeholder="N" style="width:4em">
+     <input class="ptCost" type="number" step="any" placeholder="$/unit" style="width:5.5em">
+     <label class="ptManualLbl"><input type="checkbox" class="ptManual"> manual</label>
      <span class="fcheck"></span>
      <button class="ptDel">✕</button>`;
   row.querySelector('.ptName').value = p.name ?? '';
   row.querySelector('.formula').value = p.formula ?? '';
   row.querySelector('.ptWaste').value = p.waste_pct == null ? '' : p.waste_pct;
   row.querySelector('.ptMult').value = roundMult;
+  row.querySelector('.ptCost').value = p.unit_cost == null ? '' : p.unit_cost;
+  row.querySelector('.ptManual').checked = !!p.manual;
   row.querySelector('.formula').addEventListener('input', () => {
     validateFormulaRow(row);
     updateParamWarnings(); // formula edits change which parameters are used
   });
+  // Manual toggles whether a formula is required; re-validate on change.
+  row.querySelector('.ptManual').addEventListener('change', () => validateFormulaRow(row));
   row.querySelector('.ptDel').addEventListener('click', () => { row.remove(); updateParamWarnings(); });
   $('partRows').append(row);
   validateFormulaRow(row);
@@ -1397,6 +1435,7 @@ function readEditorAssembly() {
     const mult = parseFloat(r.querySelector('.ptMult').value);
     const rounding = rk === 'mult' ? { CeilToMultiple: Number.isFinite(mult) ? mult : 1 } : rk;
     const name = r.querySelector('.ptName').value.trim() || `Part ${i + 1}`;
+    const cost = parseFloat(r.querySelector('.ptCost').value);
     return {
       id: name.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
       name,
@@ -1404,6 +1443,8 @@ function readEditorAssembly() {
       formula: r.querySelector('.formula').value.trim(),
       waste_pct: Number.isFinite(waste) ? waste : null,
       rounding,
+      unit_cost: Number.isFinite(cost) ? cost : 0, // negative allowed (credit)
+      manual: r.querySelector('.ptManual').checked,
     };
   });
   return {
@@ -1863,20 +1904,26 @@ function buildMaterialList() {
     const cond = condOf(m)?.name ?? '(unassigned)';
     for (const li of res.bom.line_items) {
       const key = `${cond} ${li.part_name} ${li.unit}`;
-      const agg = roll.get(key) ?? { cond, part: li.part_name, unit: li.unit, total: 0, names: [] };
+      const agg = roll.get(key)
+        ?? { cond, part: li.part_name, unit: li.unit, unit_cost: li.unit_cost, total: 0, ext: 0, names: [] };
       agg.total += li.final_quantity;
+      agg.ext += li.extended_cost;
       agg.names.push(m.name);
       roll.set(key, agg);
     }
   }
-  const rows = [['condition', 'part', 'unit', 'total_quantity', 'measurements'].join(',')];
+  const rows = [['condition', 'part', 'unit', 'total_quantity', 'unit_cost', 'extended_cost', 'measurements'].join(',')];
   const sorted = [...roll.values()].sort((a, b) =>
     a.cond.localeCompare(b.cond) || a.part.localeCompare(b.part) || a.unit.localeCompare(b.unit));
+  let grand = 0;
   for (const r of sorted) {
+    grand += r.ext;
     rows.push([csvCell(r.cond), csvCell(r.part), csvCell(r.unit), niceNum(r.total),
-               csvCell(r.names.join('; '))].join(','));
+               r.unit_cost.toFixed(2), r.ext.toFixed(2), csvCell(r.names.join('; '))].join(','));
   }
-  return { csv: rows.join('\n') + '\n', lineCount: sorted.length, skipped };
+  // Grand materials total footer (materials only — phase 1).
+  rows.push(['', '', '', '', '', grand.toFixed(2), 'TOTAL MATERIALS'].join(','));
+  return { csv: rows.join('\n') + '\n', lineCount: sorted.length, materialsTotal: grand, skipped };
 }
 
 /// Swap a name span for an inline text input; Enter/blur commits, Esc

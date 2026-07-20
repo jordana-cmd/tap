@@ -797,14 +797,14 @@ await run('material list: rolls up line items across measurements by (part, unit
   await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), proj);
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const lines = out.csv.trim().split('\n');
-  assert.equal(lines[0], 'condition,part,unit,total_quantity,measurements', 'header');
+  assert.equal(lines[0], 'condition,part,unit,total_quantity,unit_cost,extended_cost,measurements', 'header');
   // No condition on these rooms → "(unassigned)" condition column.
   // Adhesive: ceil(2475/150)=17 GAL per room, summed across both rooms = 34.
   const adhesive = lines.filter(l => l.includes(',Adhesive,'));
   assert.equal(adhesive.length, 1, 'exactly one Adhesive/GAL row (rolled up, not duplicated)');
-  assert.equal(adhesive[0], '(unassigned),Adhesive,GAL,34,Room 1; Room 2', `adhesive rollup: ${adhesive[0]}`);
+  assert.equal(adhesive[0], '(unassigned),Adhesive,GAL,34,0.00,0.00,Room 1; Room 2', `adhesive rollup: ${adhesive[0]}`);
   // Boxes: 137 each → 274. Rows are sorted by condition then part.
-  assert.ok(lines.includes('(unassigned),Flooring boxes,BOX,274,Room 1; Room 2'), 'boxes summed to 274');
+  assert.ok(lines.includes('(unassigned),Flooring boxes,BOX,274,0.00,0.00,Room 1; Room 2'), 'boxes summed to 274');
   assert.equal(out.skipped.length, 0, 'both rooms quantifiable');
 });
 
@@ -980,7 +980,7 @@ await run('deduct: the material list inherits net (rolls up from the net BOM)', 
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const line = out.csv.trim().split('\n').find(l => l.includes(',Flooring material,'));
   // Net-based material quantity (1210), same as the BOM — no separate rollup path.
-  assert.equal(line, '(unassigned),Flooring material,SF,1210,Room 1', `material list uses net: ${line}`);
+  assert.equal(line, '(unassigned),Flooring material,SF,1210,0.00,0.00,Room 1', `material list uses net: ${line}`);
 });
 
 await run('deduct: takeoff.csv breaks out gross/deduct/net and names the deduct’s parent', async page => {
@@ -1202,14 +1202,86 @@ await run('condition: the material list separates products (per-condition rollup
   })));
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const lines = out.csv.trim().split('\n');
-  assert.equal(lines[0], 'condition,part,unit,total_quantity,measurements');
-  // Every data row is tagged with its condition; Epoxy and Polish are separate.
-  assert.ok(lines.slice(1).every(l => l.startsWith('Epoxy,') || l.startsWith('Polish,')),
+  assert.equal(lines[0], 'condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
+  // Data rows (excluding the header and the TOTAL MATERIALS footer) each carry
+  // their condition; Epoxy and Polish are separate.
+  const dataRows = lines.slice(1).filter(l => !l.endsWith('TOTAL MATERIALS'));
+  assert.ok(dataRows.every(l => l.startsWith('Epoxy,') || l.startsWith('Polish,')),
     'every row carries its condition');
   assert.ok(lines.some(l => l.startsWith('Epoxy,Epoxy,GAL,')), `epoxy line present: ${lines.join(' | ')}`);
   assert.ok(lines.some(l => l.startsWith('Polish,Flooring boxes,BOX,')), 'polish flooring line present');
   // No row mixes the two products.
   assert.ok(!lines.some(l => l.startsWith('Epoxy,Flooring boxes')), 'epoxy has no flooring parts');
+});
+
+// ---- pricing (phase 1): cost on the BOM ----
+// A 400×300 pt room = 1,200 SF at fpi 7.2, attached to a seeded priced system.
+const pricedRoom = assemblyId => ({
+  version: 1, sha: 'x', name: 'price',
+  pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
+  measurements: [{
+    id: 1, page: 1, kind: 'area', label: 'Room 1', origin: 'manual', color: '#1e3a8a',
+    geometry: [0, 0, 400, 0, 400, 300, 0, 300], assemblyId,
+  }],
+});
+
+await run('pricing: BOM shows unit + extended cost and a materials total (Epoxy+HW @ 1200 SF)', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
+  const res = await page.evaluate(() => window.__harness.applyBom(1));
+  assert.ok(res.ok, `BOM computed: ${JSON.stringify(res).slice(0, 140)}`);
+  assert.ok(Math.abs(res.bom.materials_total - 1180.8) < 1e-6, `materials 1180.80, got ${res.bom.materials_total}`);
+  const hw = res.bom.line_items.find(l => l.part_name === 'High Wear Urethane');
+  assert.equal(hw.unit_cost, 159.6);
+  assert.ok(Math.abs(hw.extended_cost - 766.08) < 1e-6, `HW extended 766.08, got ${hw.extended_cost}`);
+  // The expanded DOM shows the extended cost per line and a materials total.
+  await page.click('.measRow .bomToggle');
+  await page.waitForSelector('.bomPanel .bomTotal');
+  const total = await page.$eval('.bomPanel .bomTotal', el => el.textContent);
+  assert.match(total, /Materials.*\$1,?180\.80/, `materials total shown: ${total}`);
+  const exts = await page.$$eval('.bomPanel .bomLine .bomExt', els => els.map(e => e.textContent));
+  assert.ok(exts.some(t => t.includes('766.08')), `HW extended-cost cell shown: ${exts.join(' ')}`);
+});
+
+await run('pricing: a recovered-flake credit renders as a negative extended cost', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('flake'));
+  const res = await page.evaluate(() => window.__harness.applyBom(1));
+  const credit = res.bom.line_items.find(l => l.part_name.includes('Recovered'));
+  assert.ok(credit.extended_cost < 0, `recovered-flake extended cost is negative: ${credit.extended_cost}`);
+  await page.click('.measRow .bomToggle');
+  await page.waitForSelector('.bomPanel .bomExt.credit'); // green credit cell rendered
+  assert.ok(await page.$eval('.bomPanel .bomExt.credit', el => el.textContent.includes('$')), 'credit shows a $ amount');
+});
+
+await run('pricing: a manual-quantity part errors until a quantity is entered in the BOM', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('stitching'));
+  let res = await page.evaluate(() => window.__harness.applyBom(1));
+  assert.equal(res.ok, false, 'missing manual quantity → apply fails (not a silent zero)');
+  assert.match(res.reason, /MISSING_QUANTITY|quantity/, `clear error surfaced: ${res.reason}`);
+  // The panel still renders the qty input so it can be fixed.
+  await page.click('.measRow .bomToggle');
+  await page.waitForSelector('.bomPanel .bomOv .ovRow');
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('.bomPanel .bomOv .ovRow')]
+      .find(r => r.querySelector('label').textContent === 'Crack Stitching qty');
+    const inp = row.querySelector('input');
+    inp.value = '10';
+    inp.dispatchEvent(new Event('change'));
+  });
+  res = await page.evaluate(() => window.__harness.applyBom(1));
+  assert.ok(res.ok, 'supplying the quantity computes the BOM');
+  assert.ok(Math.abs(res.bom.materials_total - 40) < 1e-9, '10 stitches × $4 = $40');
+});
+
+await run('pricing: material list export carries unit + extended cost and a grand total', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
+  const out = await page.evaluate(() => window.__harness.buildMaterialList());
+  const lines = out.csv.trim().split('\n');
+  assert.equal(lines[0], 'condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
+  const hw = lines.find(l => l.includes(',High Wear Urethane,'));
+  assert.ok(hw.includes(',159.60,766.08,'), `HW priced row: ${hw}`);
+  // Grand materials total footer + the returned total.
+  assert.ok(lines[lines.length - 1].endsWith('1180.80,TOTAL MATERIALS'), `total footer: ${lines[lines.length - 1]}`);
+  assert.ok(Math.abs(out.materialsTotal - 1180.8) < 1e-6, `materialsTotal ${out.materialsTotal}`);
 });
 
 await run('advanced: detection tuning is collapsed by default and holds the knobs + stats', async page => {
