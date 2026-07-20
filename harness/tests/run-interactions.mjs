@@ -689,6 +689,91 @@ await run('author: unused parameter warns (does not block); reference clears it'
   assert.equal(warn, '', `warning clears once referenced (was "${warn}")`);
 });
 
+// A flooring room whose derived drivers are exactly area_sf=2475, perimeter=210
+// (at fpi 7.2, 1 pt = 0.1 ft): W·H = 247500 pt², 2(W+H) = 2100 pt. Injected
+// through the real persistence path (importJson → fromStored) so it also
+// exercises the new assemblyId/overrides round-trip.
+const flooringRoom = (overrides = null) => {
+  const W = (1050 + 150 * Math.sqrt(5)) / 2, H = 1050 - W;
+  return {
+    version: 1, sha: 'x', name: 'flooring-test',
+    pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
+    measurements: [{
+      id: 1, page: 1, kind: 'area', label: 'Room 1', origin: 'manual', color: '#1e3a8a',
+      geometry: [0, 0, W, 0, W, H, 0, H],
+      assemblyId: 'commercial_flooring', overrides,
+    }],
+  };
+};
+
+await run('apply: attaching commercial flooring derives the engine BOM', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), flooringRoom());
+  const bom = await page.evaluate(() => window.__harness.applyBom(1));
+  assert.ok(bom.ok, `BOM computed: ${JSON.stringify(bom)}`);
+  const q = name => bom.bom.line_items.find(l => l.part_name === name).final_quantity;
+  assert.equal(q('Flooring boxes'), 137, 'boxes = ceil(2475/20 · 1.1 waste)');
+  assert.equal(q('Adhesive'), 17, 'adhesive = ceil(2475/150)');
+  assert.ok(Math.abs(q('Cove base') - 220.5) < 1e-6, `cove = 210 · 1.05, got ${q('Cove base')}`);
+  // The expanded DOM shows the same numbers (display wired to the same engine).
+  await page.click('.measRow .bomToggle');
+  await page.waitForSelector('.bomPanel .bomLine');
+  const lines = await page.$$eval('.bomPanel .bomLine', els => els.map(e => ({
+    qty: e.querySelector('.bomQty').textContent, name: e.children[1].textContent,
+  })));
+  assert.equal(lines.find(l => l.name === 'Flooring boxes').qty, '137 BOX', 'boxes line in the DOM');
+  // Clicking a line reveals its source formula (the provenance affordance).
+  await page.click('.bomPanel .bomLine');
+  assert.ok(
+    await page.$eval('.bomPanel .bomLine .bomWhy', el => !el.hidden && el.textContent.includes('area_sf')),
+    'clicking a BOM line reveals its formula',
+  );
+});
+
+await run('override: per-measurement waste changes the BOM and persists', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), flooringRoom());
+  const matBefore = await page.evaluate(() =>
+    window.__harness.applyBom(1).bom.line_items.find(l => l.part_name === 'Flooring material').final_quantity);
+  assert.ok(Math.abs(matBefore - 2722.5) < 1e-6, `material before = 2475·1.10, got ${matBefore}`);
+  // Drive the DOM overrides editor: raise the material waste 10% → 20%.
+  await page.click('.measRow .bomToggle');
+  await page.waitForSelector('.bomOv .ovRow');
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('.bomOv .ovRow')]
+      .find(r => r.querySelector('label').textContent === 'Flooring material waste %');
+    const inp = row.querySelector('input');
+    inp.value = '20';
+    inp.dispatchEvent(new Event('change'));
+  });
+  const matAfter = await page.evaluate(() =>
+    window.__harness.applyBom(1).bom.line_items.find(l => l.part_name === 'Flooring material').final_quantity);
+  assert.ok(Math.abs(matAfter - 2970) < 1e-6, `material after = 2475·1.20, got ${matAfter}`);
+  assert.deepEqual(
+    await page.evaluate(() => window.__harness.measOverrides(1)),
+    { 'waste:material': 20 }, 'override stored on the measurement');
+});
+
+await run('reload: assembly assignment + overrides restored, BOM re-derived', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)),
+    flooringRoom({ 'waste:material': 20 }));
+  await page.evaluate(() => window.__harness.flushSave());
+  // Reload the SAME context (same IndexedDB) and same PDF → project restores.
+  await page.goto(URL);
+  await waitReady(page);
+  const restored = await page.evaluate(() => {
+    const m = window.__harness.measurements().find(x => x.id === 1) ?? window.__harness.measurements()[0];
+    return { assemblyId: m.assemblyId, overrides: window.__harness.measOverrides(m.id), bomStored: 'bom' in m };
+  });
+  assert.equal(restored.assemblyId, 'commercial_flooring', 'assembly id restored');
+  assert.deepEqual(restored.overrides, { 'waste:material': 20 }, 'overrides restored');
+  assert.equal(restored.bomStored, false, 'no BOM persisted on the measurement (invariant 5)');
+  // The BOM is re-derived from geometry+scale+assembly+overrides, not stored.
+  const mat = await page.evaluate(() => {
+    const id = (window.__harness.measurements()[0]).id;
+    return window.__harness.applyBom(id).bom.line_items.find(l => l.part_name === 'Flooring material').final_quantity;
+  });
+  assert.ok(Math.abs(mat - 2970) < 1e-6, `re-derived material honors the restored override, got ${mat}`);
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();

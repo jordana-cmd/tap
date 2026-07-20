@@ -27,6 +27,21 @@
   .measRow .measColor { width: 22px; height: 16px; padding: 0; border: none; cursor: pointer; }
   .renameInput { flex: 1 1 100%; font-size: 0.85rem; }
   .measRow button { border: none; background: none; color: #dc2626; cursor: pointer; }
+  .measRow .asmSel { flex: 1 1 100%; font-size: 0.8rem; }
+  .measRow .bomToggle { color: #2563eb; font-weight: 700; }
+  .bomPanel { margin: 0 0 4px 10px; padding: 4px 8px; border-left: 2px solid #cbd5e1;
+              font-size: 0.8rem; background: #f8fafc; }
+  .bomLine { display: flex; gap: 8px; align-items: baseline; padding: 1px 0; cursor: pointer; }
+  .bomLine:hover { background: #eef2ff; }
+  .bomLine .bomQty { min-width: 6.5em; text-align: right; font-variant-numeric: tabular-nums;
+                     font-weight: 600; }
+  .bomLine .bomWhy { color: #6d28d9; font-family: ui-monospace, monospace; font-size: 0.75rem; }
+  .bomErr { color: #b91c1c; }
+  .bomOv { margin-top: 4px; padding-top: 4px; border-top: 1px dashed #cbd5e1; }
+  .bomOv .ovRow { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; }
+  .bomOv .ovRow label { min-width: 12em; color: #57534e; }
+  .bomOv input { width: 6em; font-size: 0.78rem; }
+  .bomOv .ovHdr { color: #78716c; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
   #projectPanel, #assemblyPanel { background: #fff; border: 1px solid #d6d3d1; padding: 8px;
                   margin: 6px 0; max-width: 720px; font-size: 0.85rem; }
   .asmRow { display: flex; align-items: baseline; gap: 10px; padding: 4px;
@@ -707,6 +722,10 @@ function toStored(m) {
     geometry: Array.from(m.geometry),
     confirmedBy: null, parentId: null, deleted: null, // §A2 optionals, unused here
     color: m.color,
+    // Assembly attachment: the library id + per-application overrides ONLY.
+    // The BOM is never stored — it is re-derived on load (invariant 5).
+    assemblyId: m.assemblyId ?? null,
+    overrides: m.overrides && Object.keys(m.overrides).length ? m.overrides : null,
   };
 }
 function fromStored(r) {
@@ -715,6 +734,8 @@ function fromStored(r) {
     color: r.color ?? '#1e3a8a',
     value: 0, valueText: '', // recomputed below
     geometry: Float64Array.from(r.geometry),
+    assemblyId: r.assemblyId ?? null,
+    overrides: r.overrides ?? {},
   };
 }
 /// Rebuild derived quantity/text after restore or import (invariant 5).
@@ -887,6 +908,122 @@ async function seedAssembliesOnce() {
   await store.setMeta('assembliesSeeded', true);
 }
 
+// In-memory mirror of the assembly library so measurement rows (rendered
+// synchronously) can resolve their attached assembly without an async read.
+// Refreshed on boot and after every library mutation.
+let assemblyCache = [];
+async function refreshAssemblyCache() {
+  assemblyCache = await store.listAssemblies();
+}
+
+// measurement kind ('area'/'linear'/'count') → engine MeasureKind tag.
+const MEASURE_KIND = { area: 'Area', linear: 'Linear', count: 'Count' };
+/// Library assemblies whose `applies_to` includes this measurement's kind.
+function assembliesFor(kind) {
+  const tag = MEASURE_KIND[kind];
+  return assemblyCache.filter(a => (a.applies_to || []).includes(tag));
+}
+
+/// Compute the assembly drivers for a measurement ON DEMAND from its stored
+/// geometry + the owning page's scale (invariant 5 — nothing derived is
+/// stored). Returns null when an area/linear measurement has no page scale.
+function driversFor(m) {
+  const flat = Array.from(m.geometry);
+  if (m.kind === 'count') return { kind: 'count', count_ea: m.geometry.length / 2 };
+  const f = scaleOf(m.page);
+  if (f == null) return null;
+  if (m.kind === 'linear') return { kind: 'linear', length_lf: measure_polyline(flat, f) };
+  const ring = flat.concat(flat.slice(0, 2));
+  return { kind: 'area', area_sf: measure_polygon_area(flat, f), perimeter_lf: measure_polyline(ring, f) };
+}
+
+/// Recompute a measurement's BOM from geometry + scale + assembly + overrides.
+/// Pure derivation (invariant 5); returns { ok, bom } or { ok:false, ... }.
+function computeBom(m) {
+  const asm = assemblyCache.find(a => a.id === m.assemblyId);
+  if (!asm) return { ok: false, reason: '(assembly not in library)' };
+  const drivers = driversFor(m);
+  if (!drivers) return { ok: false, reason: '(set a page scale to compute this BOM)' };
+  try {
+    const bom = JSON.parse(apply_assembly(
+      JSON.stringify(asm), JSON.stringify(drivers), JSON.stringify(m.overrides ?? {})));
+    return { ok: true, bom, assembly: asm };
+  } catch (e) {
+    return { ok: false, reason: `apply failed [${e.code ?? '?'}]: ${e.message ?? e}`, error: true };
+  }
+}
+
+const niceNum = n => (Math.abs(n - Math.round(n)) < 1e-9 ? String(Math.round(n)) : (+n.toFixed(3)).toString());
+
+/// Render the expandable BOM sub-panel for a measurement: one line per part
+/// (final quantity + unit; click reveals the source formula — the "why is
+/// this number what it is" affordance), then a per-application overrides
+/// editor. Overrides live on the MEASUREMENT, not the assembly.
+function renderBomPanel(m) {
+  const panel = document.createElement('div');
+  panel.className = 'bomPanel';
+  const res = computeBom(m);
+  if (!res.ok) {
+    const e = document.createElement('div');
+    e.className = res.error ? 'bomErr' : '';
+    e.textContent = res.reason;
+    panel.append(e);
+    return panel;
+  }
+  for (const li of res.bom.line_items) {
+    const line = document.createElement('div');
+    line.className = 'bomLine';
+    line.title = `raw ${niceNum(li.raw_quantity)} → after waste ${niceNum(li.waste_applied)}`
+      + ` → ${niceNum(li.final_quantity)}`;
+    const qty = document.createElement('span');
+    qty.className = 'bomQty';
+    qty.textContent = `${niceNum(li.final_quantity)} ${li.unit}`;
+    const nm = document.createElement('span');
+    nm.textContent = li.part_name;
+    const why = document.createElement('span');
+    why.className = 'bomWhy'; why.hidden = true;
+    why.textContent = `= ${li.formula_text}`;
+    line.addEventListener('click', () => { why.hidden = !why.hidden; });
+    line.append(qty, nm, why);
+    panel.append(line);
+  }
+  // Overrides: assembly parameters (by name) + a per-part waste override
+  // (waste:<part_id>). Placeholder = the assembly default; a typed value
+  // writes m.overrides and re-derives.
+  const ov = document.createElement('div');
+  ov.className = 'bomOv';
+  const hdr = document.createElement('div');
+  hdr.className = 'ovHdr'; hdr.textContent = 'overrides (this measurement only)';
+  ov.append(hdr);
+  const addOv = (label, key, placeholder) => {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'ovRow';
+    const lab = document.createElement('label');
+    lab.textContent = label;
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.step = 'any';
+    inp.placeholder = placeholder == null ? '' : niceNum(placeholder);
+    const cur = m.overrides?.[key];
+    if (cur != null) inp.value = cur;
+    inp.addEventListener('change', () => {
+      m.overrides = m.overrides ?? {};
+      const v = parseFloat(inp.value);
+      if (inp.value.trim() === '' || !Number.isFinite(v)) delete m.overrides[key];
+      else m.overrides[key] = v;
+      markDirty();
+      renderMeasList(); // re-derive the BOM with the new override
+    });
+    rowEl.append(lab, inp);
+    ov.append(rowEl);
+  };
+  for (const p of res.assembly.parameters || []) addOv(p.name, p.name, p.default);
+  for (const p of res.assembly.parts || []) {
+    if (p.waste_pct != null) addOv(`${p.name} waste %`, `waste:${p.id}`, p.waste_pct);
+  }
+  panel.append(ov);
+  return panel;
+}
+
 async function renderAssemblyPanel() {
   const list = $('assemblyList');
   list.textContent = '';
@@ -908,7 +1045,9 @@ async function renderAssemblyPanel() {
     del.addEventListener('click', async () => {
       if (!confirm(`Delete assembly "${a.name}"? This cannot be undone.`)) return;
       await store.deleteAssembly(a.id);
+      await refreshAssemblyCache();
       renderAssemblyPanel();
+      renderMeasList(); // rows referencing the deleted assembly fall back to "(none)"
     });
     row.append(name, meta, edit, del);
     list.append(row);
@@ -1109,8 +1248,10 @@ async function saveAssembly() {
     return;
   }
   await store.putAssembly(readEditorAssembly());
+  await refreshAssemblyCache();
   $('assemblyEditor').hidden = true;
   renderAssemblyPanel();
+  renderMeasList(); // an edited assembly may change attached measurements' BOMs
 }
 
 /// Sync the scale chip to the current page (page switches, file loads).
@@ -1158,7 +1299,40 @@ function renderMeasList() {
     row.addEventListener('mouseenter', () => { hoverMeas = m.id; render(); });
     row.addEventListener('mouseleave', () => { hoverMeas = null; render(); });
     row.append(name, value, origin, colour, del);
+
+    // Assembly attachment: a select filtered to assemblies that apply to this
+    // measurement's kind, plus an expand toggle for the derived BOM.
+    const choices = assembliesFor(m.kind);
+    // Drop a stale attachment (assembly deleted, or kind no longer matches).
+    if (m.assemblyId && !choices.some(a => a.id === m.assemblyId)) {
+      m.assemblyId = null; m.overrides = {};
+    }
+    if (choices.length) {
+      const sel = document.createElement('select');
+      sel.className = 'asmSel';
+      sel.innerHTML = '<option value="">— no assembly —</option>'
+        + choices.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+      sel.value = m.assemblyId ?? '';
+      sel.addEventListener('change', () => {
+        m.assemblyId = sel.value || null;
+        m.overrides = {}; // a different assembly's parameters don't carry over
+        markDirty();
+        renderMeasList();
+      });
+      const toggle = document.createElement('button');
+      toggle.className = 'bomToggle';
+      toggle.textContent = m._bomOpen ? '▾' : '▸';
+      toggle.title = 'show/hide bill of materials';
+      toggle.style.color = '#2563eb';
+      toggle.disabled = !m.assemblyId;
+      toggle.addEventListener('click', () => { m._bomOpen = !m._bomOpen; renderMeasList(); });
+      row.append(sel, toggle);
+    }
     list.append(row);
+
+    if (m.assemblyId && m._bomOpen && assembliesFor(m.kind).some(a => a.id === m.assemblyId)) {
+      list.append(renderBomPanel(m));
+    }
   }
 }
 
@@ -1652,12 +1826,28 @@ window.__harness = {
   listAssemblies: () => store.listAssemblies(),
   getAssembly: id => store.getAssembly(id),
   deleteAssembly: id => store.deleteAssembly(id),
+  // Assembly attachment (commit 3): derive a measurement's BOM, and drive
+  // attachment/overrides without the DOM for the interaction suite.
+  applyBom: measId => { const m = measurements.find(x => x.id === measId); return m ? computeBom(m) : null; },
+  attachAssembly: (measId, asmId) => {
+    const m = measurements.find(x => x.id === measId);
+    if (m) { m.assemblyId = asmId; m.overrides = {}; markDirty(); renderMeasList(); }
+  },
+  setOverride: (measId, key, value) => {
+    const m = measurements.find(x => x.id === measId);
+    if (!m) return;
+    m.overrides = m.overrides ?? {};
+    if (value == null) delete m.overrides[key]; else m.overrides[key] = value;
+    markDirty(); renderMeasList();
+  },
+  measOverrides: measId => measurements.find(x => x.id === measId)?.overrides ?? null,
 };
 
 // ---- boot ----
 await init();
 store.requestPersist(); // best-effort: keep our storage across eviction
 await seedAssembliesOnce(); // populate the library from engine-core seeds
+await refreshAssemblyCache(); // load the library into the sync render cache
 for (const p of JSON.parse(scale_presets_json())) {
   const o = document.createElement('option');
   o.value = p.fpi; o.textContent = p.label;
