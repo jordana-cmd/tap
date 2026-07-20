@@ -280,6 +280,40 @@ mod tests {
     }
 
     #[test]
+    fn stacked_job_material_total_matches_quoting_tool_to_the_cent() {
+        // Phase 2 stacking: a job is a base system PLUS add-ons PLUS consumables,
+        // combined into one materials total. Reproduces Epoxy + High Wear
+        // Urethane + Crack Repair + Job Consumables @ 5,000 SF:
+        //   system epoxy_hw                              = $4,920.00 (see above)
+        //   crack_repair: mender_a 20·$10.17 = $203.40
+        //                 mender_b 20·$10.17 = $203.40
+        //                 sand     15·$0.05  = $0.75     → $407.55
+        //   consumables                                  = $868.7193725
+        //   grand materials                              = $6,196.27 (to the cent)
+        // The permanent drift guard for STACKED jobs.
+        let input = MeasurementInput::area(5000.0, 0.0);
+        let systems = mcfc_systems();
+        let addons = mcfc_addons();
+        let stack = [
+            systems.iter().find(|a| a.id == "epoxy_hw").unwrap().clone(),
+            addons.iter().find(|a| a.id == "crack_repair").unwrap().clone(),
+            job_consumables(),
+        ];
+
+        // Combine like the harness does: sum each assembly's materials_total.
+        let mut grand = 0.0;
+        for asm in &stack {
+            grand += apply(asm, &input).unwrap().materials_total;
+        }
+
+        // Sanity on the crack-repair leg on its own.
+        let cr = apply(&stack[1], &input).unwrap().materials_total;
+        assert!((cr - 407.55).abs() < 1e-9, "crack_repair {cr} != 407.55");
+
+        assert_eq!((grand * 100.0).round() / 100.0, 6196.27, "stacked grand materials to the cent");
+    }
+
+    #[test]
     fn flake_system_carries_the_negative_recovered_credit() {
         let bom = apply(
             &mcfc_systems().into_iter().find(|a| a.id == "flake").unwrap(),
