@@ -16,7 +16,11 @@
   .advDetail { font-family: ui-monospace, monospace; font-size: 0.75rem; color: #57534e;
                white-space: pre-line; padding: 4px 10px 8px; }
   canvas { border: 1px solid #a8a29e; background: #fff; cursor: crosshair; display: block; }
-  #canvasWrap { overflow: auto; max-height: 70vh; flex: 1 1 auto; min-width: 0; }
+  #canvasCol { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
+  #canvasWrap { overflow: auto; max-height: 70vh; }
+  #legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 5px 8px; background: #fff;
+            border: 1px solid #e7e5e4; border-radius: 4px; font-size: 0.8rem; }
+  #legend .legChip { display: inline-flex; align-items: center; gap: 5px; }
   .bar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 6px 0; font-size: 0.9rem; }
   button { font-size: 0.9rem; }
   #calibFeet { width: 5em; }
@@ -226,7 +230,10 @@
   <div id="advDetail" class="advDetail">–</div>
 </details>
 <div id="workRow">
-  <div id="canvasWrap"><canvas id="plan" width="900" height="650"></canvas></div>
+  <div id="canvasCol">
+    <div id="legend" hidden title="condition colour key"></div>
+    <div id="canvasWrap"><canvas id="plan" width="900" height="650"></canvas></div>
+  </div>
   <div id="measPanel">
     <div id="measHeader">
       <b>Measurements</b>
@@ -1463,6 +1470,34 @@ function renderActiveCondChip() {
   sw.style.visibility = active ? 'visible' : 'hidden';
 }
 
+/// Colour key for the CURRENT page's drawing: a chip per condition actually
+/// used on the page, plus red "Deduct" / grey "Unassigned" chips when those are
+/// present. Hidden when the sheet is empty. Page-scoped to match the canvas
+/// (not the list's all-pages toggle). Rendered from renderMeasList, so it
+/// tracks every measurement/condition/page change.
+function renderLegend() {
+  const leg = $('legend');
+  leg.textContent = '';
+  const onPage = measurements.filter(m => m.page === currentPage());
+  const chips = [];
+  const usedIds = new Set(onPage.filter(m => m.kind !== 'deduct' && condOf(m)).map(m => m.conditionId));
+  for (const c of conditions) if (usedIds.has(c.id)) chips.push({ color: c.color, name: c.name });
+  if (onPage.some(m => m.kind !== 'deduct' && condOf(m) == null)) chips.push({ color: '#d6d3d1', name: 'Unassigned' });
+  if (onPage.some(m => m.kind === 'deduct')) chips.push({ color: '#dc2626', name: 'Deduct' });
+  if (!chips.length) { leg.hidden = true; return; }
+  leg.hidden = false;
+  for (const ch of chips) {
+    const el = document.createElement('span');
+    el.className = 'legChip';
+    const sw = document.createElement('span');
+    sw.className = 'condSwatch'; sw.style.background = ch.color;
+    const nm = document.createElement('span');
+    nm.textContent = ch.name;
+    el.append(sw, nm);
+    leg.append(el);
+  }
+}
+
 function setActiveCondition(id) {
   activeConditionId = id;
   refreshConditionUI();
@@ -1715,6 +1750,7 @@ function buildGroupHeader(cond, members) {
 }
 
 function renderMeasList() {
+  renderLegend(); // colour key tracks the current page's drawing
   const list = $('measList');
   list.textContent = '';
   const all = $('allPages').checked;

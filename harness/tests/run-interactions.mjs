@@ -1253,6 +1253,39 @@ await run('toolbar: grouped by function; active tool is uniquely indicated', asy
   assert.notEqual(st.ring, 'none', 'the active tool has a visible ring');
 });
 
+await run('legend: a colour key per condition + Deduct/Unassigned; hidden when empty', async page => {
+  // Empty sheet → no legend.
+  assert.equal(await page.$eval('#legend', el => el.hidden), true, 'legend hidden on an empty sheet');
+  // Two conditions with measurements, one unassigned area, and a deduct.
+  await page.evaluate(() => window.__harness.importJson(JSON.stringify({
+    version: 1, sha: 'x', name: 'leg',
+    pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
+    conditions: [
+      { id: 1, name: 'Epoxy', color: '#15803d', kind: 'area', assemblyId: null },
+      { id: 2, name: 'Polish', color: '#7c3aed', kind: 'area', assemblyId: null },
+    ],
+    activeConditionId: 1,
+    measurements: [
+      { id: 1, page: 1, kind: 'area', label: 'E1', origin: 'manual', geometry: [0, 0, 400, 0, 400, 300, 0, 300], conditionId: 1 },
+      { id: 2, page: 1, kind: 'area', label: 'P1', origin: 'manual', geometry: [500, 0, 700, 0, 700, 300, 500, 300], conditionId: 2 },
+      { id: 3, page: 1, kind: 'area', label: 'U1', origin: 'manual', geometry: [0, 400, 100, 400, 100, 500, 0, 500] },
+      { id: 4, page: 1, kind: 'deduct', label: 'D1', origin: 'manual', geometry: [50, 50, 150, 50, 150, 150, 50, 150], parentId: 1 },
+    ],
+  })));
+  const leg = await page.evaluate(() => ({
+    hidden: document.querySelector('#legend').hidden,
+    chips: [...document.querySelectorAll('#legend .legChip')].map(c => c.textContent),
+  }));
+  assert.equal(leg.hidden, false, 'legend shown once the sheet has measurements');
+  assert.deepEqual(leg.chips, ['Epoxy', 'Polish', 'Unassigned', 'Deduct'],
+    'a chip per used condition, then Unassigned, then Deduct');
+  // Swatch colours match the conditions.
+  const colors = await page.evaluate(() =>
+    [...document.querySelectorAll('#legend .legChip .condSwatch')].map(s => getComputedStyle(s).backgroundColor));
+  assert.equal(colors[0], 'rgb(21, 128, 61)', 'Epoxy swatch is its colour');
+  assert.equal(colors[1], 'rgb(124, 58, 237)', 'Polish swatch is its colour');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();
