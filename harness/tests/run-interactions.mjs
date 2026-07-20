@@ -646,6 +646,49 @@ await run('author: invalid formula blocked, valid formula accepted', async page 
   assert.ok(names.includes('Test Coating'), 'valid assembly persisted to the library');
 });
 
+await run('author: unused parameter warns (does not block); reference clears it', async page => {
+  await page.click('#assembliesBtn');
+  await page.click('#newAssembly');
+  await page.waitForSelector('#assemblyEditor:not([hidden])', { timeout: 5000 });
+  await page.type('#asmName', 'Warn Test');
+  // A valid part formula that does NOT reference the parameter we add.
+  await page.type('.partRow .ptName', 'Mat');
+  await page.type('.partRow .formula', 'area_sf / 250');
+  // Add a parameter `foo` that no formula references → warning.
+  await page.click('#addParam');
+  await page.type('.paramRow .pName', 'foo');
+  await page.type('.paramRow .pDefault', '1');
+  let warn = await page.$eval('.paramRow .pWarn', el => el.textContent);
+  assert.match(warn, /unused/, `unused parameter flagged: "${warn}"`);
+  // Warn, don't block: Save is still allowed and persists.
+  await page.click('#saveAssembly');
+  await page.waitForSelector('#assemblyEditor[hidden]', { timeout: 5000 });
+  assert.ok(
+    (await page.evaluate(async () => (await window.__harness.listAssemblies()).map(a => a.name)))
+      .includes('Warn Test'),
+    'assembly with an unused parameter still saves',
+  );
+  // Re-open, reference `foo` in the formula → warning clears.
+  await page.evaluate(async () => {
+    const a = (await window.__harness.listAssemblies()).find(x => x.name === 'Warn Test');
+    window.__editId = a.id;
+  });
+  await page.evaluate(() => document.querySelector('#assemblyPanel').hidden = true);
+  await page.click('#assembliesBtn');
+  await page.waitForFunction(() => document.querySelectorAll('.asmRow').length > 0);
+  // Edit the "Warn Test" row.
+  await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('.asmRow')];
+    const row = rows.find(r => r.querySelector('.asmName').textContent === 'Warn Test');
+    row.querySelector('button').click(); // "edit"
+  });
+  await page.waitForSelector('#assemblyEditor:not([hidden])', { timeout: 5000 });
+  await page.click('.partRow .formula', { clickCount: 3 });
+  await page.type('.partRow .formula', 'area_sf / foo');
+  warn = await page.$eval('.paramRow .pWarn', el => el.textContent);
+  assert.equal(warn, '', `warning clears once referenced (was "${warn}")`);
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();

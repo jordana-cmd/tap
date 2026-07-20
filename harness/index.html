@@ -44,6 +44,8 @@
   .partRow input.formula { flex: 1 1 14em; font-family: ui-monospace, monospace; }
   .partRow .fcheck { font-size: 0.78rem; min-width: 9em; }
   .fcheck.ok { color: #15803d; } .fcheck.bad { color: #dc2626; }
+  .pWarn { font-size: 0.78rem; }
+  .pWarn.warn { color: #b45309; }
   .editorError { color: #dc2626; margin-top: 8px; min-height: 1.2em; }
   .projRow { display: flex; align-items: baseline; gap: 10px; padding: 4px;
              border-bottom: 1px solid #e7e5e4; }
@@ -946,6 +948,44 @@ function validateFormulaRow(row) {
 
 function revalidateAllFormulas() {
   for (const row of $('partRows').querySelectorAll('.partRow')) validateFormulaRow(row);
+  updateParamWarnings();
+}
+
+// A parameter is only "referenced" if its NAME appears as an identifier in
+// some part formula. Substring matches don't count (tokenized), and the
+// reserved function names are excluded. `waste:<part_id>` overrides are a
+// separate apply-time mechanism — not a formula reference — so a parameter
+// used only "as waste" would still read as unused here.
+const RESERVED_FNS = new Set(['ceil', 'floor', 'round', 'abs', 'min', 'max', 'if']);
+function formulaIdentifiers(formula) {
+  const ids = new Set();
+  for (const m of formula.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+    if (!RESERVED_FNS.has(m[0])) ids.add(m[0]);
+  }
+  return ids;
+}
+function referencedParamNames() {
+  const refs = new Set();
+  for (const r of $('partRows').querySelectorAll('.partRow')) {
+    for (const id of formulaIdentifiers(r.querySelector('.formula').value)) refs.add(id);
+  }
+  return refs;
+}
+/// Flag (warn, not block) any parameter that no formula references — the
+/// dead-knob bug class that shipped in the seeds: a control that accepts
+/// input and changes nothing.
+function updateParamWarnings() {
+  const refs = referencedParamNames();
+  for (const r of $('paramRows').querySelectorAll('.paramRow')) {
+    const name = r.querySelector('.pName').value.trim();
+    const warn = r.querySelector('.pWarn');
+    if (name && !refs.has(name)) {
+      warn.textContent = 'unused — no formula references this';
+      warn.className = 'pWarn warn';
+    } else {
+      warn.textContent = ''; warn.className = 'pWarn';
+    }
+  }
 }
 
 function addParamRow(p = { name: '', default: 0, unit: 'SF' }) {
@@ -955,14 +995,17 @@ function addParamRow(p = { name: '', default: 0, unit: 'SF' }) {
     `<input class="pName" placeholder="name" style="width:14em">
      <input class="pDefault" type="number" step="any" placeholder="default" style="width:6em">
      <select class="pUnit">${UNITS.map(u => `<option${u === p.unit ? ' selected' : ''}>${u}</option>`).join('')}</select>
-     <button class="pDel">✕</button>`;
+     <button class="pDel">✕</button>
+     <span class="pWarn"></span>`;
   row.querySelector('.pName').value = p.name;
   row.querySelector('.pDefault').value = p.default == null ? '' : p.default;
   row.querySelector('.pDel').addEventListener('click', () => { row.remove(); revalidateAllFormulas(); });
-  // Editing a parameter changes the sample context → re-check formulas.
+  // Editing a parameter changes the sample context → re-check formulas and
+  // the unused-parameter warnings.
   row.querySelector('.pName').addEventListener('input', revalidateAllFormulas);
   row.querySelector('.pDefault').addEventListener('input', revalidateAllFormulas);
   $('paramRows').append(row);
+  updateParamWarnings();
 }
 
 function addPartRow(p = { id: '', name: '', unit: 'SF', formula: '', waste_pct: null, rounding: 'None' }) {
@@ -983,12 +1026,15 @@ function addPartRow(p = { id: '', name: '', unit: 'SF', formula: '', waste_pct: 
      <input class="ptMult" type="number" step="any" placeholder="N" style="width:4em">
      <span class="fcheck"></span>
      <button class="ptDel">✕</button>`;
-  row.querySelector('.ptName').value = p.name;
-  row.querySelector('.formula').value = p.formula;
+  row.querySelector('.ptName').value = p.name ?? '';
+  row.querySelector('.formula').value = p.formula ?? '';
   row.querySelector('.ptWaste').value = p.waste_pct == null ? '' : p.waste_pct;
   row.querySelector('.ptMult').value = roundMult;
-  row.querySelector('.formula').addEventListener('input', () => validateFormulaRow(row));
-  row.querySelector('.ptDel').addEventListener('click', () => row.remove());
+  row.querySelector('.formula').addEventListener('input', () => {
+    validateFormulaRow(row);
+    updateParamWarnings(); // formula edits change which parameters are used
+  });
+  row.querySelector('.ptDel').addEventListener('click', () => { row.remove(); updateParamWarnings(); });
   $('partRows').append(row);
   validateFormulaRow(row);
 }
@@ -1054,6 +1100,7 @@ async function saveAssembly() {
   }
   const rows = [...$('partRows').querySelectorAll('.partRow')];
   if (!rows.length) { err.textContent = 'Add at least one part.'; return; }
+  updateParamWarnings(); // surface unused-parameter warnings (don't block)
   // Validate EVERY formula against the sample context before saving.
   const bad = rows.find(r => !validateFormulaRow(r));
   if (bad) {
