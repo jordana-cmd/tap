@@ -235,6 +235,10 @@ const CONSUMABLES: &[(&str, &str, f64, f64, Scope)] = &[
     ("cupq", "Quart Cups", 0.5, 0.01, Scope::PerApplication),
     ("brush", "Brushes", 0.69, 0.0064, Scope::PerApplication),
     ("roller", "Roller Covers", 8.4, 0.003, Scope::PerApplication),
+    // Trowels & whips are DURABLE TOOLS, not per-job consumables — the source
+    // rate reads as amortization across a full coat, so they live in the coating
+    // profile ONLY (not repair/grinding). Flagged for review in
+    // docs/consumable-profiles.md.
     ("trowel", "Trowels", 32.99, 0.002, Scope::PerApplication),
     ("miniroller", "Mini Roller Covers", 4.33, 0.002, Scope::PerApplication),
     ("whips", "Whips", 5.49, 0.00000005, Scope::PerApplication),
@@ -276,18 +280,21 @@ pub fn consumable_profiles() -> Vec<ConsumableProfile> {
             name: "Coating".into(),
             part_ids: CONSUMABLES.iter().map(|c| c.0.to_string()).collect(),
         },
-        // Grinding: no large mixing cups, no trowel, no whips (UNVALIDATED guess).
+        // Grinding: mostly PPE + small cups — a polish/grind crew doesn't burn
+        // rollers/brushes like a coating crew (UNVALIDATED guess; a grind & seal
+        // sealer coat may warrant a roller — needs a real polish job to check).
         ConsumableProfile {
             id: "grinding".into(),
             name: "Grinding".into(),
-            part_ids: ids(&["cupq", "brush", "roller", "miniroller", "rags", "gloves", "trash"]),
+            part_ids: ids(&["cupq", "gloves", "rags", "trash"]),
         },
-        // Repair: small cups + trowel + brush + PPE/cleanup — a localized patch,
-        // not a coat (no rollers, no large mixing cups).
+        // Repair: small cups + brush + PPE/cleanup — a localized patch. NO trowel
+        // (a trowel is a durable tool, not discarded per crack repair — see the
+        // coating profile's amortized-tool note).
         ConsumableProfile {
             id: "repair".into(),
             name: "Repair".into(),
-            part_ids: ids(&["trowel", "cupq", "brush", "gloves", "rags", "trash"]),
+            part_ids: ids(&["cupq", "brush", "gloves", "rags", "trash"]),
         },
     ]
 }
@@ -416,15 +423,13 @@ mod tests {
         // Epoxy + High Wear Urethane (coating) + Crack Repair (repair) @ 5,000 SF.
         // Consumables are AUTO-DERIVED from each assembly's profile:
         //   materials    epoxy_hw $4,920.00 + crack_repair $407.55 = $5,327.55
-        //   consumables  coating (all 12) + repair (trowel/quart cups/brush per-
-        //                app; PPE per-area) with PerArea deduped once:
-        //                cupq/brush/trowel billed twice, everything else once
-        //                                                 = $1,245.6993725
-        //   grand materials                               = $6,573.25 (to the cent)
-        // NEW vs phase-2's $6,196.27: +$376.98. WHY: the profile model bills
-        // per-application consumables once per stacked assembly, so Crack
-        // Repair's second application adds its own trowel + quart cups + brush;
-        // per-area items (gloves/rags/trash) stay charged once. A single-system
+        //   consumables  coating (all 12) + repair (quart cups + brush per-app;
+        //                PPE per-area) with PerArea deduped once: cupq/brush
+        //                billed twice, everything else once = $915.7993725
+        //   grand materials                                     = $6,243.35
+        // NEW vs phase-2's $6,196.27: +$47.08 — Crack Repair's second application
+        // adds just its own quart cups + brush (trowel is a durable tool, kept in
+        // coating only; per-area gloves/rags/trash charged once). A single-system
         // job is unchanged (per-app once + per-area once = the old flat rate).
         let input = MeasurementInput::area(5000.0, 0.0);
         let systems = mcfc_systems();
@@ -443,10 +448,10 @@ mod tests {
         let profile_ids: Vec<Option<String>> =
             stack.iter().map(|a| a.consumable_profile_id.clone()).collect();
         let cons = stack_consumables(&profile_ids, &input).unwrap();
-        assert!((cons.materials_total - 1245.6993725).abs() < 1e-9, "consumables {}", cons.materials_total);
+        assert!((cons.materials_total - 915.7993725).abs() < 1e-9, "consumables {}", cons.materials_total);
 
         let grand = materials + cons.materials_total;
-        assert_eq!((grand * 100.0).round() / 100.0, 6573.25, "stacked grand to the cent");
+        assert_eq!((grand * 100.0).round() / 100.0, 6243.35, "stacked grand to the cent");
     }
 
     #[test]
@@ -504,9 +509,15 @@ mod tests {
         let by = |id: &str| consumable_profiles().into_iter().find(|p| p.id == id).unwrap().part_ids;
         assert_eq!(by("coating").len(), 12, "coating = all consumables");
         let grinding = by("grinding");
-        for excluded in ["cup10", "cup5", "cup25", "trowel", "whips"] {
+        // Grinding is trimmed to small cups + PPE — no applicators, no big cups,
+        // no durable tools.
+        for excluded in ["cup10", "cup5", "cup25", "trowel", "whips", "brush", "roller", "miniroller"] {
             assert!(!grinding.contains(&excluded.to_string()), "grinding excludes {excluded}");
         }
-        assert!(by("repair").contains(&"trowel".to_string()) && by("repair").contains(&"cupq".to_string()));
+        assert!(grinding.contains(&"cupq".to_string()) && grinding.contains(&"gloves".to_string()));
+        // Repair keeps quart cups + brush but NOT the trowel (durable tool).
+        let repair = by("repair");
+        assert!(repair.contains(&"cupq".to_string()) && repair.contains(&"brush".to_string()));
+        assert!(!repair.contains(&"trowel".to_string()), "trowel is not a repair consumable");
     }
 }

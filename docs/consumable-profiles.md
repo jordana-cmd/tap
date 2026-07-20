@@ -26,19 +26,22 @@ effective stack.
 | Brushes | PerApplication | |
 | Roller Covers | PerApplication | |
 | Mini Roller Covers | PerApplication | |
-| Trowels | PerApplication | ⚠ semi-durable — per broadcast; drives most of the stacking swing |
-| Whips | PerApplication | ⚠ mixing paddle; cost ≈ $0 |
+| **Trowels** | PerApplication | ⚠ **AMORTIZED TOOL, not a true consumable** — a trowel is durable, not discarded per job. The 0.002/SF rate reads as amortization across a full coat, so it lives in the **coating profile only** (removed from repair). Flagged for review. |
+| **Whips** | PerApplication | ⚠ **AMORTIZED TOOL** (mixing paddle, durable) — same treatment: coating profile only, cost ≈ $0. Flagged for review. |
 | Rags | PerArea | |
 | Gloves | PerArea | |
 | Trash Bags | PerArea | |
 
 ## Profile membership
 
-- **Coating** — the full process (mix / apply / broadcast / clean): all 12.
-- **Grinding** ⚠ — Quart Cups, Brushes, Roller Covers, Mini Roller Covers, Rags,
-  Gloves, Trash Bags. (No large mixing cups, no trowel, no whips.)
-- **Repair** — Trowels, Quart Cups, Brushes, Gloves, Rags, Trash Bags. A
-  localized patch, not a coat: no rollers, no large mixing cups.
+- **Coating** — the full process (mix / apply / broadcast / clean): all 12
+  (trowels & whips included here as amortized tools — see the scope table).
+- **Grinding** ⚠ — Quart Cups, Gloves, Rags, Trash Bags. Trimmed to **mostly PPE
+  + small cups**: a polish/grind crew doesn't burn rollers/brushes like a coating
+  crew. ⚠ **needs checking against a real polish job** — a grind & seal sealer
+  coat may warrant a roller back.
+- **Repair** — Quart Cups, Brushes, Gloves, Rags, Trash Bags. A localized patch:
+  no rollers, no large mixing cups, **no trowel** (durable tool).
 
 ## Assembly → profile
 
@@ -60,10 +63,9 @@ effective stack.
 
 ## What this changed (validation)
 
-The phase-2 stacking fixture (Epoxy+HW + Crack Repair, 5,000 SF) moved from
-**$6,196.27** → **$6,573.25** (+$376.98). The swing is Crack Repair's second
-application adding its own repair-profile per-application set (trowel + quart
-cups + brush); per-area items (gloves/rags/trash) stay charged once. A
-single-system job is unchanged (per-app once + per-area once = the old flat
-rate). Trowels ($329.90/application here) dominate the swing — a good place to
-sanity-check the trowel scope/rate.
+The phase-2 stacking fixture (Epoxy+HW + Crack Repair, 5,000 SF) moves from
+**$6,196.27** → **$6,243.35** (+$47.08). The swing is Crack Repair's second
+application adding just its own quart cups + brush; the trowel is a durable tool
+kept in the coating profile only, and per-area items (gloves/rags/trash) stay
+charged once. A single-system job is unchanged (per-app once + per-area once =
+the old flat rate).
