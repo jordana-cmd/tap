@@ -87,6 +87,8 @@
   .bomGroupHdr { display: flex; justify-content: space-between; gap: 8px; font-weight: 600;
                  color: #1e3a8a; margin-top: 5px; padding: 2px 0; border-bottom: 1px solid #e0e7ff; }
   .bomGroupHdr .credit { color: #15803d; }
+  .bomConsHdr { color: #92400e; border-bottom-color: #fde68a; }
+  .bomTotal.bomGrand { font-size: 0.9rem; border-top: 2px solid #1c1917; }
   .bomErr { color: #b91c1c; }
   .bomOv { margin-top: 4px; padding-top: 4px; border-top: 1px dashed #cbd5e1; }
   .bomOv .ovRow { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; }
@@ -279,7 +281,7 @@
 <script type="module">
 import init, { detect_room, measure_polyline, measure_polygon_area, calibrate_two_point,
   scale_presets_json, PageGeometry, apply_assembly, eval_formula, seed_assemblies_json,
-  polygon_contains_flat }
+  polygon_contains_flat, stack_consumables }
   from './pkg/engine_web.js';
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
 import { extractSegments } from './extract.js';
@@ -891,8 +893,10 @@ function fromStored(r) {
     color: r.color ?? null, // null = inherit from condition (migration: old rows kept their colour)
     value: 0, valueText: '', // recomputed below
     geometry: Float64Array.from(r.geometry),
-    assemblyId: r.assemblyId ?? null,
-    stack: r.stack ?? [],
+    // Migration: "Job Consumables" is no longer a selectable assembly —
+    // consumables are auto-derived from profiles. Drop any orphaned reference.
+    assemblyId: r.assemblyId === 'job_consumables' ? null : (r.assemblyId ?? null),
+    stack: (r.stack ?? []).filter(id => id !== 'job_consumables'),
     // Migrate legacy FLAT overrides ({key:number}) to nested-by-assembly under
     // this measurement's base assembly (its own id, else its condition's).
     overrides: migrateOverrides(r.overrides, r.assemblyId
@@ -968,7 +972,9 @@ function importJson(str) {
 
 /// Conditions are all-input records (no derived values) — stored verbatim.
 function condToStored(c) {
-  return { id: c.id, name: c.name, color: c.color, kind: c.kind, assemblyId: c.assemblyId ?? null };
+  // Migration: a condition can no longer point at the removed Job Consumables.
+  const assemblyId = c.assemblyId === 'job_consumables' ? null : (c.assemblyId ?? null);
+  return { id: c.id, name: c.name, color: c.color, kind: c.kind, assemblyId };
 }
 /// Restore conditions (migration: a project with no `conditions` key → []),
 /// clamp the active id to something that still exists, and advance the id
@@ -1204,7 +1210,22 @@ function computeStackedBom(m) {
       groups.push({ assembly: asm, error: `[${e.code ?? '?'}] ${e.message ?? e}` });
     }
   }
-  return { ok: groups.every(g => g.bom), groups, materialsTotal };
+  // Consumables are AUTO-DERIVED from the stack's assembly profiles — never a
+  // stacked assembly. PerApplication scales per profile-bearing assembly;
+  // PerArea is deduped once across the stack (engine-side).
+  const profileIds = ids.map(id => assemblyCache.find(a => a.id === id)?.consumable_profile_id ?? null);
+  let consumables = null;
+  try {
+    consumables = JSON.parse(stack_consumables(JSON.stringify(profileIds), JSON.stringify(drivers)));
+  } catch (e) {
+    consumables = { line_items: [], materials_total: 0, error: `${e.message ?? e}` };
+  }
+  const consumablesTotal = consumables?.materials_total ?? 0;
+  return {
+    ok: groups.every(g => g.bom),
+    groups, materialsTotal, consumables, consumablesTotal,
+    grandTotal: materialsTotal + consumablesTotal,
+  };
 }
 
 const niceNum = n => (Math.abs(n - Math.round(n)) < 1e-9 ? String(Math.round(n)) : (+n.toFixed(3)).toString());
@@ -1310,15 +1331,30 @@ function renderBomPanel(m) {
     const ovEl = renderOverridesFor(m, g.assembly);
     if (ovEl) panel.append(ovEl);
   }
-  // Combined materials total across the whole stack.
-  const tot = document.createElement('div');
-  tot.className = 'bomTotal';
-  const lbl = document.createElement('span'); lbl.textContent = multi ? 'Materials (stack)' : 'Materials';
-  const val = document.createElement('span');
-  val.textContent = usd(res.materialsTotal);
-  if (res.materialsTotal < 0) val.className = 'credit';
-  tot.append(lbl, val);
-  panel.append(tot);
+  // Auto-derived consumables — their own section + subtotal, never picked.
+  const cons = res.consumables;
+  if (cons && cons.line_items.length) {
+    const gh = document.createElement('div');
+    gh.className = 'bomGroupHdr bomConsHdr';
+    const nm = document.createElement('span'); nm.textContent = 'Consumables (auto)';
+    const sub = document.createElement('span'); sub.textContent = usd(res.consumablesTotal);
+    gh.append(nm, sub);
+    panel.append(gh);
+    for (const li of cons.line_items) panel.append(renderBomLine(li));
+  }
+  // Split totals: materials, consumables, grand — matching how the quoting tool
+  // separates directMat from consTotal.
+  const totalRow = (label, value, cls) => {
+    const t = document.createElement('div'); t.className = 'bomTotal' + (cls ? ' ' + cls : '');
+    const l = document.createElement('span'); l.textContent = label;
+    const v = document.createElement('span'); v.textContent = usd(value);
+    if (value < 0) v.className = 'credit';
+    t.append(l, v);
+    panel.append(t);
+  };
+  totalRow('Materials', res.materialsTotal);
+  if (res.consumablesTotal) totalRow('Consumables', res.consumablesTotal);
+  totalRow('Total', res.grandTotal, 'bomGrand');
   return panel;
 }
 
@@ -2021,38 +2057,42 @@ function buildCsv() {
 /// cannot be quantified (no page scale, or its assembly left the library) is
 /// skipped and its names counted so the caller can surface the gap.
 function buildMaterialList() {
-  const roll = new Map(); // "cond part unit" -> { cond, part, unit, total, names }
+  const roll = new Map(); // "category cond part unit" -> agg
   const skipped = [];
   for (const m of measurements) {
     if (m.kind === 'deduct' || !effectiveStack(m).length) continue;
-    const res = computeStackedBom(m); // roll up the WHOLE stack (phase 2)
-    if (!res.ok) skipped.push(m.name); // partial / unquantifiable — surface it
+    const res = computeStackedBom(m); // materials (per assembly) + auto consumables
+    if (!res.ok) skipped.push(m.name);
     const cond = condOf(m)?.name ?? '(unassigned)';
-    for (const g of res.groups) {
-      if (!g.bom) continue;
-      for (const li of g.bom.line_items) {
-      const key = `${cond} ${li.part_name} ${li.unit}`;
-      const agg = roll.get(key)
-        ?? { cond, part: li.part_name, unit: li.unit, unit_cost: li.unit_cost, total: 0, ext: 0, names: [] };
-      agg.total += li.final_quantity;
-      agg.ext += li.extended_cost;
-      if (!agg.names.includes(m.name)) agg.names.push(m.name);
-      roll.set(key, agg);
+    const rollLines = (lines, category) => {
+      for (const li of lines) {
+        const key = `${category} ${cond} ${li.part_name} ${li.unit}`;
+        const agg = roll.get(key)
+          ?? { category, cond, part: li.part_name, unit: li.unit, unit_cost: li.unit_cost, total: 0, ext: 0, names: [] };
+        agg.total += li.final_quantity;
+        agg.ext += li.extended_cost;
+        if (!agg.names.includes(m.name)) agg.names.push(m.name);
+        roll.set(key, agg);
       }
-    }
+    };
+    for (const g of res.groups) if (g.bom) rollLines(g.bom.line_items, 'material');
+    if (res.consumables) rollLines(res.consumables.line_items, 'consumable');
   }
-  const rows = [['condition', 'part', 'unit', 'total_quantity', 'unit_cost', 'extended_cost', 'measurements'].join(',')];
+  const rows = [['category', 'condition', 'part', 'unit', 'total_quantity', 'unit_cost', 'extended_cost', 'measurements'].join(',')];
+  const order = { material: 0, consumable: 1 };
   const sorted = [...roll.values()].sort((a, b) =>
-    a.cond.localeCompare(b.cond) || a.part.localeCompare(b.part) || a.unit.localeCompare(b.unit));
-  let grand = 0;
+    (order[a.category] - order[b.category]) || a.cond.localeCompare(b.cond)
+    || a.part.localeCompare(b.part) || a.unit.localeCompare(b.unit));
+  let matTotal = 0, consTotal = 0;
   for (const r of sorted) {
-    grand += r.ext;
-    rows.push([csvCell(r.cond), csvCell(r.part), csvCell(r.unit), niceNum(r.total),
+    if (r.category === 'material') matTotal += r.ext; else consTotal += r.ext;
+    rows.push([r.category, csvCell(r.cond), csvCell(r.part), csvCell(r.unit), niceNum(r.total),
                r.unit_cost.toFixed(2), r.ext.toFixed(2), csvCell(r.names.join('; '))].join(','));
   }
-  // Grand materials total footer (materials only — phase 1).
-  rows.push(['', '', '', '', '', grand.toFixed(2), 'TOTAL MATERIALS'].join(','));
-  return { csv: rows.join('\n') + '\n', lineCount: sorted.length, materialsTotal: grand, skipped };
+  // Separate material and consumable grand totals (materials only — phase 1/2).
+  rows.push(['', '', '', '', '', '', matTotal.toFixed(2), 'TOTAL MATERIALS'].join(','));
+  rows.push(['', '', '', '', '', '', consTotal.toFixed(2), 'TOTAL CONSUMABLES'].join(','));
+  return { csv: rows.join('\n') + '\n', lineCount: sorted.length, materialsTotal: matTotal, consumablesTotal: consTotal, skipped };
 }
 
 /// Swap a name span for an inline text input; Enter/blur commits, Esc
@@ -2509,7 +2549,7 @@ $('exportCsv').addEventListener('click', () => {
   say(`exported ${measurements.length} measurement(s) to takeoff.csv`);
 });
 $('exportMaterialList').addEventListener('click', () => {
-  if (!measurements.some(m => m.kind !== 'deduct' && effAssemblyId(m))) {
+  if (!measurements.some(m => m.kind !== 'deduct' && effectiveStack(m).length)) {
     say('attach an assembly (directly or via a condition) first — nothing to roll up');
     return;
   }

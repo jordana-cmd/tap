@@ -622,9 +622,10 @@ await run('storage write failure blocks edits until acknowledged', async page =>
 await run('assembly library seeds the engine catalog (synthetic examples + MCFC)', async page => {
   const names = await page.evaluate(async () =>
     (await window.__harness.listAssemblies()).map(a => a.name));
-  // 2 synthetic examples + 7 MCFC systems + 6 add-ons + Job Consumables.
-  assert.equal(names.length, 16, `seeded catalog size: ${names.length}`);
-  for (const n of ['Commercial Flooring', 'Epoxy Coating', 'Epoxy + High Wear Urethane', 'Job Consumables']) {
+  // 2 synthetic examples + 7 MCFC systems + 6 add-ons (consumables are auto).
+  assert.equal(names.length, 15, `seeded catalog size: ${names.length}`);
+  assert.ok(!names.includes('Job Consumables'), 'consumables are not a selectable assembly');
+  for (const n of ['Commercial Flooring', 'Epoxy Coating', 'Epoxy + High Wear Urethane']) {
     assert.ok(names.includes(n), `library seeded ${n}`);
   }
 });
@@ -644,7 +645,7 @@ await run('author: invalid formula blocked, valid formula accepted', async page 
   assert.equal(await page.$eval('#assemblyEditor', el => el.hidden), false, 'editor stays open on invalid');
   assert.match(await page.$eval('#editorError', el => el.textContent), /Fix/, 'save blocked with message');
   let count = await page.evaluate(async () => (await window.__harness.listAssemblies()).length);
-  assert.equal(count, 16, 'nothing persisted while invalid (seeded catalog unchanged)');
+  assert.equal(count, 15, 'nothing persisted while invalid (seeded catalog unchanged)');
 
   // Fix the formula → validates ✓ → Save persists it.
   await page.click('.partRow .formula', { clickCount: 3 });
@@ -798,14 +799,14 @@ await run('material list: rolls up line items across measurements by (part, unit
   await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), proj);
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const lines = out.csv.trim().split('\n');
-  assert.equal(lines[0], 'condition,part,unit,total_quantity,unit_cost,extended_cost,measurements', 'header');
+  assert.equal(lines[0], 'category,condition,part,unit,total_quantity,unit_cost,extended_cost,measurements', 'header');
   // No condition on these rooms → "(unassigned)" condition column.
   // Adhesive: ceil(2475/150)=17 GAL per room, summed across both rooms = 34.
   const adhesive = lines.filter(l => l.includes(',Adhesive,'));
   assert.equal(adhesive.length, 1, 'exactly one Adhesive/GAL row (rolled up, not duplicated)');
-  assert.equal(adhesive[0], '(unassigned),Adhesive,GAL,34,0.00,0.00,Room 1; Room 2', `adhesive rollup: ${adhesive[0]}`);
+  assert.equal(adhesive[0], 'material,(unassigned),Adhesive,GAL,34,0.00,0.00,Room 1; Room 2', `adhesive rollup: ${adhesive[0]}`);
   // Boxes: 137 each → 274. Rows are sorted by condition then part.
-  assert.ok(lines.includes('(unassigned),Flooring boxes,BOX,274,0.00,0.00,Room 1; Room 2'), 'boxes summed to 274');
+  assert.ok(lines.includes('material,(unassigned),Flooring boxes,BOX,274,0.00,0.00,Room 1; Room 2'), 'boxes summed to 274');
   assert.equal(out.skipped.length, 0, 'both rooms quantifiable');
 });
 
@@ -981,7 +982,7 @@ await run('deduct: the material list inherits net (rolls up from the net BOM)', 
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const line = out.csv.trim().split('\n').find(l => l.includes(',Flooring material,'));
   // Net-based material quantity (1210), same as the BOM — no separate rollup path.
-  assert.equal(line, '(unassigned),Flooring material,SF,1210,0.00,0.00,Room 1', `material list uses net: ${line}`);
+  assert.equal(line, 'material,(unassigned),Flooring material,SF,1210,0.00,0.00,Room 1', `material list uses net: ${line}`);
 });
 
 await run('deduct: takeoff.csv breaks out gross/deduct/net and names the deduct’s parent', async page => {
@@ -1203,16 +1204,17 @@ await run('condition: the material list separates products (per-condition rollup
   })));
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const lines = out.csv.trim().split('\n');
-  assert.equal(lines[0], 'condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
-  // Data rows (excluding the header and the TOTAL MATERIALS footer) each carry
-  // their condition; Epoxy and Polish are separate.
-  const dataRows = lines.slice(1).filter(l => !l.endsWith('TOTAL MATERIALS'));
-  assert.ok(dataRows.every(l => l.startsWith('Epoxy,') || l.startsWith('Polish,')),
+  assert.equal(lines[0], 'category,condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
+  // Data rows (excluding the header and the TOTAL footers) each carry their
+  // condition; Epoxy and Polish are separate. (Synthetic assemblies → no
+  // consumables, so every data row is a material row.)
+  const dataRows = lines.slice(1).filter(l => !l.endsWith('TOTAL MATERIALS') && !l.endsWith('TOTAL CONSUMABLES'));
+  assert.ok(dataRows.every(l => l.startsWith('material,Epoxy,') || l.startsWith('material,Polish,')),
     'every row carries its condition');
-  assert.ok(lines.some(l => l.startsWith('Epoxy,Epoxy,GAL,')), `epoxy line present: ${lines.join(' | ')}`);
-  assert.ok(lines.some(l => l.startsWith('Polish,Flooring boxes,BOX,')), 'polish flooring line present');
+  assert.ok(lines.some(l => l.startsWith('material,Epoxy,Epoxy,GAL,')), `epoxy line present: ${lines.join(' | ')}`);
+  assert.ok(lines.some(l => l.startsWith('material,Polish,Flooring boxes,BOX,')), 'polish flooring line present');
   // No row mixes the two products.
-  assert.ok(!lines.some(l => l.startsWith('Epoxy,Flooring boxes')), 'epoxy has no flooring parts');
+  assert.ok(!lines.some(l => l.startsWith('material,Epoxy,Flooring boxes')), 'epoxy has no flooring parts');
 });
 
 // ---- pricing (phase 1): cost on the BOM ----
@@ -1277,12 +1279,16 @@ await run('pricing: material list export carries unit + extended cost and a gran
   await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const lines = out.csv.trim().split('\n');
-  assert.equal(lines[0], 'condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
+  assert.equal(lines[0], 'category,condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
   const hw = lines.find(l => l.includes(',High Wear Urethane,'));
-  assert.ok(hw.includes(',159.60,766.08,'), `HW priced row: ${hw}`);
-  // Grand materials total footer + the returned total.
-  assert.ok(lines[lines.length - 1].endsWith('1180.80,TOTAL MATERIALS'), `total footer: ${lines[lines.length - 1]}`);
+  assert.ok(hw.startsWith('material,') && hw.includes(',159.60,766.08,'), `HW priced row: ${hw}`);
+  // epoxy_hw has the coating profile → auto consumables split into their own
+  // rows + a separate TOTAL CONSUMABLES footer.
+  assert.ok(lines.some(l => l.startsWith('consumable,')), 'consumable rows present (auto)');
+  assert.ok(lines.some(l => l.endsWith('1180.80,TOTAL MATERIALS')), 'materials total footer');
+  assert.ok(lines.some(l => l.endsWith('TOTAL CONSUMABLES')), 'consumables total footer');
   assert.ok(Math.abs(out.materialsTotal - 1180.8) < 1e-6, `materialsTotal ${out.materialsTotal}`);
+  assert.ok(out.consumablesTotal > 0, `consumablesTotal ${out.consumablesTotal}`);
 });
 
 await run('stacking: a system + add-on shows two BOM sections and a combined total', async page => {
@@ -1297,24 +1303,25 @@ await run('stacking: a system + add-on shows two BOM sections and a combined tot
   const cr = 4.8 * 10.17 + 4.8 * 10.17 + 3.6 * 0.05; // 97.812
   assert.ok(Math.abs(res.groups[1].bom.materials_total - cr) < 1e-6, `crack_repair subtotal ${res.groups[1].bom.materials_total}`);
   assert.ok(Math.abs(res.materialsTotal - (1180.8 + cr)) < 1e-6, `combined total ${res.materialsTotal}`);
-  // DOM: two group headers + a combined "Materials (stack)" total.
+  // DOM: two MATERIAL group headers (consumables get their own header) + totals.
   await page.click('.measRow .bomToggle');
   await page.waitForSelector('.bomPanel .bomGroupHdr');
-  const hdrs = await page.$$eval('.bomPanel .bomGroupHdr span:first-child', els => els.map(e => e.textContent));
+  const hdrs = await page.$$eval('.bomPanel .bomGroupHdr:not(.bomConsHdr) span:first-child', els => els.map(e => e.textContent));
   assert.deepEqual(hdrs, ['Epoxy + High Wear Urethane', 'Crack Repair (Mender + Sand)'], 'grouped by assembly in the DOM');
-  const total = await page.$eval('.bomPanel .bomTotal', el => el.textContent);
-  assert.match(total, /Materials \(stack\)/, `combined total labelled: ${total}`);
+  const totals = await page.$$eval('.bomPanel .bomTotal', els => els.map(e => e.textContent));
+  assert.ok(totals.some(t => t.startsWith('Materials')), `a Materials total: ${totals.join(' | ')}`);
+  assert.ok(totals.some(t => t.startsWith('Total')), 'a grand Total row');
 });
 
 await run('stacking: a per-assembly override touches only its own section', async page => {
   await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('flake'));
-  await page.evaluate(() => window.__harness.setStack(1, ['job_consumables']));
+  await page.evaluate(() => window.__harness.setStack(1, ['crack_repair']));
   const before = await page.evaluate(() => window.__harness.stackedBom(1).groups.map(g => g.bom.materials_total));
-  // Override the base flake system's material waste; consumables untouched.
+  // Override the base flake system's material waste; the add-on is untouched.
   await page.evaluate(() => window.__harness.setOverride(1, 'waste:flake_thrown', 20, 'flake'));
   const after = await page.evaluate(() => window.__harness.stackedBom(1).groups.map(g => g.bom.materials_total));
   assert.notEqual(after[0], before[0], 'the flake system subtotal changed');
-  assert.equal(after[1], before[1], 'the consumables subtotal is unchanged');
+  assert.equal(after[1], before[1], 'the crack-repair subtotal is unchanged');
   // The override is stored under its assembly id only.
   assert.deepEqual(await page.evaluate(() => window.__harness.measOverrides(1)),
     { flake: { 'waste:flake_thrown': 20 } }, 'override keyed by assembly');
@@ -1322,7 +1329,7 @@ await run('stacking: a per-assembly override touches only its own section', asyn
 
 await run('stacking: reload restores the stack and nested overrides; BOM re-derived', async page => {
   await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
-  await page.evaluate(() => window.__harness.setStack(1, ['crack_repair', 'job_consumables']));
+  await page.evaluate(() => window.__harness.setStack(1, ['crack_repair', 'moisture']));
   await page.evaluate(() => window.__harness.setOverride(1, 'waste:material', 15, 'crack_repair'));
   await page.evaluate(() => window.__harness.flushSave());
   await page.goto(URL);
@@ -1333,8 +1340,8 @@ await run('stacking: reload restores the stack and nested overrides; BOM re-deri
     overrides: window.__harness.measOverrides(1),
     total: window.__harness.stackedBom(1).materialsTotal,
   }));
-  assert.deepEqual(st.stack, ['crack_repair', 'job_consumables'], 'stack restored');
-  assert.deepEqual(st.eff, ['epoxy_hw', 'crack_repair', 'job_consumables'], 'effective stack = base + stack');
+  assert.deepEqual(st.stack, ['crack_repair', 'moisture'], 'stack restored');
+  assert.deepEqual(st.eff, ['epoxy_hw', 'crack_repair', 'moisture'], 'effective stack = base + stack');
   assert.deepEqual(st.overrides, { crack_repair: { 'waste:material': 15 } }, 'nested override restored');
   assert.ok(st.total > 0, 're-derived combined total');
 });
@@ -1367,8 +1374,8 @@ await run('stacking UI: a Linear add-on is not offered on an area row', async pa
   await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
   const opts = await page.evaluate(() =>
     [...document.querySelectorAll('.measRow .stackAdd option')].map(o => o.textContent));
-  // Job Consumables (area) is offered; Joint Fill (Linear caulk) is not.
-  assert.ok(opts.includes('Job Consumables'), 'a same-kind add-on is offered');
+  // An area add-on is offered; Joint Fill (Linear caulk) is not.
+  assert.ok(opts.includes('Moisture Mitigation (H2 Out)'), 'a same-kind add-on is offered');
   assert.ok(!opts.some(o => o.includes('Joint Fill')), 'the Linear caulk add-on is not offered on an area');
 });
 

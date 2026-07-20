@@ -494,6 +494,12 @@ fn apply_assembly_core(
     }
     let input = drivers_from_json(drivers_json)?;
     let bom = engine_core::apply_with_manual(&assembly, &input, &manual)?;
+    Ok(bom_json(&bom))
+}
+
+/// Hand-build the BOM JSON (line items + materials_total). The BOM is DERIVED
+/// and never serde-serialized (invariant 5); shared by apply + consumables.
+fn bom_json(bom: &engine_core::BillOfMaterials) -> String {
     let lines: Vec<String> = bom
         .line_items
         .iter()
@@ -512,11 +518,22 @@ fn apply_assembly_core(
             )
         })
         .collect();
-    Ok(format!(
+    format!(
         "{{\"line_items\":[{}],\"materials_total\":{}}}",
         lines.join(","),
         bom.materials_total
-    ))
+    )
+}
+
+/// Auto-derived consumables for a stack. `profile_ids_json` is a JSON array of
+/// each stacked assembly's `consumable_profile_id` (string or null); returns the
+/// consumable BOM JSON (PerApplication per assembly, PerArea deduped once).
+fn stack_consumables_core(profile_ids_json: &str, drivers_json: &str) -> Result<String, WebError> {
+    let profile_ids: Vec<Option<String>> = serde_json::from_str(profile_ids_json)
+        .map_err(|e| WebError::BadAssembly(format!("profile_ids: {e}")))?;
+    let input = drivers_from_json(drivers_json)?;
+    let bom = engine_core::assembly::seeds::stack_consumables(&profile_ids, &input)?;
+    Ok(bom_json(&bom))
 }
 
 /// Parse + evaluate a single formula against a sample variable map — the
@@ -609,6 +626,15 @@ pub fn apply_assembly(
     overrides_json: &str,
 ) -> Result<String, JsValue> {
     apply_assembly_core(assembly_json, drivers_json, overrides_json).map_err(to_js)
+}
+
+/// Auto-derived consumables for a STACK. `profile_ids_json` is a JSON array of
+/// each stacked assembly's `consumable_profile_id` (string or null). Returns the
+/// consumable BOM JSON (same shape as apply_assembly): PerApplication counted
+/// per profile-bearing assembly, PerArea deduped once across the stack.
+#[wasm_bindgen]
+pub fn stack_consumables(profile_ids_json: &str, drivers_json: &str) -> Result<String, JsValue> {
+    stack_consumables_core(profile_ids_json, drivers_json).map_err(to_js)
 }
 
 /// Parse + evaluate one formula against a sample variable map (JSON). The
@@ -956,6 +982,32 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&bom).unwrap();
         assert_eq!(v["line_items"][0]["final_quantity"].as_f64(), Some(10.0));
         assert!((v["materials_total"].as_f64().unwrap() - 40.0).abs() < 1e-9); // 10 × $4
+    }
+
+    #[test]
+    fn stack_consumables_dedups_and_prices() {
+        // Two coating applications: PerApplication cups ×2, PerArea trash ×1.
+        let bom =
+            stack_consumables_core(r#"["coating","coating"]"#, r#"{"kind":"area","area_sf":5000}"#)
+                .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&bom).unwrap();
+        let ext = |name: &str| {
+            v["line_items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|l| l["part_name"] == name)
+                .unwrap()["extended_cost"]
+                .as_f64()
+                .unwrap()
+        };
+        assert!((ext("Trash Bags") - 0.006 * 5000.0 * 0.78).abs() < 1e-9, "trash once");
+        assert!((ext("10-Quart Cups") - 0.003 * 5000.0 * 4.95 * 2.0).abs() < 1e-9, "cups ×2");
+        // All-null profiles → no consumables.
+        let none =
+            stack_consumables_core(r#"[null,null]"#, r#"{"kind":"area","area_sf":5000}"#).unwrap();
+        let nv: serde_json::Value = serde_json::from_str(&none).unwrap();
+        assert!(nv["line_items"].as_array().unwrap().is_empty());
     }
 
     #[test]
