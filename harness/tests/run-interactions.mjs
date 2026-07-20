@@ -761,7 +761,7 @@ await run('override: per-measurement waste changes the BOM and persists', async 
   assert.ok(Math.abs(matAfter - 2970) < 1e-6, `material after = 2475·1.20, got ${matAfter}`);
   assert.deepEqual(
     await page.evaluate(() => window.__harness.measOverrides(1)),
-    { 'waste:material': 20 }, 'override stored on the measurement');
+    { commercial_flooring: { 'waste:material': 20 } }, 'override stored per-assembly on the measurement');
 });
 
 await run('reload: assembly assignment + overrides restored, BOM re-derived', async page => {
@@ -776,7 +776,8 @@ await run('reload: assembly assignment + overrides restored, BOM re-derived', as
     return { assemblyId: m.assemblyId, overrides: window.__harness.measOverrides(m.id), bomStored: 'bom' in m };
   });
   assert.equal(restored.assemblyId, 'commercial_flooring', 'assembly id restored');
-  assert.deepEqual(restored.overrides, { 'waste:material': 20 }, 'overrides restored');
+  // Imported FLAT (phase-1 shape) → migrated to nested-by-assembly on load.
+  assert.deepEqual(restored.overrides, { commercial_flooring: { 'waste:material': 20 } }, 'overrides restored (nested)');
   assert.equal(restored.bomStored, false, 'no BOM persisted on the measurement (invariant 5)');
   // The BOM is re-derived from geometry+scale+assembly+overrides, not stored.
   const mat = await page.evaluate(() => {
@@ -1282,6 +1283,60 @@ await run('pricing: material list export carries unit + extended cost and a gran
   // Grand materials total footer + the returned total.
   assert.ok(lines[lines.length - 1].endsWith('1180.80,TOTAL MATERIALS'), `total footer: ${lines[lines.length - 1]}`);
   assert.ok(Math.abs(out.materialsTotal - 1180.8) < 1e-6, `materialsTotal ${out.materialsTotal}`);
+});
+
+await run('stacking: a system + add-on shows two BOM sections and a combined total', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
+  // Stack Crack Repair on top of the Epoxy+HW system.
+  await page.evaluate(() => window.__harness.setStack(1, ['crack_repair']));
+  const res = await page.evaluate(() => window.__harness.stackedBom(1));
+  assert.ok(res.ok, `stacked BOM ok: ${JSON.stringify(res).slice(0, 160)}`);
+  assert.deepEqual(res.groups.map(g => g.assembly.name),
+    ['Epoxy + High Wear Urethane', 'Crack Repair (Mender + Sand)'], 'two groups, base first');
+  // Combined total = system 1180.80 + crack_repair (mender_a 4.8·10.17 + mender_b 4.8·10.17 + sand 3.6·0.05).
+  const cr = 4.8 * 10.17 + 4.8 * 10.17 + 3.6 * 0.05; // 97.812
+  assert.ok(Math.abs(res.groups[1].bom.materials_total - cr) < 1e-6, `crack_repair subtotal ${res.groups[1].bom.materials_total}`);
+  assert.ok(Math.abs(res.materialsTotal - (1180.8 + cr)) < 1e-6, `combined total ${res.materialsTotal}`);
+  // DOM: two group headers + a combined "Materials (stack)" total.
+  await page.click('.measRow .bomToggle');
+  await page.waitForSelector('.bomPanel .bomGroupHdr');
+  const hdrs = await page.$$eval('.bomPanel .bomGroupHdr span:first-child', els => els.map(e => e.textContent));
+  assert.deepEqual(hdrs, ['Epoxy + High Wear Urethane', 'Crack Repair (Mender + Sand)'], 'grouped by assembly in the DOM');
+  const total = await page.$eval('.bomPanel .bomTotal', el => el.textContent);
+  assert.match(total, /Materials \(stack\)/, `combined total labelled: ${total}`);
+});
+
+await run('stacking: a per-assembly override touches only its own section', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('flake'));
+  await page.evaluate(() => window.__harness.setStack(1, ['job_consumables']));
+  const before = await page.evaluate(() => window.__harness.stackedBom(1).groups.map(g => g.bom.materials_total));
+  // Override the base flake system's material waste; consumables untouched.
+  await page.evaluate(() => window.__harness.setOverride(1, 'waste:flake_thrown', 20, 'flake'));
+  const after = await page.evaluate(() => window.__harness.stackedBom(1).groups.map(g => g.bom.materials_total));
+  assert.notEqual(after[0], before[0], 'the flake system subtotal changed');
+  assert.equal(after[1], before[1], 'the consumables subtotal is unchanged');
+  // The override is stored under its assembly id only.
+  assert.deepEqual(await page.evaluate(() => window.__harness.measOverrides(1)),
+    { flake: { 'waste:flake_thrown': 20 } }, 'override keyed by assembly');
+});
+
+await run('stacking: reload restores the stack and nested overrides; BOM re-derived', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
+  await page.evaluate(() => window.__harness.setStack(1, ['crack_repair', 'job_consumables']));
+  await page.evaluate(() => window.__harness.setOverride(1, 'waste:material', 15, 'crack_repair'));
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.goto(URL);
+  await waitReady(page);
+  const st = await page.evaluate(() => ({
+    stack: window.__harness.stackOf(1),
+    eff: window.__harness.effectiveStack(1),
+    overrides: window.__harness.measOverrides(1),
+    total: window.__harness.stackedBom(1).materialsTotal,
+  }));
+  assert.deepEqual(st.stack, ['crack_repair', 'job_consumables'], 'stack restored');
+  assert.deepEqual(st.eff, ['epoxy_hw', 'crack_repair', 'job_consumables'], 'effective stack = base + stack');
+  assert.deepEqual(st.overrides, { crack_repair: { 'waste:material': 15 } }, 'nested override restored');
+  assert.ok(st.total > 0, 're-derived combined total');
 });
 
 await run('advanced: detection tuning is collapsed by default and holds the knobs + stats', async page => {

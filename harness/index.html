@@ -79,6 +79,9 @@
   .bomTotal { display: flex; justify-content: space-between; gap: 8px; font-weight: 700;
               padding: 4px 0 2px; margin-top: 3px; border-top: 1px solid #cbd5e1; }
   .bomTotal .credit { color: #15803d; }
+  .bomGroupHdr { display: flex; justify-content: space-between; gap: 8px; font-weight: 600;
+                 color: #1e3a8a; margin-top: 5px; padding: 2px 0; border-bottom: 1px solid #e0e7ff; }
+  .bomGroupHdr .credit { color: #15803d; }
   .bomErr { color: #b91c1c; }
   .bomOv { margin-top: 4px; padding-top: 4px; border-top: 1px dashed #cbd5e1; }
   .bomOv .ovRow { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; }
@@ -868,9 +871,12 @@ function toStored(m) {
     includePerimeter: m.includePerimeter ? true : null,
     conditionId: m.conditionId ?? null,
     color: m.color ?? null, // per-measurement colour OVERRIDE only (null = inherit)
-    // Assembly attachment: the library id + per-application overrides ONLY.
+    // Assembly attachment: the base library id, the STACK of additional
+    // assembly ids (add-ons/consumables), and per-application overrides ONLY.
     // The BOM is never stored — it is re-derived on load (invariant 5).
     assemblyId: m.assemblyId ?? null,
+    stack: m.stack && m.stack.length ? m.stack.slice() : null,
+    // Overrides are keyed by assembly id: { [assemblyId]: { key: number } }.
     overrides: m.overrides && Object.keys(m.overrides).length ? m.overrides : null,
   };
 }
@@ -881,11 +887,25 @@ function fromStored(r) {
     value: 0, valueText: '', // recomputed below
     geometry: Float64Array.from(r.geometry),
     assemblyId: r.assemblyId ?? null,
-    overrides: r.overrides ?? {},
+    stack: r.stack ?? [],
+    // Migrate legacy FLAT overrides ({key:number}) to nested-by-assembly under
+    // this measurement's base assembly (its own id, else its condition's).
+    overrides: migrateOverrides(r.overrides, r.assemblyId
+      ?? conditions.find(c => c.id === r.conditionId)?.assemblyId ?? null),
     parentId: r.parentId ?? null,
     includePerimeter: r.includePerimeter ?? false,
     conditionId: r.conditionId ?? null,
   };
+}
+
+/// Overrides are keyed by assembly id: { [assemblyId]: { key: number } }. A
+/// legacy phase-1 map was FLAT ({ key: number }); wrap it under the base id.
+function migrateOverrides(ov, base) {
+  if (!ov || typeof ov !== 'object') return {};
+  const vals = Object.values(ov);
+  const nested = vals.length === 0 || vals.every(v => v && typeof v === 'object');
+  if (nested) return ov;
+  return base ? { [base]: ov } : {}; // flat → nested under the base assembly
 }
 /// Rebuild derived quantity/text after restore or import (invariant 5).
 function recomputeAll() {
@@ -1128,6 +1148,9 @@ function driversFor(m) {
 
 /// Recompute a measurement's BOM from geometry + scale + assembly + overrides.
 /// Pure derivation (invariant 5); returns { ok, bom } or { ok:false, ... }.
+/// Per-assembly overrides for one assembly in this measurement's stack.
+const overridesFor = (m, asmId) => m.overrides?.[asmId] ?? {};
+
 function computeBom(m) {
   const asm = assemblyCache.find(a => a.id === effAssemblyId(m));
   if (!asm) return { ok: false, reason: '(assembly not in library)' };
@@ -1135,74 +1158,84 @@ function computeBom(m) {
   if (!drivers) return { ok: false, reason: '(set a page scale to compute this BOM)' };
   try {
     const bom = JSON.parse(apply_assembly(
-      JSON.stringify(asm), JSON.stringify(drivers), JSON.stringify(m.overrides ?? {})));
+      JSON.stringify(asm), JSON.stringify(drivers), JSON.stringify(overridesFor(m, asm.id))));
     return { ok: true, bom, assembly: asm };
   } catch (e) {
     return { ok: false, reason: `apply failed [${e.code ?? '?'}]: ${e.message ?? e}`, error: true };
   }
 }
 
+/// The measurement's effective assembly STACK: the base (condition/override)
+/// first, then its stacked add-ons/consumables, de-duplicated.
+function effectiveStack(m) {
+  const seen = new Set();
+  const out = [];
+  for (const id of [effAssemblyId(m), ...(m.stack ?? [])]) {
+    if (id && !seen.has(id)) { seen.add(id); out.push(id); }
+  }
+  return out;
+}
+
+/// Apply every assembly in the stack and combine (phase 2). Returns per-assembly
+/// groups (each with its BOM or its own error, so a missing manual quantity in
+/// one add-on doesn't blank the rest) and the summed materials total. `ok` is
+/// true only when every group computed.
+function computeStackedBom(m) {
+  const ids = effectiveStack(m);
+  if (!ids.length) return { ok: false, reason: '(no assembly)', groups: [], materialsTotal: 0 };
+  const drivers = driversFor(m);
+  if (!drivers) return { ok: false, reason: '(set a page scale to compute this BOM)', groups: [], materialsTotal: 0 };
+  const groups = [];
+  let materialsTotal = 0;
+  for (const id of ids) {
+    const asm = assemblyCache.find(a => a.id === id);
+    if (!asm) { groups.push({ assembly: { id, name: id }, error: '(not in library)' }); continue; }
+    try {
+      const bom = JSON.parse(apply_assembly(
+        JSON.stringify(asm), JSON.stringify(drivers), JSON.stringify(overridesFor(m, id))));
+      groups.push({ assembly: asm, bom });
+      materialsTotal += bom.materials_total;
+    } catch (e) {
+      groups.push({ assembly: asm, error: `[${e.code ?? '?'}] ${e.message ?? e}` });
+    }
+  }
+  return { ok: groups.every(g => g.bom), groups, materialsTotal };
+}
+
 const niceNum = n => (Math.abs(n - Math.round(n)) < 1e-9 ? String(Math.round(n)) : (+n.toFixed(3)).toString());
 /// USD to the cent, negatives shown as −$x (credits).
 const usd = n => (n < 0 ? '−$' : '$') + Math.abs(n).toFixed(2);
 
-/// Render the expandable BOM sub-panel for a measurement: one line per part
-/// (final quantity + unit, unit cost, extended cost; click reveals the source
-/// formula), a materials total, then a per-application overrides editor
-/// (parameters, per-part waste, and manual-quantity inputs). Overrides live on
-/// the MEASUREMENT, not the assembly. The overrides editor renders even when
-/// apply fails — so a missing manual quantity can be entered to fix it.
-function renderBomPanel(m) {
-  const panel = document.createElement('div');
-  panel.className = 'bomPanel';
-  const asm = assemblyCache.find(a => a.id === effAssemblyId(m));
-  const res = computeBom(m);
-  if (res.ok) {
-    for (const li of res.bom.line_items) {
-      const line = document.createElement('div');
-      line.className = 'bomLine';
-      line.title = `raw ${niceNum(li.raw_quantity)} → after waste ${niceNum(li.waste_applied)}`
-        + ` → ${niceNum(li.final_quantity)} @ ${usd(li.unit_cost)}`;
-      const qty = document.createElement('span');
-      qty.className = 'bomQty';
-      qty.textContent = `${niceNum(li.final_quantity)} ${li.unit}`;
-      const nm = document.createElement('span');
-      nm.className = 'bomName'; nm.textContent = li.part_name;
-      const uc = document.createElement('span');
-      uc.className = 'bomUnitCost'; uc.textContent = `@ ${usd(li.unit_cost)}`;
-      const ext = document.createElement('span');
-      ext.className = 'bomExt'; ext.textContent = usd(li.extended_cost);
-      if (li.extended_cost < 0) ext.classList.add('credit');
-      const why = document.createElement('span');
-      why.className = 'bomWhy'; why.hidden = true;
-      why.textContent = `= ${li.formula_text}`;
-      line.addEventListener('click', () => { why.hidden = !why.hidden; });
-      line.append(qty, nm, uc, ext, why);
-      panel.append(line);
-    }
-    // Materials total for this measurement.
-    const tot = document.createElement('div');
-    tot.className = 'bomTotal';
-    const lbl = document.createElement('span'); lbl.textContent = 'Materials';
-    const val = document.createElement('span');
-    val.textContent = usd(res.bom.materials_total);
-    if (res.bom.materials_total < 0) val.className = 'credit';
-    tot.append(lbl, val);
-    panel.append(tot);
-  } else {
-    const e = document.createElement('div');
-    e.className = res.error ? 'bomErr' : '';
-    e.textContent = res.reason;
-    panel.append(e);
-  }
+/// One BOM line: final qty + unit, unit cost, extended cost; click reveals the
+/// source formula. Credits (negative) render green.
+function renderBomLine(li) {
+  const line = document.createElement('div');
+  line.className = 'bomLine';
+  line.title = `raw ${niceNum(li.raw_quantity)} → after waste ${niceNum(li.waste_applied)}`
+    + ` → ${niceNum(li.final_quantity)} @ ${usd(li.unit_cost)}`;
+  const qty = document.createElement('span');
+  qty.className = 'bomQty'; qty.textContent = `${niceNum(li.final_quantity)} ${li.unit}`;
+  const nm = document.createElement('span');
+  nm.className = 'bomName'; nm.textContent = li.part_name;
+  const uc = document.createElement('span');
+  uc.className = 'bomUnitCost'; uc.textContent = `@ ${usd(li.unit_cost)}`;
+  const ext = document.createElement('span');
+  ext.className = 'bomExt'; ext.textContent = usd(li.extended_cost);
+  if (li.extended_cost < 0) ext.classList.add('credit');
+  const why = document.createElement('span');
+  why.className = 'bomWhy'; why.hidden = true; why.textContent = `= ${li.formula_text}`;
+  line.addEventListener('click', () => { why.hidden = !why.hidden; });
+  line.append(qty, nm, uc, ext, why);
+  return line;
+}
 
-  // Overrides editor — always shown (from the assembly, not the BOM), so a
-  // manual-quantity part can be filled even when apply currently errors.
+/// Overrides editor for ONE assembly in the stack — parameters, per-part waste,
+/// and manual-quantity inputs, writing m.overrides[asm.id][key]. Rendered even
+/// when apply fails, so a missing manual quantity can be entered to fix it.
+/// Returns null when the assembly exposes no overrides.
+function renderOverridesFor(m, asm) {
   const ov = document.createElement('div');
   ov.className = 'bomOv';
-  const hdr = document.createElement('div');
-  hdr.className = 'ovHdr'; hdr.textContent = 'overrides (this measurement only)';
-  ov.append(hdr);
   const addOv = (label, key, placeholder) => {
     const rowEl = document.createElement('div');
     rowEl.className = 'ovRow';
@@ -1211,26 +1244,76 @@ function renderBomPanel(m) {
     const inp = document.createElement('input');
     inp.type = 'number'; inp.step = 'any';
     inp.placeholder = placeholder == null ? '' : niceNum(placeholder);
-    const cur = m.overrides?.[key];
+    const cur = m.overrides?.[asm.id]?.[key];
     if (cur != null) inp.value = cur;
     inp.addEventListener('change', () => {
       m.overrides = m.overrides ?? {};
+      m.overrides[asm.id] = m.overrides[asm.id] ?? {};
       const v = parseFloat(inp.value);
-      if (inp.value.trim() === '' || !Number.isFinite(v)) delete m.overrides[key];
-      else m.overrides[key] = v;
+      if (inp.value.trim() === '' || !Number.isFinite(v)) delete m.overrides[asm.id][key];
+      else m.overrides[asm.id][key] = v;
+      if (!Object.keys(m.overrides[asm.id]).length) delete m.overrides[asm.id];
       markDirty();
-      renderMeasList(); // re-derive the BOM with the new override
+      renderMeasList();
     });
     rowEl.append(lab, inp);
     ov.append(rowEl);
   };
-  for (const p of asm?.parameters || []) addOv(p.name, p.name, p.default);
-  for (const p of asm?.parts || []) {
-    // Manual-quantity parts get a required quantity input.
+  for (const p of asm.parameters || []) addOv(p.name, p.name, p.default);
+  for (const p of asm.parts || []) {
     if (p.manual) addOv(`${p.name} qty`, `qty:${p.id}`, null);
     else if (p.waste_pct != null) addOv(`${p.name} waste %`, `waste:${p.id}`, p.waste_pct);
   }
-  panel.append(ov);
+  return ov.children.length ? ov : null;
+}
+
+/// Render the expandable BOM sub-panel for a measurement's assembly STACK
+/// (phase 2): one section per stacked assembly — its name + subtotal, its lines
+/// (or its own error), and its overrides — then a combined materials total.
+function renderBomPanel(m) {
+  const panel = document.createElement('div');
+  panel.className = 'bomPanel';
+  const res = computeStackedBom(m);
+  if (!res.groups.length) {
+    const e = document.createElement('div');
+    e.className = res.error ? 'bomErr' : '';
+    e.textContent = res.reason;
+    panel.append(e);
+    return panel;
+  }
+  const multi = res.groups.length > 1;
+  for (const g of res.groups) {
+    if (multi) {
+      const gh = document.createElement('div');
+      gh.className = 'bomGroupHdr';
+      const nm = document.createElement('span'); nm.textContent = g.assembly.name;
+      const sub = document.createElement('span');
+      if (g.bom) {
+        sub.textContent = usd(g.bom.materials_total);
+        if (g.bom.materials_total < 0) sub.className = 'credit';
+      }
+      gh.append(nm, sub);
+      panel.append(gh);
+    }
+    if (g.bom) {
+      for (const li of g.bom.line_items) panel.append(renderBomLine(li));
+    } else {
+      const e = document.createElement('div');
+      e.className = 'bomErr'; e.textContent = g.error;
+      panel.append(e);
+    }
+    const ovEl = renderOverridesFor(m, g.assembly);
+    if (ovEl) panel.append(ovEl);
+  }
+  // Combined materials total across the whole stack.
+  const tot = document.createElement('div');
+  tot.className = 'bomTotal';
+  const lbl = document.createElement('span'); lbl.textContent = multi ? 'Materials (stack)' : 'Materials';
+  const val = document.createElement('span');
+  val.textContent = usd(res.materialsTotal);
+  if (res.materialsTotal < 0) val.className = 'credit';
+  tot.append(lbl, val);
+  panel.append(tot);
   return panel;
 }
 
@@ -1725,16 +1808,16 @@ function buildMeasRow(m, indent) {
       markDirty();
       renderMeasList();
     });
-    const effAsm = effAssemblyId(m);
+    const stack = effectiveStack(m);
     const toggle = document.createElement('button');
     toggle.className = 'bomToggle';
     toggle.textContent = m._bomOpen ? '▾' : '▸';
     toggle.title = 'show/hide bill of materials';
     toggle.style.color = '#2563eb';
-    toggle.disabled = !effAsm;
+    toggle.disabled = !stack.length;
     toggle.addEventListener('click', () => { m._bomOpen = !m._bomOpen; renderMeasList(); });
     row.append(sel, toggle);
-    if (effAsm && m._bomOpen && choices.some(a => a.id === effAsm)) {
+    if (stack.length && m._bomOpen) {
       panel = renderBomPanel(m);
     }
   }
@@ -2461,14 +2544,26 @@ window.__harness = {
     const m = measurements.find(x => x.id === measId);
     if (m) { m.assemblyId = asmId; m.overrides = {}; markDirty(); renderMeasList(); }
   },
-  setOverride: (measId, key, value) => {
+  setOverride: (measId, key, value, asmId) => {
     const m = measurements.find(x => x.id === measId);
     if (!m) return;
+    const aid = asmId ?? effAssemblyId(m);
+    if (!aid) return;
     m.overrides = m.overrides ?? {};
-    if (value == null) delete m.overrides[key]; else m.overrides[key] = value;
+    m.overrides[aid] = m.overrides[aid] ?? {};
+    if (value == null) delete m.overrides[aid][key]; else m.overrides[aid][key] = value;
+    if (!Object.keys(m.overrides[aid]).length) delete m.overrides[aid];
     markDirty(); renderMeasList();
   },
   measOverrides: measId => measurements.find(x => x.id === measId)?.overrides ?? null,
+  // Assembly stack (phase 2): the effective stack ids, and set/read the stack.
+  effectiveStack: measId => { const m = measurements.find(x => x.id === measId); return m ? effectiveStack(m) : null; },
+  stackOf: measId => (measurements.find(x => x.id === measId)?.stack ?? []).slice(),
+  setStack: (measId, ids) => {
+    const m = measurements.find(x => x.id === measId);
+    if (m) { m.stack = ids.slice(); markDirty(); renderMeasList(); render(); }
+  },
+  stackedBom: measId => { const m = measurements.find(x => x.id === measId); return m ? computeStackedBom(m) : null; },
   // Deductions (commit 3+): net/gross/deduct area for a parent, and a
   // tool-free deduct commit that runs the real containment/association path.
   grossArea: id => { const m = measurements.find(x => x.id === id); const i = m && netInfo(m); return i ? i.gross : null; },
