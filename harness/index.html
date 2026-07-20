@@ -64,6 +64,11 @@
   .measRow .perimChk { font-size: 0.75rem; color: #57534e; display: inline-flex; align-items: center; gap: 3px; }
   .measRow .netWarn { color: #b91c1c; font-size: 0.75rem; }
   .measRow .asmSel { flex: 1 1 100%; font-size: 0.8rem; }
+  .measRow .stackBar { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .stackChip { display: inline-flex; align-items: center; gap: 3px; font-size: 0.75rem;
+               background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 10px; padding: 1px 6px; }
+  .stackChip button { border: none; background: none; color: #6366f1; cursor: pointer; font-size: 0.7rem; padding: 0; }
+  .stackAdd { font-size: 0.75rem; }
   .measRow .bomToggle { color: #2563eb; font-weight: 700; }
   .bomPanel { margin: 0 0 4px 10px; padding: 4px 8px; border-left: 2px solid #cbd5e1;
               font-size: 0.8rem; background: #f8fafc; }
@@ -1817,6 +1822,44 @@ function buildMeasRow(m, indent) {
     toggle.disabled = !stack.length;
     toggle.addEventListener('click', () => { m._bomOpen = !m._bomOpen; renderMeasList(); });
     row.append(sel, toggle);
+
+    // Stack manager (phase 2): chips for stacked add-ons + a "+ add-on" picker.
+    // Shown once a base system is attached; the picker offers same-kind
+    // assemblies not already in the stack.
+    if (effAssemblyId(m)) {
+      const bar = document.createElement('span');
+      bar.className = 'stackBar';
+      for (const id of m.stack ?? []) {
+        const a = assemblyCache.find(x => x.id === id);
+        const chip = document.createElement('span');
+        chip.className = 'stackChip';
+        chip.append(document.createTextNode(a ? a.name : id));
+        const x = document.createElement('button');
+        x.textContent = '✕'; x.title = 'remove from stack';
+        x.addEventListener('click', () => {
+          m.stack = (m.stack ?? []).filter(s => s !== id);
+          if (m.overrides) delete m.overrides[id]; // drop its overrides too
+          markDirty(); renderMeasList(); render();
+        });
+        chip.append(x);
+        bar.append(chip);
+      }
+      const used = new Set(effectiveStack(m));
+      const addable = choices.filter(a => !used.has(a.id));
+      if (addable.length) {
+        const add = document.createElement('select');
+        add.className = 'stackAdd';
+        add.innerHTML = '<option value="">+ add-on…</option>'
+          + addable.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+        add.addEventListener('change', () => {
+          if (!add.value) return;
+          m.stack = [...(m.stack ?? []), add.value];
+          markDirty(); renderMeasList(); render();
+        });
+        bar.append(add);
+      }
+      row.append(bar);
+    }
     if (stack.length && m._bomOpen) {
       panel = renderBomPanel(m);
     }
@@ -1981,18 +2024,21 @@ function buildMaterialList() {
   const roll = new Map(); // "cond part unit" -> { cond, part, unit, total, names }
   const skipped = [];
   for (const m of measurements) {
-    if (m.kind === 'deduct' || !effAssemblyId(m)) continue;
-    const res = computeBom(m);
-    if (!res.ok) { skipped.push(m.name); continue; }
+    if (m.kind === 'deduct' || !effectiveStack(m).length) continue;
+    const res = computeStackedBom(m); // roll up the WHOLE stack (phase 2)
+    if (!res.ok) skipped.push(m.name); // partial / unquantifiable — surface it
     const cond = condOf(m)?.name ?? '(unassigned)';
-    for (const li of res.bom.line_items) {
+    for (const g of res.groups) {
+      if (!g.bom) continue;
+      for (const li of g.bom.line_items) {
       const key = `${cond} ${li.part_name} ${li.unit}`;
       const agg = roll.get(key)
         ?? { cond, part: li.part_name, unit: li.unit, unit_cost: li.unit_cost, total: 0, ext: 0, names: [] };
       agg.total += li.final_quantity;
       agg.ext += li.extended_cost;
-      agg.names.push(m.name);
+      if (!agg.names.includes(m.name)) agg.names.push(m.name);
       roll.set(key, agg);
+      }
     }
   }
   const rows = [['condition', 'part', 'unit', 'total_quantity', 'unit_cost', 'extended_cost', 'measurements'].join(',')];

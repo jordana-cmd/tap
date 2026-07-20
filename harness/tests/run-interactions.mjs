@@ -1339,6 +1339,39 @@ await run('stacking: reload restores the stack and nested overrides; BOM re-deri
   assert.ok(st.total > 0, 're-derived combined total');
 });
 
+await run('stacking UI: the add-on picker grows the BOM + material list; the chip removes it', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
+  const grand = () => page.evaluate(() => window.__harness.buildMaterialList().materialsTotal);
+  const before = await grand();
+  assert.ok(Math.abs(before - 1180.8) < 1e-6, `system-only materials ${before}`);
+  // Add Crack Repair via the row picker.
+  await page.evaluate(() => {
+    const sel = document.querySelector('.measRow .stackAdd');
+    sel.value = [...sel.options].find(o => o.textContent === 'Crack Repair (Mender + Sand)').value;
+    sel.dispatchEvent(new Event('change'));
+  });
+  assert.deepEqual(await page.evaluate(() => window.__harness.stackOf(1)), ['crack_repair'], 'add-on stacked');
+  const withAddon = await grand();
+  assert.ok(withAddon > before, `material list grew: ${before} → ${withAddon}`);
+  assert.ok(Math.abs(withAddon - (1180.8 + 97.812)) < 1e-6, `grand total ${withAddon}`);
+  // The material list now carries a Crack-Repair part row.
+  const lines = await page.evaluate(() => window.__harness.buildMaterialList().csv.trim().split('\n'));
+  assert.ok(lines.some(l => l.includes(',Mender – Part A,')), 'add-on parts appear in the material list');
+  // Remove it via the chip ✕ → back to system-only.
+  await page.click('.measRow .stackChip button');
+  assert.deepEqual(await page.evaluate(() => window.__harness.stackOf(1)), [], 'add-on removed');
+  assert.ok(Math.abs((await grand()) - before) < 1e-6, 'material list shrank back');
+});
+
+await run('stacking UI: a Linear add-on is not offered on an area row', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
+  const opts = await page.evaluate(() =>
+    [...document.querySelectorAll('.measRow .stackAdd option')].map(o => o.textContent));
+  // Job Consumables (area) is offered; Joint Fill (Linear caulk) is not.
+  assert.ok(opts.includes('Job Consumables'), 'a same-kind add-on is offered');
+  assert.ok(!opts.some(o => o.includes('Joint Fill')), 'the Linear caulk add-on is not offered on an area');
+});
+
 await run('advanced: detection tuning is collapsed by default and holds the knobs + stats', async page => {
   const st = await page.evaluate(() => {
     const adv = document.querySelector('#advanced');
