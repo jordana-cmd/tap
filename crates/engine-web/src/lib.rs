@@ -468,6 +468,10 @@ fn apply_assembly_core(
     // assembly). A key `waste:<part_id>` overrides that part's waste
     // percentage ("this room gets 15%"); any other key overrides the
     // matching parameter's default for this application only.
+    // A key `waste:<part_id>` overrides that part's waste; `qty:<part_id>`
+    // supplies a manual part's quantity; any other key overrides the matching
+    // parameter's default — all per-application (stored on the measurement).
+    let mut manual: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
     if let Some(map) = overrides.as_object() {
         for (key, val) in map {
             let Some(n) = val.as_f64() else { continue };
@@ -477,6 +481,8 @@ fn apply_assembly_core(
                         part.waste_pct = Some(n);
                     }
                 }
+            } else if let Some(pid) = key.strip_prefix("qty:") {
+                manual.insert(pid.to_string(), n);
             } else {
                 for p in &mut assembly.parameters {
                     if p.name == *key {
@@ -487,24 +493,30 @@ fn apply_assembly_core(
         }
     }
     let input = drivers_from_json(drivers_json)?;
-    let bom = engine_core::apply(&assembly, &input)?;
+    let bom = engine_core::apply_with_manual(&assembly, &input, &manual)?;
     let lines: Vec<String> = bom
         .line_items
         .iter()
         .map(|l| {
             format!(
                 "{{\"part_name\":{},\"unit\":{},\"raw_quantity\":{},\"waste_applied\":{},\
-                 \"final_quantity\":{},\"formula_text\":{}}}",
+                 \"final_quantity\":{},\"formula_text\":{},\"unit_cost\":{},\"extended_cost\":{}}}",
                 jstr(&l.part_name),
                 jstr(unit_str(l.unit)),
                 l.raw_quantity,
                 l.waste_applied,
                 l.final_quantity,
                 jstr(&l.formula_text),
+                l.unit_cost,
+                l.extended_cost,
             )
         })
         .collect();
-    Ok(format!("{{\"line_items\":[{}]}}", lines.join(",")))
+    Ok(format!(
+        "{{\"line_items\":[{}],\"materials_total\":{}}}",
+        lines.join(","),
+        bom.materials_total
+    ))
 }
 
 /// Parse + evaluate a single formula against a sample variable map — the
@@ -903,6 +915,47 @@ mod tests {
             eval_formula_core("nope", "{}").unwrap_err().code(),
             "FORMULA_UNKNOWN_VARIABLE"
         );
+    }
+
+    #[test]
+    fn apply_assembly_emits_cost_fields() {
+        let ehw = engine_core::assembly::seeds::mcfc_systems()
+            .into_iter()
+            .find(|a| a.id == "epoxy_hw")
+            .unwrap();
+        let js = serde_json::to_string(&ehw).unwrap();
+        let bom = apply_assembly_core(&js, r#"{"kind":"area","area_sf":5000}"#, "{}").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&bom).unwrap();
+        assert!((v["materials_total"].as_f64().unwrap() - 4920.0).abs() < 1e-9);
+        let l0 = &v["line_items"][0];
+        assert!(l0["unit_cost"].as_f64().is_some());
+        assert!(l0["extended_cost"].as_f64().is_some());
+    }
+
+    #[test]
+    fn manual_quantity_via_qty_override_and_missing_maps_to_code() {
+        let stitch = engine_core::assembly::seeds::mcfc_addons()
+            .into_iter()
+            .find(|a| a.id == "stitching")
+            .unwrap();
+        let js = serde_json::to_string(&stitch).unwrap();
+        // No quantity supplied → MISSING_QUANTITY (never a silent zero).
+        assert_eq!(
+            apply_assembly_core(&js, r#"{"kind":"area","area_sf":1000}"#, "{}")
+                .unwrap_err()
+                .code(),
+            "MISSING_QUANTITY"
+        );
+        // Supplied via qty:<part_id>.
+        let bom = apply_assembly_core(
+            &js,
+            r#"{"kind":"area","area_sf":1000}"#,
+            r#"{"qty:crack_stitch":10}"#,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&bom).unwrap();
+        assert_eq!(v["line_items"][0]["final_quantity"].as_f64(), Some(10.0));
+        assert!((v["materials_total"].as_f64().unwrap() - 40.0).abs() < 1e-9); // 10 × $4
     }
 
     #[test]
