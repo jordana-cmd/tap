@@ -4,3 +4,6 @@ harness/pkg/
 harness/tests/node_modules/
 fixtures/plans/*
 !fixtures/plans/.gitkeep
+# MCFC quoting tool: real product/consumable costs + the full margin model.
+# Pricing source-of-truth for reference only; never commit (confidential).
+reference/mcfc-quoting-tool.jsx
