@@ -152,6 +152,7 @@
   <div id="canvasWrap"><canvas id="plan" width="900" height="650"></canvas></div>
   <div id="measPanel"><b>Measurements</b>
     <button id="exportCsv" style="float:right" title="download all measurements as CSV">export CSV</button>
+    <button id="exportMaterialList" style="float:right;margin-right:6px" title="download a consolidated material list (BOM rollup) as CSV">export material list</button>
     <button id="exportJson" style="float:right;margin-right:6px" title="download a JSON backup of this project">export JSON</button>
     <label id="importJsonLabel" style="float:right;margin-right:6px;cursor:pointer" title="restore a project from a JSON backup">
       import JSON<input id="importJson" type="file" accept="application/json,.json" hidden></label>
@@ -1368,6 +1369,38 @@ function buildCsv() {
   return rows.join('\n') + '\n';
 }
 
+/// Consolidated supplier order sheet: every measurement carrying an assembly
+/// has its BOM re-derived (invariant 5 — never stored) and rolled up by
+/// (part_name, unit), summing the per-measurement FINAL quantities (each room
+/// orders whole boxes/gallons) and listing the contributing measurements.
+/// Columns: part, unit, total_quantity, measurements. A measurement whose BOM
+/// cannot be quantified (no page scale, or its assembly left the library) is
+/// skipped and its names counted so the caller can surface the gap.
+function buildMaterialList() {
+  const roll = new Map(); // "part unit" -> { part, unit, total, names }
+  const skipped = [];
+  for (const m of measurements) {
+    if (!m.assemblyId) continue;
+    const res = computeBom(m);
+    if (!res.ok) { skipped.push(m.name); continue; }
+    for (const li of res.bom.line_items) {
+      const key = `${li.part_name} ${li.unit}`;
+      const agg = roll.get(key) ?? { part: li.part_name, unit: li.unit, total: 0, names: [] };
+      agg.total += li.final_quantity;
+      agg.names.push(m.name);
+      roll.set(key, agg);
+    }
+  }
+  const rows = [['part', 'unit', 'total_quantity', 'measurements'].join(',')];
+  const sorted = [...roll.values()].sort((a, b) =>
+    a.part.localeCompare(b.part) || a.unit.localeCompare(b.unit));
+  for (const r of sorted) {
+    rows.push([csvCell(r.part), csvCell(r.unit), niceNum(r.total),
+               csvCell(r.names.join('; '))].join(','));
+  }
+  return { csv: rows.join('\n') + '\n', lineCount: sorted.length, skipped };
+}
+
 /// Swap a name span for an inline text input; Enter/blur commits, Esc
 /// reverts. Names are per-measurement free text.
 function beginRename(m, span) {
@@ -1767,6 +1800,21 @@ $('exportCsv').addEventListener('click', () => {
   URL.revokeObjectURL(url);
   say(`exported ${measurements.length} measurement(s) to takeoff.csv`);
 });
+$('exportMaterialList').addEventListener('click', () => {
+  if (!measurements.some(m => m.assemblyId)) {
+    say('attach an assembly to a measurement first — nothing to roll up');
+    return;
+  }
+  const { csv, lineCount, skipped } = buildMaterialList();
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'material-list.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  const note = skipped.length ? ` (${skipped.length} unquantifiable — no scale: ${skipped.join(', ')})` : '';
+  say(`exported ${lineCount} material line(s) to material-list.csv${note}`);
+});
 $('exportJson').addEventListener('click', () => {
   if (!currentSha) { say('open a PDF before exporting a project'); return; }
   const blob = new Blob([exportJson()], { type: 'application/json' });
@@ -1814,6 +1862,7 @@ window.__harness = {
   page: () => currentPage(),
   pageScales: () => Object.fromEntries([...pageScales].map(([p, v]) => [p, v.fpi])),
   buildCsv: () => buildCsv(),
+  buildMaterialList: () => buildMaterialList(),
   loadPdf,
   currentSha: () => currentSha,
   flushSave: () => flushSave(),

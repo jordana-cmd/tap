@@ -774,6 +774,44 @@ await run('reload: assembly assignment + overrides restored, BOM re-derived', as
   assert.ok(Math.abs(mat - 2970) < 1e-6, `re-derived material honors the restored override, got ${mat}`);
 });
 
+await run('material list: rolls up line items across measurements by (part, unit)', async page => {
+  // Two flooring rooms (same 2475 SF geometry) on the same scaled page.
+  const proj = flooringRoom();
+  const W = (1050 + 150 * Math.sqrt(5)) / 2, H = 1050 - W;
+  proj.measurements.push({
+    id: 2, page: 1, kind: 'area', label: 'Room 2', origin: 'manual', color: '#1e3a8a',
+    geometry: [0, 0, W, 0, W, H, 0, H], assemblyId: 'commercial_flooring', overrides: null,
+  });
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), proj);
+  const out = await page.evaluate(() => window.__harness.buildMaterialList());
+  const lines = out.csv.trim().split('\n');
+  assert.equal(lines[0], 'part,unit,total_quantity,measurements', 'header');
+  // Adhesive: ceil(2475/150)=17 GAL per room, summed across both rooms = 34,
+  // with both contributing measurements listed.
+  const adhesive = lines.filter(l => l.startsWith('Adhesive,'));
+  assert.equal(adhesive.length, 1, 'exactly one Adhesive/GAL row (rolled up, not duplicated)');
+  assert.equal(adhesive[0], 'Adhesive,GAL,34,Room 1; Room 2', `adhesive rollup: ${adhesive[0]}`);
+  // Boxes: 137 each → 274. Rows are sorted by part name for a stable sheet.
+  assert.ok(lines.includes('Flooring boxes,BOX,274,Room 1; Room 2'), 'boxes summed to 274');
+  assert.equal(out.skipped.length, 0, 'both rooms quantifiable');
+});
+
+await run('material list: skips measurements whose BOM cannot be quantified', async page => {
+  // A flooring room on an UNSCALED page (0) can't derive area → skipped, not
+  // silently counted as zero, and its name surfaces to the caller.
+  await page.evaluate(() => window.__harness.importJson(JSON.stringify({
+    version: 1, sha: 'x', name: 'no-scale',
+    pageScales: [], // page 0 falls back to synthetic; but we put the room on page 5 (no scale)
+    measurements: [{
+      id: 1, page: 5, kind: 'area', label: 'Unscaled room', origin: 'manual', color: '#1e3a8a',
+      geometry: [0, 0, 100, 0, 100, 80, 0, 80], assemblyId: 'commercial_flooring', overrides: null,
+    }],
+  })));
+  const out = await page.evaluate(() => window.__harness.buildMaterialList());
+  assert.equal(out.lineCount, 0, 'no material lines without a scale');
+  assert.deepEqual(out.skipped, ['Unscaled room'], 'the unquantifiable room is surfaced, not dropped silently');
+});
+
 await run('every wasm import in index.html exists in the module (class 4)', async page => {
   const result = await page.evaluate(async () => {
     const html = await (await fetch('/index.html')).text();
