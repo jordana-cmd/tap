@@ -536,6 +536,23 @@ fn stack_consumables_core(profile_ids_json: &str, drivers_json: &str) -> Result<
     Ok(bom_json(&bom))
 }
 
+/// The cost stack for one scope: CostInputs JSON → PriceBreakdown JSON. The
+/// breakdown is DERIVED (invariant 5), hand-built and never serde-serialized.
+fn price_core(inputs_json: &str) -> Result<String, WebError> {
+    let inputs: engine_core::CostInputs = serde_json::from_str(inputs_json)
+        .map_err(|e| WebError::BadAssembly(format!("cost inputs: {e}")))?;
+    let b = engine_core::price(&inputs);
+    Ok(format!(
+        "{{\"materials\":{},\"labor\":{},\"payroll_tax\":{},\"overhead\":{},\
+         \"insurance\":{},\"equipment\":{},\"permits\":{},\"cost\":{},\"markup\":{},\
+         \"discount\":{},\"cc\":{},\"price\":{},\"profit\":{},\"margin_pct\":{},\
+         \"price_per_sf\":{},\"cost_per_sf\":{}}}",
+        b.materials, b.labor, b.payroll_tax, b.overhead, b.insurance, b.equipment,
+        b.permits, b.cost, b.markup, b.discount, b.cc, b.price, b.profit, b.margin_pct,
+        b.price_per_sf, b.cost_per_sf,
+    ))
+}
+
 /// Parse + evaluate a single formula against a sample variable map — the
 /// live authoring-validation primitive.
 fn eval_formula_core(formula: &str, vars_json: &str) -> Result<f64, WebError> {
@@ -635,6 +652,14 @@ pub fn apply_assembly(
 #[wasm_bindgen]
 pub fn stack_consumables(profile_ids_json: &str, drivers_json: &str) -> Result<String, JsValue> {
     stack_consumables_core(profile_ids_json, drivers_json).map_err(to_js)
+}
+
+/// The project cost stack for one scope. `inputs_json` is a CostInputs object
+/// (materials, crew/hours/wage, tax %, overhead $/hr, insurance/equipment/
+/// permits, sqft, mode, discount %, cc %); returns the PriceBreakdown JSON.
+#[wasm_bindgen]
+pub fn price(inputs_json: &str) -> Result<String, JsValue> {
+    price_core(inputs_json).map_err(to_js)
 }
 
 /// Parse + evaluate one formula against a sample variable map (JSON). The
@@ -1008,6 +1033,21 @@ mod tests {
             stack_consumables_core(r#"[null,null]"#, r#"{"kind":"area","area_sf":5000}"#).unwrap();
         let nv: serde_json::Value = serde_json::from_str(&none).unwrap();
         assert!(nv["line_items"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn price_full_quote_json_to_the_cent() {
+        // The complete quote crosses the boundary intact — $16,764.12.
+        let inputs = r#"{"materials":5788.7193725,"crew":3,"hours":24,"wage":27.5,
+            "payroll_tax_pct":7.65,"overhead_rate":52.99,"insurance":0,"equipment":0,
+            "permits":0,"sqft":5000,"mode":{"Legacy":{"profit_pct":30,"legacy_adder":12.85}},
+            "discount_pct":0,"cc_pct":null}"#;
+        let v: serde_json::Value = serde_json::from_str(&price_core(inputs).unwrap()).unwrap();
+        let cent = |k: &str| (v[k].as_f64().unwrap() * 100.0).round() / 100.0;
+        assert_eq!(cent("cost"), 11735.47);
+        assert_eq!(cent("price"), 16764.12);
+        assert_eq!(cent("profit"), 5028.65);
+        assert_eq!(cent("price_per_sf"), 3.35);
     }
 
     #[test]
