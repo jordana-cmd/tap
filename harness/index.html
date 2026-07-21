@@ -131,6 +131,30 @@
   #assumptionsGrid input[type=number], #assumptionsGrid select { width: 6em; font-size: 0.78rem; padding: 1px 3px; }
   #assumptionsGrid label.ciCheck { justify-content: flex-start; }
   #assumptionsGrid label.ciCheck input { width: auto; }
+  /* Print views (proposal / internal cost sheet): hidden on screen, and on
+     print everything BUT #printRoot is hidden so only the sheet prints. */
+  #printRoot { display: none; }
+  @media print {
+    body > *:not(#printRoot) { display: none !important; }
+    #printRoot { display: block; }
+    .proposal, .costSheet { font: 11pt/1.45 -apple-system, Segoe UI, sans-serif; color: #000; max-width: 7.5in; }
+    .proposal h2, .costSheet h2, .costSheet h3 { margin: 0.6em 0 0.3em; }
+    .propHead, .csHead { display: flex; justify-content: space-between; align-items: baseline;
+                         border-bottom: 2px solid #000; padding-bottom: 6px; }
+    .propCo { font-size: 1.5em; font-weight: 700; }
+    .propMeta { text-align: right; }
+    .propScope { margin: 0 0 0.8em 1.1em; }
+    .propTotals { width: 100%; border-collapse: collapse; margin-bottom: 0.6em; }
+    .propTotals td { padding: 4px 0; border-bottom: 1px solid #ddd; }
+    .propTotals .propPrice { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+    .propTotals .propBase td { font-size: 1.15em; font-weight: 700; border-bottom: 2px solid #000; }
+    .propAccept { margin-top: 2em; }
+    .csScope { margin-bottom: 1em; page-break-inside: avoid; }
+    .csStack, .csMaterials { border-collapse: collapse; width: 100%; margin-bottom: 0.4em; }
+    .csStack td, .csMaterials td, .csMaterials th { padding: 2px 6px; border-bottom: 1px solid #eee; }
+    .csStack .num, .csMaterials .num, .csMaterials th { text-align: right; font-variant-numeric: tabular-nums; }
+    .csStack .csCost td, .csStack .csPrice td { font-weight: 700; border-top: 1px solid #000; border-bottom: 2px solid #000; }
+  }
   .measGroup { margin-top: 6px; }
   .measGroupHdr { display: flex; align-items: center; gap: 6px; font-weight: 600;
                   padding: 3px 4px; background: #f5f5f4; border-radius: 3px; position: sticky; top: 0; }
@@ -286,6 +310,8 @@
         <button id="exportMaterialList" title="download a consolidated material list (BOM rollup) as CSV">export material list</button>
         <button id="exportQuote" title="download the full computed quote (price rollup + nested detail) as versioned JSON">export quote</button>
         <button id="exportWorksheet" title="download the per-scope cost-stack bid worksheet as CSV">export worksheet</button>
+        <button id="printProposal" title="print / save-as-PDF the customer proposal (price only)">proposal</button>
+        <button id="printCostSheet" title="print / save-as-PDF the internal cost sheet (full breakdown)">cost sheet</button>
         <button id="exportJson" title="download a JSON backup of this project">export JSON</button>
         <label id="importJsonLabel" title="restore a project from a JSON backup">
           import JSON<input id="importJson" type="file" accept="application/json,.json" hidden></label>
@@ -331,6 +357,7 @@
     </div>
   </div>
 </div>
+<div id="printRoot"></div>
 
 <script type="module">
 import init, { detect_room, measure_polyline, measure_polygon_area, calibrate_two_point,
@@ -2549,6 +2576,78 @@ function buildBidWorksheet() {
   return rows.join('\n') + '\n';
 }
 
+const escHtml = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const UNIT_OF = { area: 'SF', linear: 'LF', count: 'EA' };
+
+/// Customer-facing proposal — PRICE ONLY. The confidentiality boundary: no
+/// cost, labor, overhead, payroll, margin, or profit ever appears here. Scopes
+/// become a scope-of-work list; alternates become optional add-ons at their
+/// standalone price. DERIVED from the quote (invariant 5); rendered for print.
+function buildProposalHtml() {
+  const q = buildQuoteJson();
+  const base = q.scopes.find(s => s.id === 'base');
+  const alternates = q.scopes.filter(s => s.id !== 'base');
+  const scopeDesc = s => s.conditions.map(c => {
+    const total = c.measurements.reduce((a, m) => a + (m.value || 0), 0);
+    const kinds = new Set(c.measurements.map(m => m.kind));
+    const unit = kinds.size === 1 ? (UNIT_OF[[...kinds][0]] ?? '') : '';
+    return `<li>${escHtml(c.condition)} — ${niceNum(total)} ${unit}</li>`;
+  }).join('');
+  const altRows = alternates.map(a =>
+    `<tr><td>${escHtml(a.name)}</td><td class="propPrice">Add ${usd(a.price.price)}</td></tr>`).join('');
+  return `<div class="proposal">
+  <header class="propHead">
+    <div class="propCo">Proposal</div>
+    <div class="propMeta">${escHtml(q.project.name || 'Project')}<br>${new Date().toLocaleDateString()}</div>
+  </header>
+  <h2>Scope of Work</h2>
+  <ul class="propScope">${scopeDesc(base) || '<li>(nothing measured yet)</li>'}</ul>
+  <table class="propTotals"><tbody>
+    <tr class="propBase"><td>Base Bid</td><td class="propPrice">${usd(base.price.price)}</td></tr>
+  </tbody></table>
+  ${alternates.length ? `<h2>Optional Add-ons</h2><table class="propTotals"><tbody>${altRows}</tbody></table>` : ''}
+  <section class="propAccept"><p>Accepted by ______________________________&nbsp;&nbsp;Date ____________</p></section>
+</div>`;
+}
+
+/// Internal cost sheet — the full stack per scope plus the materials rollup.
+/// The estimator's working document (costs, margins, everything). DERIVED from
+/// the quote (invariant 5); rendered for print.
+function buildCostSheetHtml() {
+  const q = buildQuoteJson();
+  const line = (label, val) => `<tr><td>${label}</td><td class="num">${usd(val)}</td></tr>`;
+  const scope = s => {
+    const p = s.price;
+    const matRows = s.materials.map(m =>
+      `<tr><td>${escHtml(m.part)}</td><td class="num">${niceNum(m.quantity)} ${escHtml(m.unit)}</td><td class="num">${usd(m.extended_cost)}</td></tr>`).join('');
+    return `<section class="csScope">
+    <h3>${escHtml(s.name)} — crew ${s.labor.crew} · ${s.labor.hours} hrs</h3>
+    <table class="csStack"><tbody>
+      ${line('Materials', p.materials)}
+      ${line('Labor', p.labor)}
+      ${line('Payroll tax', p.payroll_tax)}
+      ${line('Overhead', p.overhead)}
+      ${line('Insurance', p.insurance)}
+      ${line('Equipment', p.equipment)}
+      ${line('Permits', p.permits)}
+      <tr class="csCost"><td>Cost</td><td class="num">${usd(p.cost)}</td></tr>
+      ${line('Markup', p.markup)}
+      ${line('Discount', p.discount)}
+      ${line('Card fee', p.cc)}
+      <tr class="csPrice"><td>Price</td><td class="num">${usd(p.price)}</td></tr>
+      <tr><td>Profit</td><td class="num">${usd(p.profit)}</td></tr>
+      <tr><td>Margin</td><td class="num">${p.margin_pct.toFixed(1)}%</td></tr>
+      <tr><td>Price / SF · Cost / SF</td><td class="num">${usd(p.price_per_sf)} · ${usd(p.cost_per_sf)}</td></tr>
+    </tbody></table>
+    ${s.materials.length ? `<table class="csMaterials"><thead><tr><th>Part</th><th class="num">Qty</th><th class="num">Ext</th></tr></thead><tbody>${matRows}</tbody></table>` : ''}
+  </section>`;
+  };
+  return `<div class="costSheet">
+  <header class="csHead"><h2>Internal Cost Sheet</h2><div>${escHtml(q.project.name || 'Project')} · ${new Date().toLocaleDateString()}</div></header>
+  ${q.scopes.map(scope).join('')}
+</div>`;
+}
+
 /// Swap a name span for an inline text input; Enter/blur commits, Esc
 /// reverts. Names are per-measurement free text.
 function beginRename(m, span) {
@@ -3035,6 +3134,21 @@ $('exportWorksheet').addEventListener('click', () => {
   downloadText('bid-worksheet.csv', 'text/csv', buildBidWorksheet());
   say('exported the bid worksheet to bid-worksheet.csv');
 });
+/// Render a print view into #printRoot and open the browser print dialog; the
+/// user picks "Save as PDF". Manual-only — the suite tests the builders, never
+/// this (a print modal would block automation).
+function printView(html) {
+  $('printRoot').innerHTML = html;
+  window.print();
+}
+$('printProposal').addEventListener('click', () => {
+  if (!measurements.length) { say('nothing to propose yet — measure something first'); return; }
+  printView(buildProposalHtml());
+});
+$('printCostSheet').addEventListener('click', () => {
+  if (!measurements.length) { say('nothing to price yet — measure something first'); return; }
+  printView(buildCostSheetHtml());
+});
 $('exportJson').addEventListener('click', () => {
   if (!currentSha) { say('open a PDF before exporting a project'); return; }
   downloadText(`${(currentName || 'project').replace(/\.pdf$/i, '')}.json`, 'application/json', exportJson());
@@ -3080,6 +3194,8 @@ window.__harness = {
   buildMaterialList: () => buildMaterialList(),
   buildQuoteJson: () => buildQuoteJson(),
   buildBidWorksheet: () => buildBidWorksheet(),
+  buildProposalHtml: () => buildProposalHtml(),
+  buildCostSheetHtml: () => buildCostSheetHtml(),
   loadPdf,
   currentSha: () => currentSha,
   flushSave: () => flushSave(),

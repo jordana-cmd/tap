@@ -1675,6 +1675,40 @@ await run('bid worksheet: per-scope cost stack, base to the cent + a Combined ro
   assert.equal(col(combined, 'price'), '16764.12', `combined excludes the alternate until included: ${combined}`);
 });
 
+await run('proposal: customer-facing, price only — no internal figures leak', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteTwoRooms());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  const gid = await page.evaluate(() => window.__harness.addAlternateGroup('Add wing'));
+  await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
+  await page.evaluate(g => window.__harness.setScopeLabor(g, 3, 24), gid);
+  const html = await page.evaluate(() => window.__harness.buildProposalHtml());
+  // Shows the customer-facing price + the base bid + the alternate as an add-on.
+  assert.match(html, /\$16,?764\.12/, 'the base bid price is shown');
+  assert.match(html, /Base Bid/, 'the base bid is labelled');
+  assert.match(html, /Add wing/, 'the alternate is offered as an add-on');
+  assert.match(html, /Add \$16,?764\.12/, 'the add-on carries its standalone price');
+  // The scope-of-work list is actually rendered (not a dumped builder function).
+  assert.match(html, /Scope of Work/, 'the scope-of-work heading is present');
+  assert.match(html, /5000 SF/, 'the measured quantity is rendered in the scope of work');
+  assert.doesNotMatch(html, /=>|function|\.map\(/, 'no builder source leaked into the markup');
+  // The confidentiality boundary: none of the internal cost figures leak.
+  assert.doesNotMatch(html, /cost|overhead|payroll|wage|margin|profit|labor|markup/i,
+    `no internal figures in the proposal: ${html.slice(0, 200)}`);
+});
+
+await run('cost sheet: internal — carries the full cost stack', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteRoom());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  const html = await page.evaluate(() => window.__harness.buildCostSheetHtml());
+  // The estimator's sheet shows everything the proposal hides.
+  for (const word of [/overhead/i, /payroll/i, /margin/i, /profit/i, /markup/i, /materials/i]) {
+    assert.match(html, word, `cost sheet shows ${word}`);
+  }
+  assert.match(html, /\$11,?735\.47/, 'the cost is shown');
+  assert.match(html, /\$16,?764\.12/, 'the price is shown');
+  assert.match(html, /30\.0%/, 'the margin is shown');
+});
+
 await run('advanced: detection tuning is collapsed by default and holds the knobs + stats', async page => {
   const st = await page.evaluate(() => {
     const adv = document.querySelector('#advanced');
