@@ -1609,6 +1609,47 @@ await run('pricing: reload restores cost inputs + per-scope labor, re-derives th
   assert.equal(await page.evaluate(() => document.querySelector('#ciDiscount').value), '5', 'form synced on reload');
 });
 
+// ---- Phase 4b: the quote JSON export (rollup + nested detail) ----
+
+await run('quote JSON: versioned, prices the base to the cent, carries provenance', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteRoom());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  const q = await page.evaluate(() => window.__harness.buildQuoteJson());
+  // Round-trips as JSON (it's the export payload).
+  JSON.parse(JSON.stringify(q));
+  assert.equal(q.schema, 'tap.quote/v1', 'schema tag present + versioned');
+  const base = q.scopes.find(s => s.id === 'base');
+  assert.equal(cent(base.price.price), 16764.12, `base price ${base.price.price}`);
+  assert.equal(cent(base.price.cost), 11735.47, `base cost ${base.price.cost}`);
+  assert.deepEqual(base.labor, { crew: 3, hours: 24 }, 'per-scope labor in the export');
+  // Nested detail with §A2 provenance on every measurement.
+  const meas = base.conditions.flatMap(c => c.measurements);
+  assert.equal(meas.length, 1, 'the room appears in the nested detail');
+  assert.equal(meas[0].origin, 'manual', 'measurement origin (provenance) carried into the export');
+  assert.ok(meas[0].bom_lines.length > 0, 'nested BOM lines present');
+  // The scope rollup sums the extended costs of its lines.
+  const rollup = base.materials.reduce((s, r) => s + r.extended_cost, 0);
+  assert.ok(Math.abs(rollup - base.price.materials) < 0.02, `rollup ${rollup} ≈ materials ${base.price.materials}`);
+});
+
+await run('quote JSON: combined folds in an alternate only when it is included', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteTwoRooms());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  const gid = await page.evaluate(() => window.__harness.addAlternateGroup('Add wing'));
+  await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
+  await page.evaluate(g => window.__harness.setScopeLabor(g, 3, 24), gid);
+  let q = await page.evaluate(() => window.__harness.buildQuoteJson());
+  const base = q.scopes.find(s => s.id === 'base');
+  const alt = q.scopes.find(s => s.id !== 'base');
+  assert.equal(alt.name, 'Add wing', 'the alternate scope is named + present');
+  assert.equal(alt.included, false, 'alternate not included by default');
+  assert.equal(cent(q.combined.price), cent(base.price.price), 'combined excludes the alternate until included');
+  await page.evaluate(g => window.__harness.setIncluded([g]), gid);
+  q = await page.evaluate(() => window.__harness.buildQuoteJson());
+  assert.deepEqual(q.included_alternate_ids, [gid], 'included ids recorded');
+  assert.equal(cent(q.combined.price), cent(base.price.price + alt.price.price), 'combined = base + included alternate');
+});
+
 await run('advanced: detection tuning is collapsed by default and holds the knobs + stats', async page => {
   const st = await page.evaluate(() => {
     const adv = document.querySelector('#advanced');

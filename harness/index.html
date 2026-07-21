@@ -284,6 +284,7 @@
         <label class="allPagesLbl"><input id="allPages" type="checkbox"> all pages</label>
         <button id="exportCsv" title="download all measurements as CSV">export CSV</button>
         <button id="exportMaterialList" title="download a consolidated material list (BOM rollup) as CSV">export material list</button>
+        <button id="exportQuote" title="download the full computed quote (price rollup + nested detail) as versioned JSON">export quote</button>
         <button id="exportJson" title="download a JSON backup of this project">export JSON</button>
         <label id="importJsonLabel" title="restore a project from a JSON backup">
           import JSON<input id="importJson" type="file" accept="application/json,.json" hidden></label>
@@ -2449,6 +2450,70 @@ function buildMaterialList() {
   return { csv: rows.join('\n') + '\n', lineCount: sorted.length, materialsTotal: base.materials, consumablesTotal: base.consumables, byScope: Object.fromEntries(byScope), skipped };
 }
 
+/// The full computed quote as a versioned, self-contained artifact
+/// (schema `tap.quote/v1`). DERIVED end to end (invariant 5): the price comes
+/// from `price()`, every BOM from `apply_assembly`/`stack_consumables` — nothing
+/// here is persisted. Carries §A2 provenance (each measurement's `origin`) into
+/// the export. Distinct from `exportJson()`, which is the inputs-only backup.
+function buildQuoteJson() {
+  const scopeIds = ['base', ...alternateGroups.map(g => g.id)];
+  const scopeName = id => (id === 'base' ? 'Base Bid'
+    : (alternateGroups.find(g => g.id === id)?.name ?? String(id)));
+
+  const scopeNode = id => {
+    const members = scopeMembers(id);
+    const lab = laborFor(id);
+    const roll = new Map();   // "category|cond|part|unit" -> scope-level aggregate
+    const byCond = new Map(); // condition name -> measurement detail nodes
+    for (const m of members) {
+      const condName = condOf(m)?.name ?? '(unassigned)';
+      const res = computeStackedBom(m);
+      const lines = [];
+      const collect = (items, category) => {
+        for (const li of items) {
+          lines.push({ part: li.part_name, unit: li.unit, category,
+            quantity: li.final_quantity, unit_cost: li.unit_cost, extended_cost: li.extended_cost });
+          const key = `${category}|${condName}|${li.part_name}|${li.unit}`;
+          const agg = roll.get(key) ?? { category, condition: condName, part: li.part_name,
+            unit: li.unit, unit_cost: li.unit_cost, quantity: 0, extended_cost: 0 };
+          agg.quantity += li.final_quantity;
+          agg.extended_cost += li.extended_cost;
+          roll.set(key, agg);
+        }
+      };
+      for (const g of res.groups) if (g.bom) collect(g.bom.line_items, 'material');
+      if (res.consumables) collect(res.consumables.line_items, 'consumable');
+      if (!byCond.has(condName)) byCond.set(condName, []);
+      byCond.get(condName).push({
+        id: m.id, name: m.name, kind: m.kind, page: m.page,
+        origin: m.origin,          // §A2 provenance rides into the export
+        value: m.value, value_text: m.valueText,
+        drivers: driversFor(m),
+        assemblies: effectiveStack(m),
+        bom_lines: lines,
+        grand_total: measurementGrand(m),
+      });
+    }
+    return {
+      id: String(id), name: scopeName(id),
+      included: id === 'base' ? true : includedAlternates.has(id),
+      labor: { crew: lab.crew, hours: lab.hours },
+      price: priceScope(id),                       // full PriceBreakdown (16 fields)
+      materials: [...roll.values()],               // rollup
+      conditions: [...byCond.entries()].map(([condition, measurements]) => ({ condition, measurements })),
+    };
+  };
+
+  return {
+    schema: 'tap.quote/v1',
+    project: { name: currentName ?? null, sha: currentSha ?? null },
+    assumptions: { ...costInputs },
+    scopes: scopeIds.map(scopeNode),
+    combined: priceAll().combined,                 // base + included alternates
+    included_alternate_ids: [...includedAlternates],
+  };
+}
+
 /// Swap a name span for an inline text input; Enter/blur commits, Esc
 /// reverts. Names are per-measurement free text.
 function beginRename(m, span) {
@@ -2901,14 +2966,18 @@ $('storageDismiss').addEventListener('click', () => {
   $('storageModal').hidden = true;
   setSaveState('unsaved…');
 });
-$('exportCsv').addEventListener('click', () => {
-  if (!measurements.length) { say('no measurements to export'); return; }
-  const blob = new Blob([buildCsv()], { type: 'text/csv' });
+/// Download a string as a file (dedupes the export handlers).
+function downloadText(filename, mime, text) {
+  const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = 'takeoff.csv';
+  a.href = url; a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+$('exportCsv').addEventListener('click', () => {
+  if (!measurements.length) { say('no measurements to export'); return; }
+  downloadText('takeoff.csv', 'text/csv', buildCsv());
   say(`exported ${measurements.length} measurement(s) to takeoff.csv`);
 });
 $('exportMaterialList').addEventListener('click', () => {
@@ -2917,23 +2986,18 @@ $('exportMaterialList').addEventListener('click', () => {
     return;
   }
   const { csv, lineCount, skipped } = buildMaterialList();
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'material-list.csv';
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadText('material-list.csv', 'text/csv', csv);
   const note = skipped.length ? ` (${skipped.length} unquantifiable — no scale: ${skipped.join(', ')})` : '';
   say(`exported ${lineCount} material line(s) to material-list.csv${note}`);
 });
+$('exportQuote').addEventListener('click', () => {
+  if (!measurements.length) { say('nothing to quote yet — measure something first'); return; }
+  downloadText('quote.json', 'application/json', JSON.stringify(buildQuoteJson(), null, 2));
+  say('exported the full quote to quote.json');
+});
 $('exportJson').addEventListener('click', () => {
   if (!currentSha) { say('open a PDF before exporting a project'); return; }
-  const blob = new Blob([exportJson()], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `${(currentName || 'project').replace(/\.pdf$/i, '')}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadText(`${(currentName || 'project').replace(/\.pdf$/i, '')}.json`, 'application/json', exportJson());
   say('exported JSON project backup');
 });
 $('importJson').addEventListener('change', async ev => {
@@ -2974,6 +3038,7 @@ window.__harness = {
   pageScales: () => Object.fromEntries([...pageScales].map(([p, v]) => [p, v.fpi])),
   buildCsv: () => buildCsv(),
   buildMaterialList: () => buildMaterialList(),
+  buildQuoteJson: () => buildQuoteJson(),
   loadPdf,
   currentSha: () => currentSha,
   flushSave: () => flushSave(),
