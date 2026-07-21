@@ -122,15 +122,59 @@
   .scopeTotRow .stDel { border: none; background: none; color: #dc2626; cursor: pointer; font-size: 0.7rem; }
   .scopeTotRow .stLabor { width: 3.2em; font-size: 0.78rem; padding: 1px 3px; }
   .stBreak { color: #78716c; font-size: 0.72rem; padding: 0 0 2px 2px; font-variant-numeric: tabular-nums; }
-  #assumptions { border: 1px solid #d6d3d1; border-radius: 4px; margin: 4px 0; background: #fafaf9; font-size: 0.82rem; }
-  #assumptions > summary { cursor: pointer; padding: 4px 8px; font-weight: 600; color: #57534e;
-                           font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
-  #assumptionsGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px 10px; padding: 4px 8px 8px; }
-  #assumptionsGrid label { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-  #assumptionsGrid label[hidden] { display: none; } /* explicit display beats [hidden]'s UA rule */
-  #assumptionsGrid input[type=number], #assumptionsGrid select { width: 6em; font-size: 0.78rem; padding: 1px 3px; }
-  #assumptionsGrid label.ciCheck { justify-content: flex-start; }
-  #assumptionsGrid label.ciCheck input { width: auto; }
+  /* A `display` rule beats [hidden]'s UA `display:none`, so the flex/grid
+     containers the view switcher toggles need this explicitly — otherwise
+     setting .hidden looks like it works (the property IS true) while the
+     element stays on screen. */
+  #workRow[hidden], .toolbar[hidden], #quoteView[hidden], #advanced[hidden] { display: none !important; }
+
+  /* ---- view tabs: TAKEOFF | QUOTE ---- */
+  #viewTabs { display: flex; gap: 2px; margin: 0 0 6px; border-bottom: 2px solid #d6d3d1; }
+  .viewTab { background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -2px;
+             padding: 6px 16px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em;
+             color: #78716c; cursor: pointer; }
+  .viewTab:hover { color: #292524; }
+  .viewTab[aria-selected="true"] { color: #1e3a8a; border-bottom-color: #1e3a8a; }
+
+  /* ---- quote view: a full-width page, no canvas ---- */
+  #quoteView { max-width: 1100px; }
+  .qSec { border: 1px solid #d6d3d1; border-radius: 4px; margin: 0 0 10px; background: #fafaf9; padding: 8px 12px 12px; }
+  .qSec > h2 { margin: 0 0 8px; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em;
+               color: #57534e; font-weight: 700; }
+  .qNote { margin: 8px 0 0; font-size: 0.74rem; color: #78716c; }
+  .qGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 5px 16px; }
+  .qGrid label { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 0.82rem; }
+  .qGrid label[hidden] { display: none; } /* explicit display beats [hidden]'s UA rule */
+  .qGrid input[type=number] { width: 7em; font-size: 0.8rem; padding: 2px 4px; }
+  .qGrid select { min-width: 7em; font-size: 0.8rem; padding: 2px 4px; } /* auto-width: mode names are long */
+  .qGrid input[type=text] { width: 12em; font-size: 0.8rem; padding: 2px 4px; }
+  .qGrid label.ciCheck { justify-content: flex-start; }
+  .qGrid label.ciCheck input { width: auto; }
+  #quoteExports { display: flex; flex-wrap: wrap; gap: 6px; }
+  .stEmpty { color: #78716c; font-size: 0.82rem; }
+  /* Scope summary: one block per scope, one row per measurement. */
+  .qScope { border: 1px solid #e7e5e4; border-radius: 3px; margin-bottom: 8px; background: #fff; }
+  .qScopeHdr { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+               padding: 5px 8px; background: #f5f5f4; border-bottom: 1px solid #e7e5e4; font-size: 0.82rem; }
+  .qScopeName { font-weight: 700; }
+  .qScopeHdr .qLabor { margin-left: auto; display: flex; align-items: center; gap: 4px; font-size: 0.76rem; color: #57534e; }
+  .qScopeHdr .qLabor input { width: 4em; font-size: 0.76rem; padding: 1px 3px; }
+  .qLine { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+           padding: 4px 8px; border-bottom: 1px solid #f5f5f4; font-size: 0.82rem; }
+  .qLine:last-child { border-bottom: none; }
+  .qLineName { font-weight: 600; min-width: 9em; }
+  /* Quantities are DERIVED from geometry (invariant 5) — shown, never edited
+     here. The jump link sends you to the drawing, the only place they change. */
+  .qQty { font-variant-numeric: tabular-nums; color: #292524; min-width: 7em; }
+  .qJump { background: none; border: none; color: #1e3a8a; cursor: pointer; font-size: 0.76rem; padding: 0 2px; }
+  .qJump:hover { text-decoration: underline; }
+  .qLine select { font-size: 0.78rem; max-width: 14em; }
+  .qStackChip { background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 10px;
+                padding: 0 4px 0 7px; font-size: 0.74rem; display: inline-flex; align-items: center; gap: 2px; }
+  .qStackChip button { background: none; border: none; color: #6366f1; cursor: pointer; padding: 0 2px; }
+  .qLineCost { margin-left: auto; font-variant-numeric: tabular-nums; color: #57534e; }
+  .qEmpty { padding: 6px 8px; color: #78716c; font-size: 0.82rem; }
+  #assumptionsGrid label[hidden] { display: none; }
   /* Print views (proposal / internal cost sheet): hidden on screen, and on
      print everything BUT #printRoot is hidden so only the sheet prints. */
   #printRoot { display: none; }
@@ -194,6 +238,13 @@
 </head>
 <body>
 <h1>Throwaway harness — click inside a room to flood-fill it (engine-core via wasm)</h1>
+<!-- Measuring and quoting are different modes, so they are different views.
+     Deliberately NOT a sixth .tgroup in the toolbar: the toolbar groups are
+     measurement tools, and the interaction suite pins their exact set. -->
+<div id="viewTabs" role="tablist">
+  <button class="viewTab" data-view="takeoff" role="tab" aria-selected="true">TAKEOFF</button>
+  <button class="viewTab" data-view="quote" role="tab" aria-selected="false">QUOTE</button>
+</div>
 <!-- NOTE (§A8 guard): pdf.js here is a measurement INSTRUMENT for this
      throwaway harness only. The product renders server-side tile pyramids;
      client-side full-PDF rendering remains rejected for the product. -->
@@ -306,45 +357,100 @@
       <b>Measurements</b>
       <div id="measControls">
         <label class="allPagesLbl"><input id="allPages" type="checkbox"> all pages</label>
-        <button id="exportCsv" title="download all measurements as CSV">export CSV</button>
-        <button id="exportMaterialList" title="download a consolidated material list (BOM rollup) as CSV">export material list</button>
-        <button id="exportQuote" title="download the full computed quote (price rollup + nested detail) as versioned JSON">export quote</button>
-        <button id="exportWorksheet" title="download the per-scope cost-stack bid worksheet as CSV">export worksheet</button>
-        <button id="printProposal" title="print / save-as-PDF the customer proposal (price only)">proposal</button>
-        <button id="printCostSheet" title="print / save-as-PDF the internal cost sheet (full breakdown)">cost sheet</button>
-        <button id="exportJson" title="download a JSON backup of this project">export JSON</button>
         <label id="importJsonLabel" title="restore a project from a JSON backup">
           import JSON<input id="importJson" type="file" accept="application/json,.json" hidden></label>
-        <button id="newAlternate" title="create a named alternate scope">+ alternate</button>
+        <!-- Nine buttons became one menu. Pricing lives on the QUOTE view; the
+             exports go with it, but stay reachable here for a quick dump. -->
+        <select id="exportMenu" title="download or print an export">
+          <option value="">exports…</option>
+          <option value="csv">measurements CSV</option>
+          <option value="material">material list CSV</option>
+          <option value="quote">quote JSON</option>
+          <option value="worksheet">bid worksheet CSV</option>
+          <option value="proposal">proposal (print)</option>
+          <option value="costsheet">cost sheet (print)</option>
+          <option value="project">project JSON (backup)</option>
+        </select>
       </div>
     </div>
-    <details id="assumptions">
-      <summary>Cost assumptions</summary>
-      <div id="assumptionsGrid">
-        <label>wage $/hr <input id="ciWage" type="number" step="any" min="0"></label>
-        <label>payroll tax % <input id="ciTax" type="number" step="any" min="0"></label>
-        <label>overhead $/labor-hr <input id="ciOverhead" type="number" step="any" min="0"></label>
-        <label>legacy adder % <input id="ciAdder" type="number" step="any" min="0"></label>
-        <label>card fee % <input id="ciCC" type="number" step="any" min="0"></label>
-        <label>insurance $ <input id="ciInsurance" type="number" step="any" min="0"></label>
-        <label>equipment $ <input id="ciEquipment" type="number" step="any" min="0"></label>
-        <label>permits $ <input id="ciPermits" type="number" step="any" min="0"></label>
-        <label>pricing mode
-          <select id="ciMode">
-            <option value="legacy">Rob's formula</option>
-            <option value="margin">Exact margin</option>
-            <option value="sqft">$ / sq ft</option>
-          </select></label>
-        <label id="ciProfitLbl">profit % <input id="ciProfit" type="number" step="any" min="0"></label>
-        <label id="ciMarginLbl" hidden>margin % <input id="ciMargin" type="number" step="any" min="0"></label>
-        <label id="ciSqftPriceLbl" hidden>price $/SF <input id="ciSqftPrice" type="number" step="any" min="0"></label>
-        <label>discount % <input id="ciDiscount" type="number" step="any" min="0"></label>
-        <label class="ciCheck"><input id="ciCCOn" type="checkbox"> add card fee</label>
-      </div>
-    </details>
-    <div id="scopeTotals" hidden></div>
     <div id="measList">(none yet)</div>
   </div>
+</div>
+
+<!-- ===================== QUOTE VIEW =====================
+     A full-page mode, not a panel. Measuring and quoting are different jobs:
+     the canvas is gone, and everything pricing lives here. -->
+<div id="quoteView" hidden>
+  <section class="qSec">
+    <h2>Project</h2>
+    <div class="qGrid" id="projectInfoGrid">
+      <label>customer <input id="qiCustomer" type="text" autocomplete="off"></label>
+      <label>company <input id="qiCompany" type="text" autocomplete="off"></label>
+      <label>job number <input id="qiJobNumber" type="text" autocomplete="off"></label>
+      <label>salesman <input id="qiSalesman" type="text" autocomplete="off"></label>
+    </div>
+  </section>
+
+  <section class="qSec">
+    <h2>Scopes</h2>
+    <div id="quoteScopes"></div>
+    <button id="qNewAlternate" title="create a named alternate scope">+ alternate</button>
+  </section>
+
+  <section class="qSec">
+    <h2>Cost stack</h2>
+    <div class="qGrid" id="assumptionsGrid">
+      <label>wage $/hr <input id="ciWage" type="number" step="any" min="0"></label>
+      <label>payroll tax % <input id="ciTax" type="number" step="any" min="0"></label>
+      <label>overhead $/labor-hr <input id="ciOverhead" type="number" step="any" min="0"></label>
+      <label>insurance $ <input id="ciInsurance" type="number" step="any" min="0"></label>
+      <label>equipment $ <input id="ciEquipment" type="number" step="any" min="0"></label>
+      <label>permits $ <input id="ciPermits" type="number" step="any" min="0"></label>
+      <label>travel $ <input id="ciTravel" type="number" step="any" min="0"></label>
+      <label>mobilization $ <input id="ciMobilization" type="number" step="any" min="0"></label>
+      <label>miscellaneous $ <input id="ciMisc" type="number" step="any" min="0"></label>
+    </div>
+    <p class="qNote">Crew and hours are per scope — set them on each scope above.
+      Flat adds apply to the Base Bid only: you mobilize to a job once, not once
+      per alternate.</p>
+  </section>
+
+  <section class="qSec">
+    <h2>Pricing</h2>
+    <div class="qGrid">
+      <label>pricing mode
+        <select id="ciMode">
+          <option value="legacy">Rob's formula</option>
+          <option value="margin">Exact margin</option>
+          <option value="sqft">$ / sq ft</option>
+        </select></label>
+      <label id="ciProfitLbl">profit % <input id="ciProfit" type="number" step="any" min="0"></label>
+      <label id="ciMarginLbl" hidden>margin % <input id="ciMargin" type="number" step="any" min="0"></label>
+      <label id="ciSqftPriceLbl" hidden>price $/SF <input id="ciSqftPrice" type="number" step="any" min="0"></label>
+      <label>legacy adder % <input id="ciAdder" type="number" step="any" min="0"></label>
+      <label>discount % <input id="ciDiscount" type="number" step="any" min="0"></label>
+      <label>card fee % <input id="ciCC" type="number" step="any" min="0"></label>
+      <label class="ciCheck"><input id="ciCCOn" type="checkbox"> add card fee</label>
+    </div>
+  </section>
+
+  <section class="qSec">
+    <h2>Totals</h2>
+    <div id="scopeTotals"></div>
+  </section>
+
+  <section class="qSec">
+    <h2>Exports</h2>
+    <div id="quoteExports">
+      <button id="exportCsv" title="download all measurements as CSV">measurements CSV</button>
+      <button id="exportMaterialList" title="download a consolidated material list (BOM rollup) as CSV">material list CSV</button>
+      <button id="exportQuote" title="download the full computed quote (price rollup + nested detail) as versioned JSON">quote JSON</button>
+      <button id="exportWorksheet" title="download the per-scope cost-stack bid worksheet as CSV">bid worksheet CSV</button>
+      <button id="printProposal" title="print / save-as-PDF the customer proposal (price only)">proposal</button>
+      <button id="printCostSheet" title="print / save-as-PDF the internal cost sheet (full breakdown)">cost sheet</button>
+      <button id="exportJson" title="download a JSON backup of this project">project JSON</button>
+    </div>
+  </section>
 </div>
 <div id="status">loading wasm…</div>
 <div id="storageModal" hidden>
@@ -431,11 +537,17 @@ const altGroupOf = m => (m.scope === 'alternate'
 // only cost data PERSISTED — cost/price are always DERIVED (invariant 5). ----
 const COST_DEFAULTS = {
   wage: 27.5, payrollTaxPct: 7.65, overheadRate: 52.99, legacyAdder: 12.85, ccRatePct: 3.5,
-  insurance: 0, equipment: 0, permits: 0,
+  // Flat project adds, all charged on the Base Bid only. travel/mobilization/
+  // misc are new; they default to 0 so an existing project prices unchanged.
+  insurance: 0, equipment: 0, permits: 0, travel: 0, mobilization: 0, misc: 0,
   mode: 'legacy', profitPct: 30, marginPct: 30, sqftPrice: 4.0,
   discountPct: 0, ccOn: false,
 };
 let costInputs = { ...COST_DEFAULTS };
+// Who the quote is for. Inputs, so they persist (invariant 5 constrains
+// DERIVED values, not typed ones).
+const PROJECT_INFO_DEFAULTS = { customer: '', company: '', jobNumber: '', salesman: '' };
+let projectInfo = { ...PROJECT_INFO_DEFAULTS };
 let laborByScope = {};       // scopeId ('base' | alternateGroupId) -> { crew, hours }
 const laborFor = id => laborByScope[id] ?? { crew: 0, hours: 0 };
 /// Effective colour/assembly: per-measurement override first, else the
@@ -1063,6 +1175,7 @@ function exportJson() {
     conditions: conditions.map(condToStored),
     activeConditionId,
     alternateGroups: alternateGroups.map(g => ({ id: g.id, name: g.name })),
+    projectInfo: { ...projectInfo },
     costInputs: { ...costInputs },
     laborByScope: { ...laborByScope },
     minWidthOverride,
@@ -1074,6 +1187,7 @@ function importJson(str) {
   conditionsFromStored(data.conditions, data.activeConditionId);
   alternateGroupsFromStored(data.alternateGroups);
   costInputsFromStored(data.costInputs, data.laborByScope);
+  projectInfoFromStored(data.projectInfo);
   measurements = rewriteRetiredAssemblies((data.measurements ?? []).map(fromStored));
   minWidthOverride = data.minWidthOverride ?? null;
   reindexAfterRestore();
@@ -1114,6 +1228,12 @@ function costInputsFromStored(ci, labor) {
   laborByScope = labor && typeof labor === 'object' ? { ...labor } : {};
 }
 
+/// Restore the project/customer fields (migration: a pre-quote-view project
+/// has none → blanks).
+function projectInfoFromStored(info) {
+  projectInfo = { ...PROJECT_INFO_DEFAULTS, ...(info ?? {}) };
+}
+
 function projectRecord() {
   return {
     sha: currentSha, name: currentName,
@@ -1122,6 +1242,7 @@ function projectRecord() {
     conditions: conditions.map(condToStored),
     activeConditionId,
     alternateGroups: alternateGroups.map(g => ({ id: g.id, name: g.name })),
+    projectInfo: { ...projectInfo },
     costInputs: { ...costInputs },
     laborByScope: { ...laborByScope },
     minWidthOverride, updatedAt: Date.now(),
@@ -2363,8 +2484,9 @@ function pricingModeJson() {
   return { Legacy: { profit_pct: +costInputs.profitPct || 0, legacy_adder: +costInputs.legacyAdder || 0 } };
 }
 /// Full cost stack for one scope: materials = Σ its measurements' grand
-/// (materials + consumables); sqft = Σ its AREA net SF; flat adds
-/// (insurance/equipment/permits) apply to the Base Bid only. Derived via wasm.
+/// (materials + consumables); sqft = Σ its AREA net SF; the flat adds
+/// (insurance/equipment/permits/travel/mobilization/misc) apply to the Base Bid
+/// only — you mobilize to a job once, not once per alternate. Derived via wasm.
 function priceScope(scopeId) {
   const mem = scopeMembers(scopeId);
   const materials = mem.reduce((s, m) => s + measurementGrand(m), 0);
@@ -2377,6 +2499,9 @@ function priceScope(scopeId) {
     insurance: isBase ? +costInputs.insurance || 0 : 0,
     equipment: isBase ? +costInputs.equipment || 0 : 0,
     permits: isBase ? +costInputs.permits || 0 : 0,
+    travel: isBase ? +costInputs.travel || 0 : 0,
+    mobilization: isBase ? +costInputs.mobilization || 0 : 0,
+    misc: isBase ? +costInputs.misc || 0 : 0,
     sqft, mode: pricingModeJson(), discount_pct: +costInputs.discountPct || 0,
     cc_pct: costInputs.ccOn ? (+costInputs.ccRatePct || 0) : null,
   };
@@ -2400,8 +2525,16 @@ function renderScopeTotals() {
   const panel = $('scopeTotals');
   panel.textContent = '';
   const bp = priceAll();
-  if (!alternateGroups.length && bp.base.price === 0 && bp.base.cost === 0) { panel.hidden = true; return; }
+  if (!alternateGroups.length && bp.base.price === 0 && bp.base.cost === 0) {
+    // Nothing priced yet. On the quote page the Totals section still exists, so
+    // say so rather than leaving a blank panel.
+    panel.hidden = false;
+    panel.className = 'stEmpty';
+    panel.textContent = 'Nothing priced yet — measure an area and attach an assembly.';
+    return;
+  }
   panel.hidden = false;
+  panel.className = '';
   const hdr = document.createElement('div'); hdr.className = 'stHdr'; hdr.textContent = 'Bid pricing';
   panel.append(hdr);
 
@@ -2419,21 +2552,10 @@ function renderScopeTotals() {
       row.append(cb);
     }
     const l = document.createElement('span'); l.className = 'stLabel'; l.textContent = name;
-    // crew / hours inputs for this scope.
-    const lab = laborFor(scopeId);
-    const mk = (field, ph) => {
-      const i = document.createElement('input');
-      i.type = 'number'; i.step = 'any'; i.min = '0'; i.className = 'stLabor'; i.placeholder = ph;
-      i.value = lab[field] || '';
-      i.title = ph;
-      i.addEventListener('change', () => {
-        laborByScope[scopeId] = { ...laborFor(scopeId), [field]: parseFloat(i.value) || 0 };
-        markDirty(); renderScopeTotals();
-      });
-      return i;
-    };
+    // Crew/hours are edited in the scope summary above, which owns them — two
+    // editable copies of one input on the same page is a bug waiting to happen.
     const v = document.createElement('span'); v.className = 'stVal'; v.textContent = usd(pb.price);
-    row.append(l, mk('crew', 'crew'), mk('hours', 'hrs'), v);
+    row.append(l, v);
     if (opts.del) {
       const d = document.createElement('button');
       d.className = 'stDel'; d.textContent = '✕';
@@ -2447,7 +2569,9 @@ function renderScopeTotals() {
     // Breakdown line: cost · profit · margin.
     const br = document.createElement('div');
     br.className = 'stBreak';
-    br.textContent = `cost ${usd(pb.cost)} · profit ${usd(pb.profit)} · ${pb.margin_pct.toFixed(1)}%`;
+    br.textContent = `cost ${usd(pb.cost)} · profit ${usd(pb.profit)}`
+      + ` · margin ${pb.margin_pct.toFixed(1)}%`
+      + (pb.price_per_sf ? ` · ${usd(pb.price_per_sf)}/SF` : '');
     panel.append(br);
   };
 
@@ -2470,6 +2594,8 @@ function syncAssumptions() {
   set('ciOverhead', costInputs.overheadRate); set('ciAdder', costInputs.legacyAdder);
   set('ciCC', costInputs.ccRatePct); set('ciInsurance', costInputs.insurance);
   set('ciEquipment', costInputs.equipment); set('ciPermits', costInputs.permits);
+  set('ciTravel', costInputs.travel); set('ciMobilization', costInputs.mobilization);
+  set('ciMisc', costInputs.misc);
   set('ciProfit', costInputs.profitPct); set('ciMargin', costInputs.marginPct);
   set('ciSqftPrice', costInputs.sqftPrice); set('ciDiscount', costInputs.discountPct);
   $('ciMode').value = costInputs.mode;
@@ -2486,6 +2612,7 @@ function wireAssumptions() {
   num('ciWage', 'wage'); num('ciTax', 'payrollTaxPct'); num('ciOverhead', 'overheadRate');
   num('ciAdder', 'legacyAdder'); num('ciCC', 'ccRatePct'); num('ciInsurance', 'insurance');
   num('ciEquipment', 'equipment'); num('ciPermits', 'permits');
+  num('ciTravel', 'travel'); num('ciMobilization', 'mobilization'); num('ciMisc', 'misc');
   num('ciProfit', 'profitPct'); num('ciMargin', 'marginPct'); num('ciSqftPrice', 'sqftPrice');
   num('ciDiscount', 'discountPct');
   $('ciMode').addEventListener('change', () => {
@@ -3128,6 +3255,7 @@ async function loadPdf(data, name) {
     conditionsFromStored(proj.conditions, proj.activeConditionId); // migration-safe
     alternateGroupsFromStored(proj.alternateGroups);
     costInputsFromStored(proj.costInputs, proj.laborByScope);
+    projectInfoFromStored(proj.projectInfo);
     measurements = rewriteRetiredAssemblies(proj.measurements.map(fromStored));
     minWidthOverride = proj.minWidthOverride ?? null;
     reindexAfterRestore();
@@ -3225,9 +3353,25 @@ $('conditionsBtn').addEventListener('click', () => {
   if (!panel.hidden) renderConditionPanel();
 });
 $('newCondition').addEventListener('click', () => addCondition());
-$('newAlternate').addEventListener('click', () => {
+$('qNewAlternate').addEventListener('click', () => {
   const name = prompt('New alternate name:', `Alternate ${alternateGroups.length + 1}`);
-  if (name != null) addAlternateGroup(name);
+  if (name != null) { addAlternateGroup(name); renderQuote(); }
+});
+for (const tab of document.querySelectorAll('.viewTab')) {
+  tab.addEventListener('click', () => setView(tab.dataset.view));
+}
+wireProjectInfo();
+// The takeoff panel's single exports menu dispatches to the same handlers the
+// quote page's buttons use — one implementation, two entry points.
+const EXPORT_TARGETS = {
+  csv: 'exportCsv', material: 'exportMaterialList', quote: 'exportQuote',
+  worksheet: 'exportWorksheet', proposal: 'printProposal',
+  costsheet: 'printCostSheet', project: 'exportJson',
+};
+$('exportMenu').addEventListener('change', ev => {
+  const target = EXPORT_TARGETS[ev.target.value];
+  ev.target.value = ''; // snap back to the "exports…" placeholder
+  if (target) $(target).click();
 });
 $('activeCondSel').addEventListener('change', ev => setActiveCondition(ev.target.value ? Number(ev.target.value) : null));
 $('addParam').addEventListener('click', () => addParamRow());
@@ -3319,6 +3463,228 @@ $('minWidthReset').addEventListener('click', () => {
   $('minWidthReset').blur();
   render();
 });
+
+
+// ================== VIEW SWITCHING + QUOTE PAGE ==================
+//
+// TAKEOFF is the drawing: canvas, tools, measurement list. QUOTE is a
+// full-width page with no canvas — project fields, scope summary, cost stack,
+// pricing controls, live totals, exports. Which view you are in is session
+// state, deliberately not persisted: reopening a project puts you back on the
+// drawing.
+
+let activeView = 'takeoff';
+
+function setView(view) {
+  activeView = view === 'quote' ? 'quote' : 'takeoff';
+  const quoting = activeView === 'quote';
+  for (const el of document.querySelectorAll('.toolbar')) el.hidden = quoting;
+  $('workRow').hidden = quoting;
+  $('advanced').hidden = quoting;
+  $('quoteView').hidden = !quoting;
+  for (const tab of document.querySelectorAll('.viewTab')) {
+    tab.setAttribute('aria-selected', String(tab.dataset.view === activeView));
+  }
+  if (quoting) renderQuote();
+}
+
+/// Re-render everything on the quote page. Cheap enough to run wholesale on
+/// every input change — all of it is derived from the same state.
+function renderQuote() {
+  if (activeView !== 'quote') return;
+  syncProjectInfo();
+  syncAssumptions();
+  renderQuoteScopes();
+  renderScopeTotals();
+}
+
+function syncProjectInfo() {
+  const set = (id, v) => { const el = $(id); if (el && el.value !== v) el.value = v; };
+  set('qiCustomer', projectInfo.customer);
+  set('qiCompany', projectInfo.company);
+  set('qiJobNumber', projectInfo.jobNumber);
+  set('qiSalesman', projectInfo.salesman);
+}
+
+function wireProjectInfo() {
+  const bind = (id, field) => $(id).addEventListener('input', () => {
+    projectInfo[field] = $(id).value;
+    markDirty();
+  });
+  bind('qiCustomer', 'customer'); bind('qiCompany', 'company');
+  bind('qiJobNumber', 'jobNumber'); bind('qiSalesman', 'salesman');
+}
+
+/// The scope summary: Base Bid then each alternate, one row per measurement.
+///
+/// INVARIANT 5 BOUNDARY. A row's QUANTITY is derived from geometry + page
+/// scale and is shown read-only, with a jump back to the drawing — the only
+/// place it can change. Everything else on the row is an INPUT (assembly,
+/// stack, scope) and is editable here.
+function renderQuoteScopes() {
+  const host = $('quoteScopes');
+  host.textContent = '';
+  const scopes = [{ id: 'base', name: 'Base Bid' },
+    ...alternateGroups.map(g => ({ id: g.id, name: g.name, alt: true }))];
+
+  for (const scope of scopes) {
+    const box = document.createElement('div');
+    box.className = 'qScope';
+    box.dataset.scope = String(scope.id);
+
+    const hdr = document.createElement('div');
+    hdr.className = 'qScopeHdr';
+    const name = document.createElement('span');
+    name.className = 'qScopeName';
+    name.textContent = scope.alt ? `Alternate: ${scope.name}` : scope.name;
+    hdr.append(name);
+
+    // Crew and hours are per scope — an alternate is its own crew day.
+    const labor = laborFor(scope.id);
+    const laborWrap = document.createElement('span');
+    laborWrap.className = 'qLabor';
+    for (const [field, label] of [['crew', 'crew'], ['hours', 'hrs']]) {
+      const lbl = document.createElement('label');
+      lbl.textContent = `${label} `;
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.min = '0'; inp.step = 'any';
+      inp.className = `qLaborInput qLabor_${field}`;
+      inp.value = labor[field] ?? 0;
+      inp.addEventListener('change', () => {
+        const cur = laborFor(scope.id);
+        laborByScope[scope.id] = { ...cur, [field]: Number(inp.value) || 0 };
+        markDirty(); renderScopeTotals();
+      });
+      lbl.append(inp);
+      laborWrap.append(lbl);
+    }
+    hdr.append(laborWrap);
+    box.append(hdr);
+
+    const members = scopeMembers(scope.id);
+    if (!members.length) {
+      const empty = document.createElement('div');
+      empty.className = 'qEmpty';
+      empty.textContent = '(nothing measured into this scope yet)';
+      box.append(empty);
+    }
+    for (const m of members) box.append(buildQuoteLine(m, scopes));
+    host.append(box);
+  }
+}
+
+/// One editable quote line for a measurement.
+function buildQuoteLine(m, scopes) {
+  const row = document.createElement('div');
+  row.className = 'qLine';
+  row.dataset.measId = String(m.id);
+
+  const name = document.createElement('span');
+  name.className = 'qLineName';
+  name.textContent = m.name;
+
+  // DERIVED — display only. Editing geometry is a takeoff action.
+  const qty = document.createElement('span');
+  qty.className = 'qQty';
+  qty.textContent = m.valueText;
+
+  const jump = document.createElement('button');
+  jump.className = 'qJump';
+  jump.type = 'button';
+  jump.title = 'edit this measurement on the drawing';
+  jump.textContent = '↗ takeoff';
+  jump.addEventListener('click', () => {
+    setView('takeoff');
+    if (m.page !== currentPage()) changePage(m.page);
+    renderMeasList();
+  });
+
+  // Base assembly — an INPUT, editable here.
+  const asmSel = document.createElement('select');
+  asmSel.className = 'qAsmSel';
+  const none = document.createElement('option');
+  none.value = ''; none.textContent = '— no assembly —';
+  asmSel.append(none);
+  for (const a of assembliesFor(m.kind)) {
+    const opt = document.createElement('option');
+    opt.value = a.id; opt.textContent = a.name;
+    asmSel.append(opt);
+  }
+  asmSel.value = effAssemblyId(m) ?? '';
+  asmSel.addEventListener('change', () => {
+    m.assemblyId = asmSel.value || null;
+    m.overrides = {}; // a different recipe invalidates per-part overrides
+    markDirty(); renderQuote(); renderMeasList();
+  });
+
+  row.append(name, qty, jump, asmSel);
+
+  // Stacked add-ons, each removable.
+  const stack = m.stack ?? [];
+  for (const id of stack) {
+    const asm = assemblyCache.find(a => a.id === id);
+    const chip = document.createElement('span');
+    chip.className = 'qStackChip';
+    chip.textContent = asm ? asm.name : `(missing ${id})`;
+    const del = document.createElement('button');
+    del.type = 'button'; del.textContent = '✕'; del.title = 'remove this add-on';
+    del.addEventListener('click', () => {
+      m.stack = (m.stack ?? []).filter(x => x !== id);
+      if (m.overrides) delete m.overrides[id];
+      markDirty(); renderQuote(); renderMeasList();
+    });
+    chip.append(del);
+    row.append(chip);
+  }
+
+  // Add-on picker — same-kind assemblies not already in the stack.
+  const base = effAssemblyId(m);
+  const addable = assembliesFor(m.kind).filter(a => a.id !== base && !stack.includes(a.id));
+  if (base && addable.length) {
+    const add = document.createElement('select');
+    add.className = 'qStackAdd';
+    const ph = document.createElement('option');
+    ph.value = ''; ph.textContent = '+ add-on…';
+    add.append(ph);
+    for (const a of addable) {
+      const opt = document.createElement('option');
+      opt.value = a.id; opt.textContent = a.name;
+      add.append(opt);
+    }
+    add.addEventListener('change', () => {
+      if (!add.value) return;
+      m.stack = [...(m.stack ?? []), add.value];
+      markDirty(); renderQuote(); renderMeasList();
+    });
+    row.append(add);
+  }
+
+  // Move a line between Base Bid and an alternate.
+  const scopeSel = document.createElement('select');
+  scopeSel.className = 'qScopeSel';
+  for (const sc of scopes) {
+    const opt = document.createElement('option');
+    opt.value = String(sc.id);
+    opt.textContent = sc.alt ? `Alt: ${sc.name}` : sc.name;
+    scopeSel.append(opt);
+  }
+  scopeSel.value = String(inBaseScope(m) ? 'base' : m.alternateGroupId);
+  scopeSel.addEventListener('change', () => {
+    const v = scopeSel.value;
+    setMeasScope(m, v === 'base' ? 'base' : 'alternate', v === 'base' ? null : Number(v));
+    renderQuote();
+  });
+  row.append(scopeSel);
+
+  // The line's own materials + consumables, derived.
+  const cost = document.createElement('span');
+  cost.className = 'qLineCost';
+  const grand = measurementGrand(m);
+  cost.textContent = grand ? usd(grand) : '—';
+  row.append(cost);
+
+  return row;
+}
 
 // Read-only state hook for the interaction test suite (harness/tests).
 window.__harness = {
@@ -3465,6 +3831,12 @@ window.__harness = {
   getMeta: k => store.getMeta(k),
   setMeta: (k, v) => store.setMeta(k, v),
   refreshAssemblyCache: () => refreshAssemblyCache(),
+  // Quote view (phase 4b).
+  activeView: () => activeView,
+  setView: v => setView(v),
+  projectInfo: () => ({ ...projectInfo }),
+  setProjectInfo: patch => { Object.assign(projectInfo, patch); syncProjectInfo(); markDirty(); },
+  renderQuote: () => renderQuote(),
 };
 
 // ---- boot ----

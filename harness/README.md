@@ -24,6 +24,39 @@ Content-addressed by PDF SHA-256: the same file restores under any path or
 filename. JSON project export/import is the backup and escape hatch if the
 browser clears site data.
 
+## Two views: TAKEOFF and QUOTE
+
+Measuring and quoting are different jobs, so they are different views, switched
+from the tabs above the toolbar.
+
+- **TAKEOFF** — the drawing: canvas, tools, scale, the measurement list grouped
+  by scope and condition, and a single `exports…` menu.
+- **QUOTE** — a full-width page with no canvas: project/customer fields, the
+  scope summary (each measured line, editable), the cost stack, pricing
+  controls, live per-scope and combined totals, and the export actions.
+
+Which view you are in is session state and is deliberately **not** persisted —
+reopening a project puts you back on the drawing.
+
+**Invariant 5 on the quote page.** A scope line's quantity is DERIVED from
+geometry × page scale, so it is displayed read-only with a jump back to the
+drawing. Everything else on the line (assembly, stacked add-ons, per-part
+overrides, scope assignment) is an input and is editable there. What persists
+is inputs only — `projectInfo`, `costInputs`, `laborByScope`; never a cost,
+price, margin or BOM.
+
+## The assembly library is versioned
+
+The library seeds from `engine-core`'s catalog and is UPGRADED when the engine's
+`SEED_VERSION` rises (`migrateAssemblyLibrary` in `index.html`). It holds three
+properties at once: a seed you deleted never comes back, an old library reaches
+the current catalog, and anything you authored or hand-edited is never
+clobbered. Retiring a seed requires an entry in `RETIRED_ASSEMBLIES` so existing
+projects that reference it keep pricing identically.
+
+Rates and modelling assumptions that have not been checked against a real job
+are listed in [`../docs/pricing-review.md`](../docs/pricing-review.md).
+
 ## Run
 
 - Serve locally: `powershell -ExecutionPolicy Bypass -File serve.ps1`, open `http://localhost:8787/`.

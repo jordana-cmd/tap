@@ -23,9 +23,10 @@ pub enum PricingMode {
 }
 
 /// Everything the cost stack needs for one scope. `materials` already includes
-/// consumables (the phases 1–3 BOM total). Flat adds (insurance/equipment/
-/// permits) are the caller's call to include or zero — the harness puts them on
-/// the Base Bid only.
+/// consumables (the phases 1–3 BOM total). Flat adds (insurance, equipment,
+/// permits, travel, mobilization, misc) are the caller's call to include or
+/// zero — the harness puts them on the Base Bid only, since you mobilize to a
+/// job once, not once per alternate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Deserialize))]
 pub struct CostInputs {
@@ -38,6 +39,15 @@ pub struct CostInputs {
     pub insurance: f64,
     pub equipment: f64,
     pub permits: f64,
+    /// Flat project adds alongside insurance/equipment/permits: getting the
+    /// crew and rig to site, and whatever else the job needs. Serde-default 0
+    /// so quotes saved before these existed price unchanged.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub travel: f64,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub mobilization: f64,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub misc: f64,
     pub sqft: f64, // for target-$/SF mode and the per-SF outputs
     pub mode: PricingMode,
     pub discount_pct: f64,
@@ -55,6 +65,9 @@ pub struct PriceBreakdown {
     pub insurance: f64,
     pub equipment: f64,
     pub permits: f64,
+    pub travel: f64,
+    pub mobilization: f64,
+    pub misc: f64,
     pub cost: f64,
     pub markup: f64,
     pub discount: f64,
@@ -67,8 +80,8 @@ pub struct PriceBreakdown {
 }
 
 /// Compute the cost stack for one scope. Matches the quoting tool's `calc` line
-/// for line: cost is the sum of the seven components; markup/discount depend on
-/// the mode; the card fee applies to the post-discount subtotal.
+/// for line: cost is the sum of its components; markup/discount depend on the
+/// mode; the card fee applies to the post-discount subtotal.
 pub fn price(inputs: &CostInputs) -> PriceBreakdown {
     let labor = inputs.wage * inputs.crew * inputs.hours;
     let payroll_tax = labor * inputs.payroll_tax_pct / 100.0;
@@ -79,7 +92,10 @@ pub fn price(inputs: &CostInputs) -> PriceBreakdown {
         + inputs.insurance
         + overhead
         + inputs.equipment
-        + inputs.permits;
+        + inputs.permits
+        + inputs.travel
+        + inputs.mobilization
+        + inputs.misc;
 
     let (markup, discount) = match inputs.mode {
         PricingMode::Legacy { profit_pct, legacy_adder } => (
@@ -111,6 +127,9 @@ pub fn price(inputs: &CostInputs) -> PriceBreakdown {
         insurance: inputs.insurance,
         equipment: inputs.equipment,
         permits: inputs.permits,
+        travel: inputs.travel,
+        mobilization: inputs.mobilization,
+        misc: inputs.misc,
         cost,
         markup,
         discount,
@@ -143,6 +162,9 @@ mod tests {
             insurance: 0.0,
             equipment: 0.0,
             permits: 0.0,
+            travel: 0.0,
+            mobilization: 0.0,
+            misc: 0.0,
             sqft,
             mode,
             discount_pct: 0.0,
@@ -201,6 +223,30 @@ mod tests {
         assert_eq!(cent(b.price_per_sf), 3.57, "$/SF price");
         assert_eq!(cent(b.cost_per_sf), 2.50, "$/SF cost");
     }
+
+    #[test]
+    fn travel_mobilization_and_misc_are_flat_cost_adds() {
+        // They enter `cost` at face value, exactly like insurance/equipment/
+        // permits — before markup, so profit scales with them.
+        let plain = price(&base(1000.0, 1000.0, PricingMode::Margin { margin_pct: 30.0 }));
+        let with_adds = price(&CostInputs {
+            travel: 250.0,
+            mobilization: 400.0,
+            misc: 75.5,
+            ..base(1000.0, 1000.0, PricingMode::Margin { margin_pct: 30.0 })
+        });
+        assert!((with_adds.cost - (plain.cost + 725.5)).abs() < 1e-9, "cost {}", with_adds.cost);
+        assert_eq!(with_adds.travel, 250.0);
+        assert_eq!(with_adds.mobilization, 400.0);
+        assert_eq!(with_adds.misc, 75.5);
+        // Margin mode still lands the exact margin with the adds included.
+        assert!((with_adds.margin_pct - 30.0).abs() < 1e-9);
+        // A quote saved before these fields existed prices unchanged.
+        assert_eq!(plain.travel, 0.0);
+    }
+
+    // (The "legacy inputs without the new flat adds still parse" test lives in
+    // engine-web, the crate that owns the JSON boundary and has serde_json.)
 
     #[test]
     fn margin_mode_gives_the_exact_margin() {

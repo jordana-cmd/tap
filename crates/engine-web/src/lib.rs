@@ -544,11 +544,13 @@ fn price_core(inputs_json: &str) -> Result<String, WebError> {
     let b = engine_core::price(&inputs);
     Ok(format!(
         "{{\"materials\":{},\"labor\":{},\"payroll_tax\":{},\"overhead\":{},\
-         \"insurance\":{},\"equipment\":{},\"permits\":{},\"cost\":{},\"markup\":{},\
+         \"insurance\":{},\"equipment\":{},\"permits\":{},\"travel\":{},\
+         \"mobilization\":{},\"misc\":{},\"cost\":{},\"markup\":{},\
          \"discount\":{},\"cc\":{},\"price\":{},\"profit\":{},\"margin_pct\":{},\
          \"price_per_sf\":{},\"cost_per_sf\":{}}}",
         b.materials, b.labor, b.payroll_tax, b.overhead, b.insurance, b.equipment,
-        b.permits, b.cost, b.markup, b.discount, b.cc, b.price, b.profit, b.margin_pct,
+        b.permits, b.travel, b.mobilization, b.misc,
+        b.cost, b.markup, b.discount, b.cc, b.price, b.profit, b.margin_pct,
         b.price_per_sf, b.cost_per_sf,
     ))
 }
@@ -655,8 +657,10 @@ pub fn stack_consumables(profile_ids_json: &str, drivers_json: &str) -> Result<S
 }
 
 /// The project cost stack for one scope. `inputs_json` is a CostInputs object
-/// (materials, crew/hours/wage, tax %, overhead $/hr, insurance/equipment/
-/// permits, sqft, mode, discount %, cc %); returns the PriceBreakdown JSON.
+/// (materials, crew/hours/wage, tax %, overhead $/hr, the flat adds —
+/// insurance/equipment/permits/travel/mobilization/misc — sqft, mode,
+/// discount %, cc %); returns the PriceBreakdown JSON. The flat adds are
+/// serde-default 0, so inputs saved before they existed price unchanged.
 #[wasm_bindgen]
 pub fn price(inputs_json: &str) -> Result<String, JsValue> {
     price_core(inputs_json).map_err(to_js)
@@ -1052,7 +1056,10 @@ mod tests {
 
     #[test]
     fn price_full_quote_json_to_the_cent() {
-        // The complete quote crosses the boundary intact — $16,764.12.
+        // The cost stack crosses the boundary intact. Materials are supplied
+        // literally here, so this is a pure arithmetic check and is unaffected
+        // by the v3 catalog restructure — it still pins the same numbers the
+        // quoting tool produced for a $5,788.72 material total.
         let inputs = r#"{"materials":5788.7193725,"crew":3,"hours":24,"wage":27.5,
             "payroll_tax_pct":7.65,"overhead_rate":52.99,"insurance":0,"equipment":0,
             "permits":0,"sqft":5000,"mode":{"Legacy":{"profit_pct":30,"legacy_adder":12.85}},
@@ -1063,6 +1070,26 @@ mod tests {
         assert_eq!(cent("price"), 16764.12);
         assert_eq!(cent("profit"), 5028.65);
         assert_eq!(cent("price_per_sf"), 3.35);
+        // The new flat adds default to 0 when absent — inputs persisted before
+        // travel/mobilization/misc existed must price exactly as they did.
+        assert_eq!(v["travel"].as_f64().unwrap(), 0.0);
+        assert_eq!(v["mobilization"].as_f64().unwrap(), 0.0);
+        assert_eq!(v["misc"].as_f64().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn price_json_carries_travel_mobilization_and_misc() {
+        let inputs = r#"{"materials":1000,"crew":0,"hours":0,"wage":0,
+            "payroll_tax_pct":0,"overhead_rate":0,"insurance":0,"equipment":0,
+            "permits":0,"travel":250,"mobilization":400,"misc":75.5,
+            "sqft":1000,"mode":{"Margin":{"margin_pct":30}},
+            "discount_pct":0,"cc_pct":null}"#;
+        let v: serde_json::Value = serde_json::from_str(&price_core(inputs).unwrap()).unwrap();
+        assert_eq!(v["travel"].as_f64().unwrap(), 250.0);
+        assert_eq!(v["mobilization"].as_f64().unwrap(), 400.0);
+        assert_eq!(v["misc"].as_f64().unwrap(), 75.5);
+        // They land in cost at face value, before markup.
+        assert_eq!(v["cost"].as_f64().unwrap(), 1725.5);
     }
 
     #[test]

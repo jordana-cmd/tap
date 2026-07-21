@@ -1096,23 +1096,79 @@ await run('deduct: takeoff.csv breaks out gross/deduct/net and names the deduct�
   assert.equal(ded[idx.gross] + ded[idx.deduct] + ded[idx.net], '', 'no gross/deduct/net on a deduct row');
 });
 
-await run('layout: export controls sit in a header above the list — no overlap; list scrolls', async page => {
+await run('layout: takeoff header holds the controls above the list; list scrolls', async page => {
   // Give the list content so it renders alongside the header controls.
   await setTool(page, 'count');
   await clickBase(page, 600, 400);
   await page.keyboard.press('Enter');
   const geo = await page.evaluate(() => {
     const listTop = document.querySelector('#measList').getBoundingClientRect().top;
-    const ids = ['allPages', 'exportCsv', 'exportMaterialList', 'exportJson', 'importJsonLabel'];
-    const maxBottom = Math.max(...ids.map(id => document.getElementById(id).getBoundingClientRect().bottom));
-    return { listTop, maxBottom, overflowY: getComputedStyle(document.querySelector('#measList')).overflowY };
+    const ids = ['allPages', 'importJsonLabel', 'exportMenu'];
+    const rects = ids.map(id => document.getElementById(id).getBoundingClientRect());
+    return {
+      listTop,
+      maxBottom: Math.max(...rects.map(r => r.bottom)),
+      // Guard against the vacuous-pass trap: every control must actually be
+      // laid out. A hidden element reports a zero rect and would pass anything.
+      allVisible: rects.every(r => r.width > 0 && r.height > 0),
+      overflowY: getComputedStyle(document.querySelector('#measList')).overflowY,
+    };
   });
-  // Every export control ends at or above the list's top edge (header block,
-  // not floated over the rows).
+  assert.ok(geo.allVisible, 'the takeoff header controls are actually rendered');
   assert.ok(geo.maxBottom <= geo.listTop + 1,
     `controls end (${geo.maxBottom.toFixed(1)}) at/above list top (${geo.listTop.toFixed(1)})`);
   assert.equal(geo.overflowY, 'auto', 'the list scrolls independently');
 });
+
+await run('layout: the takeoff panel offers ONE exports menu, not a wall of buttons', async page => {
+  const panel = await page.evaluate(() => {
+    const header = document.querySelector('#measHeader');
+    return {
+      buttons: [...header.querySelectorAll('button')].map(b => b.id || b.textContent.trim()),
+      menuOptions: [...document.querySelectorAll('#exportMenu option')].map(o => o.value).filter(Boolean),
+      // The export buttons themselves now live on the quote page.
+      exportsInQuoteView: ['exportCsv', 'exportMaterialList', 'exportQuote', 'exportWorksheet',
+        'printProposal', 'printCostSheet', 'exportJson']
+        .every(id => document.querySelector('#quoteView')?.contains(document.getElementById(id))),
+    };
+  });
+  assert.deepEqual(panel.buttons, [], 'no export buttons left in the measurement header');
+  assert.deepEqual(panel.menuOptions,
+    ['csv', 'material', 'quote', 'worksheet', 'proposal', 'costsheet', 'project'],
+    'all seven exports are reachable from the one menu');
+  assert.ok(panel.exportsInQuoteView, 'the export actions live on the quote page');
+});
+
+await run('view: TAKEOFF and QUOTE are separate views, not a panel', async page => {
+  // Assert what is RENDERED, not what the .hidden property says. #workRow and
+  // .toolbar are flex containers, and a `display` rule beats [hidden]'s UA
+  // `display:none` — so the property can be true while the element is still on
+  // screen. offsetParent === null is the honest check.
+  const shown = () => page.evaluate(() => {
+    const visible = sel => {
+      const el = document.querySelector(sel);
+      return el.offsetParent !== null && getComputedStyle(el).display !== 'none';
+    };
+    return {
+      view: window.__harness.activeView(),
+      canvas: visible('#workRow'),
+      toolbar: visible('.toolbar'),
+      quote: visible('#quoteView'),
+      tab: document.querySelector('.viewTab[aria-selected="true"]').dataset.view,
+    };
+  });
+  const takeoff = await shown();
+  assert.deepEqual(takeoff, { view: 'takeoff', canvas: true, toolbar: true, quote: false, tab: 'takeoff' });
+
+  await page.click('.viewTab[data-view="quote"]');
+  const quote = await shown();
+  assert.deepEqual(quote, { view: 'quote', canvas: false, toolbar: false, quote: true, tab: 'quote' },
+    'QUOTE hides the canvas and the measurement toolbar entirely');
+
+  await page.click('.viewTab[data-view="takeoff"]');
+  assert.equal((await shown()).view, 'takeoff', 'and back again');
+});
+
 
 await run('layout: the per-row colour swatch is a visible, bordered affordance', async page => {
   await setTool(page, 'count');
@@ -1940,6 +1996,158 @@ await run('all-tools smoke: zero page errors across every tool', async page => {
   await clickBase(page, 250, 400);
   await page.keyboard.press('Escape');
   // pageErrors asserted by withPage automatically.
+});
+
+await run('quote: project/customer fields persist with the project', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy2'));
+  await page.click('.viewTab[data-view="quote"]');
+  await page.evaluate(() => {
+    const set = (id, v) => {
+      const el = document.getElementById(id);
+      el.value = v;
+      el.dispatchEvent(new Event('input'));
+    };
+    set('qiCustomer', 'Ada Lovelace');
+    set('qiCompany', 'Analytical Engines Ltd');
+    set('qiJobNumber', 'JOB-1843');
+    set('qiSalesman', 'C. Babbage');
+  });
+  assert.deepEqual(await page.evaluate(() => window.__harness.projectInfo()), {
+    customer: 'Ada Lovelace', company: 'Analytical Engines Ltd',
+    jobNumber: 'JOB-1843', salesman: 'C. Babbage',
+  }, 'typed into state');
+
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.goto(URL);
+  await waitReady(page);
+  const after = await page.evaluate(() => window.__harness.projectInfo());
+  assert.equal(after.customer, 'Ada Lovelace', 'customer survived a reload');
+  assert.equal(after.jobNumber, 'JOB-1843', 'job number survived a reload');
+  // And the form reflects the restored state when the view opens.
+  await page.click('.viewTab[data-view="quote"]');
+  assert.equal(await page.$eval('#qiCompany', el => el.value), 'Analytical Engines Ltd',
+    'the form is populated from the restored project');
+});
+
+await run('quote: travel / mobilization / misc are flat adds on the base bid only', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteTwoRooms());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  const gid = await page.evaluate(() => window.__harness.addAlternateGroup('Add wing'));
+  await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
+  await page.evaluate(g => window.__harness.setScopeLabor(g, 3, 24), gid);
+
+  const before = await page.evaluate(() => window.__harness.priceAll());
+  // Guard the comparison below: an alternate priced at zero would make
+  // "the alternate did not change" trivially true.
+  assert.ok(before.alternates[0].cost > 0, `the alternate actually prices: ${before.alternates[0].cost}`);
+  await page.evaluate(() => window.__harness.setCostInputs({ travel: 250, mobilization: 400, misc: 75.5 }));
+  const after = await page.evaluate(() => window.__harness.priceAll());
+
+  assert.equal(cent(after.base.cost - before.base.cost), 725.5, 'the three adds land in base cost');
+  assert.equal(cent(after.base.travel), 250, 'travel is reported back');
+  assert.equal(cent(after.base.mobilization), 400, 'mobilization is reported back');
+  assert.equal(cent(after.base.misc), 75.5, 'misc is reported back');
+  // You mobilize to a job once, not once per alternate.
+  assert.equal(cent(after.alternates[0].cost), cent(before.alternates[0].cost),
+    'an alternate carries none of the flat adds');
+  assert.equal(cent(after.alternates[0].travel), 0, 'alternate travel is zero');
+});
+
+await run('quote: cost inputs round-trip through the DOM and re-derive the price', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteRoom());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  await page.click('.viewTab[data-view="quote"]');
+  const priceOf = () => page.evaluate(() => window.__harness.priceScope('base').price);
+  const before = await priceOf();
+  await page.evaluate(() => {
+    const el = document.getElementById('ciMobilization');
+    el.value = '1000';
+    el.dispatchEvent(new Event('change'));
+  });
+  assert.equal(await page.evaluate(() => window.__harness.costInputs().mobilization), 1000,
+    'the DOM input reached the cost model');
+  assert.ok((await priceOf()) > before, 'and the price moved');
+  // Persisted as an INPUT; the price itself is never stored (invariant 5).
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.goto(URL);
+  await waitReady(page);
+  assert.equal(await page.evaluate(() => window.__harness.costInputs().mobilization), 1000,
+    'restored after reload');
+});
+
+await run('quote: the scope summary lists measurements with derived, read-only quantities', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteRoom());
+  await page.click('.viewTab[data-view="quote"]');
+  const scopes = await page.evaluate(() => [...document.querySelectorAll('.qScope')].map(sc => ({
+    name: sc.querySelector('.qScopeName').textContent,
+    lines: [...sc.querySelectorAll('.qLine')].map(l => ({
+      name: l.querySelector('.qLineName').textContent,
+      qty: l.querySelector('.qQty').textContent,
+      // The quantity must be plain text, never an input — geometry is truth.
+      qtyIsInput: !!l.querySelector('.qQty input'),
+      hasJump: !!l.querySelector('.qJump'),
+      assembly: l.querySelector('.qAsmSel').value,
+    })),
+  })));
+  assert.equal(scopes.length, 1, 'one scope block (base bid)');
+  assert.equal(scopes[0].name, 'Base Bid');
+  assert.equal(scopes[0].lines.length, 1, 'one measurement line');
+  const line = scopes[0].lines[0];
+  assert.equal(line.name, 'Big room');
+  assert.match(line.qty, /5000/, `the derived quantity is shown: ${line.qty}`);
+  assert.ok(!line.qtyIsInput, 'the quantity is NOT editable on the quote page');
+  assert.ok(line.hasJump, 'a jump back to the drawing is offered instead');
+  assert.equal(line.assembly, 'epoxy2', 'the attached assembly is shown');
+});
+
+await run('quote: a scope line can be re-assembled and re-scoped in place', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteRoom());
+  await page.evaluate(() => window.__harness.addAlternateGroup('Wing'));
+  await page.click('.viewTab[data-view="quote"]');
+
+  // Change the assembly from the quote page.
+  await page.evaluate(() => {
+    const sel = document.querySelector('.qLine .qAsmSel');
+    sel.value = 'flake';
+    sel.dispatchEvent(new Event('change'));
+  });
+  assert.equal(await page.evaluate(() => window.__harness.measurements()[0].assemblyId), 'flake',
+    'assembly changed from the quote page');
+
+  // Move the line into the alternate from the quote page.
+  await page.evaluate(() => {
+    const sel = document.querySelector('.qLine .qScopeSel');
+    sel.value = [...sel.options].find(o => o.textContent.startsWith('Alt:')).value;
+    sel.dispatchEvent(new Event('change'));
+  });
+  const m = await page.evaluate(() => window.__harness.measurements()[0]);
+  assert.equal(m.scope, 'alternate', 'the line moved into the alternate');
+  // And the base bid block is now empty.
+  const emptyBase = await page.$eval('.qScope[data-scope="base"] .qEmpty', el => el.textContent);
+  assert.match(emptyBase, /nothing measured/, 'the base bid reads as empty');
+});
+
+await run('quote: live totals show cost, price, profit and margin per scope', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteRoom());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  await page.click('.viewTab[data-view="quote"]');
+  const totals = await page.$eval('#scopeTotals', el => el.textContent);
+  assert.match(totals, /\$17,?848\.54/, `the price is shown: ${totals}`);
+  assert.match(totals, /cost \$12,?494\.60/, `the cost is shown: ${totals}`);
+  // Everything the estimator asked to see, per scope: cost, price, profit,
+  // margin %, $/SF.
+  assert.match(totals, /profit \$5,?353\.94/, `profit is shown: ${totals}`);
+  assert.match(totals, /margin 30\.0%/, `margin % is shown: ${totals}`);
+  assert.match(totals, /\$3\.57\/SF/, `price per SF is shown: ${totals}`);
+  // Changing an input on the page re-derives the totals live.
+  await page.evaluate(() => {
+    const el = document.getElementById('ciMisc');
+    el.value = '1000';
+    el.dispatchEvent(new Event('change'));
+  });
+  const after = await page.$eval('#scopeTotals', el => el.textContent);
+  assert.notEqual(after, totals, 'totals updated as the input changed');
+  assert.match(after, /cost \$13,?494\.60/, `cost rose by the misc add: ${after}`);
 });
 
 await browser.close();
