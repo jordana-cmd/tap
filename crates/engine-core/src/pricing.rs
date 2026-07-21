@@ -152,16 +152,33 @@ mod tests {
 
     #[test]
     fn full_quote_matches_the_tool_to_the_cent() {
-        // Complete quote — Epoxy + High Wear Urethane @ 5,000 SF, no add-ons,
-        // crew 3 · 24 hrs · $27.50, legacy mode 30% + 12.85%, no
+        // Complete quote — 2-Coat Epoxy + High Wear Urethane Top Coat @ 5,000
+        // SF, crew 3 · 24 hrs · $27.50, legacy mode 30% + 12.85%, no
         // insurance/equipment/permits/discount/card. Materials come from the
-        // seeded catalog (system + coating consumables), so this guards the
-        // WHOLE pipeline — measurement → materials → consumables → price.
+        // seeded catalog (systems + add-on + coating consumables), so this
+        // guards the WHOLE pipeline — measurement → materials → consumables →
+        // price.
+        //
+        // Was $16,764.12 when "Epoxy + High Wear Urethane" was a single bundled
+        // system. The v3 restructure makes it a base system plus an increment,
+        // i.e. TWO coating applications, which bills a second set of
+        // per-application consumables (+$759.13). Product rates are untouched —
+        // materials are still $4,920.00 exactly. See docs/pricing-review.md;
+        // $329.90 of the swing is a second trowel charge, itself unvalidated.
         let m = MeasurementInput::area(5000.0, 0.0);
-        let sys = seeds::mcfc_systems().into_iter().find(|a| a.id == "epoxy_hw").unwrap();
-        let materials = apply(&sys, &m).unwrap().materials_total
-            + seeds::stack_consumables(&[sys.consumable_profile_id.clone()], &m).unwrap().materials_total;
-        assert_eq!(cent(materials), 5788.72, "materials");
+        let base_sys = seeds::mcfc_systems().into_iter().find(|a| a.id == "epoxy2").unwrap();
+        let hw = seeds::mcfc_addons().into_iter().find(|a| a.id == "hw_topcoat").unwrap();
+        let products = apply(&base_sys, &m).unwrap().materials_total
+            + apply(&hw, &m).unwrap().materials_total;
+        assert_eq!(cent(products), 4920.00, "products unchanged by the restructure");
+        let materials = products
+            + seeds::stack_consumables(
+                &[base_sys.consumable_profile_id.clone(), hw.consumable_profile_id.clone()],
+                &m,
+            )
+            .unwrap()
+            .materials_total;
+        assert_eq!(cent(materials), 6547.85, "materials");
 
         let b = price(&CostInputs {
             crew: 3.0,
@@ -176,13 +193,13 @@ mod tests {
         assert_eq!(cent(b.labor), 1980.00, "labor");
         assert_eq!(cent(b.payroll_tax), 151.47, "payroll tax");
         assert_eq!(cent(b.overhead), 3815.28, "overhead");
-        assert_eq!(cent(b.cost), 11735.47, "cost");
-        assert_eq!(cent(b.markup), 5028.65, "markup");
-        assert_eq!(cent(b.price), 16764.12, "PRICE");
-        assert_eq!(cent(b.profit), 5028.65, "profit");
+        assert_eq!(cent(b.cost), 12494.60, "cost");
+        assert_eq!(cent(b.markup), 5353.94, "markup");
+        assert_eq!(cent(b.price), 17848.54, "PRICE");
+        assert_eq!(cent(b.profit), 5353.94, "profit");
         assert_eq!((b.margin_pct * 10.0).round() / 10.0, 30.0, "margin %");
-        assert_eq!(cent(b.price_per_sf), 3.35, "$/SF price");
-        assert_eq!(cent(b.cost_per_sf), 2.35, "$/SF cost");
+        assert_eq!(cent(b.price_per_sf), 3.57, "$/SF price");
+        assert_eq!(cent(b.cost_per_sf), 2.50, "$/SF cost");
     }
 
     #[test]

@@ -978,15 +978,22 @@ mod tests {
 
     #[test]
     fn apply_assembly_emits_cost_fields() {
-        let ehw = engine_core::assembly::seeds::mcfc_systems()
-            .into_iter()
-            .find(|a| a.id == "epoxy_hw")
-            .unwrap();
-        let js = serde_json::to_string(&ehw).unwrap();
-        let bom = apply_assembly_core(&js, r#"{"kind":"area","area_sf":5000}"#, "{}").unwrap();
-        let v: serde_json::Value = serde_json::from_str(&bom).unwrap();
-        assert!((v["materials_total"].as_f64().unwrap() - 4920.0).abs() < 1e-9);
-        let l0 = &v["line_items"][0];
+        // 2-Coat Epoxy + the High Wear increment — the pair that replaced the
+        // bundled epoxy_hw system, still $4,920.00 across the wasm boundary.
+        let total = |id: &str| {
+            let asm = engine_core::assembly::seeds::mcfc_catalog()
+                .into_iter()
+                .find(|a| a.id == id)
+                .unwrap();
+            let js = serde_json::to_string(&asm).unwrap();
+            let bom = apply_assembly_core(&js, r#"{"kind":"area","area_sf":5000}"#, "{}").unwrap();
+            serde_json::from_str::<serde_json::Value>(&bom).unwrap()
+        };
+        let epoxy = total("epoxy2");
+        let hw = total("hw_topcoat");
+        let sum = epoxy["materials_total"].as_f64().unwrap() + hw["materials_total"].as_f64().unwrap();
+        assert!((sum - 4920.0).abs() < 1e-9, "materials across the boundary: {sum}");
+        let l0 = &epoxy["line_items"][0];
         assert!(l0["unit_cost"].as_f64().is_some());
         assert!(l0["extended_cost"].as_f64().is_some());
     }
@@ -1064,10 +1071,16 @@ mod tests {
         // Seeds deserialize back into engine-core Assemblies: the two synthetic
         // examples first (order relied on below), then the MCFC catalog.
         let seeds: Vec<engine_core::assembly::Assembly> = serde_json::from_str(&json).unwrap();
-        assert_eq!(seeds.len(), 2 + 7 + 6); // synthetic + systems + add-ons (consumables auto)
+        assert_eq!(seeds.len(), 2 + 4 + 9); // synthetic + systems + add-ons (consumables auto)
         assert_eq!(seeds[0].name, "Commercial Flooring");
         assert_eq!(seeds[1].name, "Epoxy Coating");
-        assert!(seeds.iter().any(|s| s.name == "Epoxy + High Wear Urethane"));
+        // The four systems ship under the names the estimator uses.
+        for name in ["2-Coat Epoxy", "Polyurea w/ Flake", "Concrete Polish", "Grind & Seal"] {
+            assert!(seeds.iter().any(|s| s.name == name), "catalog ships {name}");
+        }
+        for name in ["High Wear Urethane Top Coat", "Double Broadcast", "Quartz Broadcast"] {
+            assert!(seeds.iter().any(|s| s.name == name), "catalog ships add-on {name}");
+        }
         assert!(!seeds.iter().any(|s| s.name == "Job Consumables"), "consumables are not a selectable assembly");
         // Every area seed applies cleanly; the caulk add-on is linear.
         let dj = r#"{"kind":"area","area_sf":1000,"perimeter_lf":130}"#;

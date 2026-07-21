@@ -627,7 +627,9 @@ await run('assembly library seeds the engine catalog (synthetic examples + MCFC)
   // 2 synthetic examples + 7 MCFC systems + 6 add-ons (consumables are auto).
   assert.equal(names.length, 15, `seeded catalog size: ${names.length}`);
   assert.ok(!names.includes('Job Consumables'), 'consumables are not a selectable assembly');
-  for (const n of ['Commercial Flooring', 'Epoxy Coating', 'Epoxy + High Wear Urethane']) {
+  for (const n of ['Commercial Flooring', 'Epoxy Coating',
+    '2-Coat Epoxy', 'Polyurea w/ Flake', 'Concrete Polish', 'Grind & Seal',
+    'High Wear Urethane Top Coat', 'Double Broadcast', 'Quartz Broadcast']) {
     assert.ok(names.includes(n), `library seeded ${n}`);
   }
 });
@@ -1303,20 +1305,23 @@ await run('condition: the material list separates products (per-condition rollup
 
 // ---- pricing (phase 1): cost on the BOM ----
 // A 400×300 pt room = 1,200 SF at fpi 7.2, attached to a seeded priced system.
-const pricedRoom = assemblyId => ({
+const pricedRoom = (assemblyId, stack = []) => ({
   version: 1, sha: 'x', name: 'price',
   pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
   measurements: [{
     id: 1, page: 1, kind: 'area', label: 'Room 1', origin: 'manual', color: '#1e3a8a',
-    geometry: [0, 0, 400, 0, 400, 300, 0, 300], assemblyId,
+    geometry: [0, 0, 400, 0, 400, 300, 0, 300], assemblyId, stack,
   }],
 });
+// At 1,200 SF: 2-Coat Epoxy $0.3456/SF = $414.72; the High Wear increment
+// $0.6384/SF = $766.08. Together $1,180.80 — the bundled epoxy_hw total.
+const EPOXY2_1200 = 414.72, HW_1200 = 766.08;
 
-await run('pricing: BOM shows unit + extended cost and a materials total (Epoxy+HW @ 1200 SF)', async page => {
-  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
+await run('pricing: BOM shows unit + extended cost and a materials total (High Wear @ 1200 SF)', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('hw_topcoat'));
   const res = await page.evaluate(() => window.__harness.applyBom(1));
   assert.ok(res.ok, `BOM computed: ${JSON.stringify(res).slice(0, 140)}`);
-  assert.ok(Math.abs(res.bom.materials_total - 1180.8) < 1e-6, `materials 1180.80, got ${res.bom.materials_total}`);
+  assert.ok(Math.abs(res.bom.materials_total - HW_1200) < 1e-6, `materials 766.08, got ${res.bom.materials_total}`);
   const hw = res.bom.line_items.find(l => l.part_name === 'High Wear Urethane');
   assert.equal(hw.unit_cost, 159.6);
   assert.ok(Math.abs(hw.extended_cost - 766.08) < 1e-6, `HW extended 766.08, got ${hw.extended_cost}`);
@@ -1324,7 +1329,7 @@ await run('pricing: BOM shows unit + extended cost and a materials total (Epoxy+
   await page.click('.measRow .bomToggle');
   await page.waitForSelector('.bomPanel .bomTotal');
   const total = await page.$eval('.bomPanel .bomTotal', el => el.textContent);
-  assert.match(total, /Materials.*\$1,?180\.80/, `materials total shown: ${total}`);
+  assert.match(total, /Materials.*\$766\.08/, `materials total shown: ${total}`);
   const exts = await page.$$eval('.bomPanel .bomLine .bomExt', els => els.map(e => e.textContent));
   assert.ok(exts.some(t => t.includes('766.08')), `HW extended-cost cell shown: ${exts.join(' ')}`);
 });
@@ -1360,14 +1365,14 @@ await run('pricing: a manual-quantity part errors until a quantity is entered in
 });
 
 await run('pricing: material list export carries unit + extended cost and a grand total', async page => {
-  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy2', ['hw_topcoat']));
   const out = await page.evaluate(() => window.__harness.buildMaterialList());
   const lines = out.csv.trim().split('\n');
   assert.equal(lines[0], 'scope,category,condition,part,unit,total_quantity,unit_cost,extended_cost,measurements');
   const hw = lines.find(l => l.includes(',High Wear Urethane,'));
   assert.ok(hw.startsWith('Base Bid,material,') && hw.includes(',159.60,766.08,'), `HW priced row: ${hw}`);
-  // epoxy_hw has the coating profile → auto consumables split into their own
-  // rows + a separate TOTAL CONSUMABLES footer.
+  // Both assemblies carry the coating profile → auto consumables split into
+  // their own rows + a separate TOTAL CONSUMABLES footer.
   assert.ok(lines.some(l => l.startsWith('Base Bid,consumable,')), 'consumable rows present (auto)');
   assert.ok(lines.some(l => l.endsWith('1180.80,TOTAL MATERIALS')), 'materials total footer');
   assert.ok(lines.some(l => l.endsWith('TOTAL CONSUMABLES')), 'consumables total footer');
@@ -1376,22 +1381,22 @@ await run('pricing: material list export carries unit + extended cost and a gran
 });
 
 await run('stacking: a system + add-on shows two BOM sections and a combined total', async page => {
-  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
-  // Stack Crack Repair on top of the Epoxy+HW system.
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy2'));
+  // Stack Crack Repair on top of the 2-Coat Epoxy system.
   await page.evaluate(() => window.__harness.setStack(1, ['crack_repair']));
   const res = await page.evaluate(() => window.__harness.stackedBom(1));
   assert.ok(res.ok, `stacked BOM ok: ${JSON.stringify(res).slice(0, 160)}`);
   assert.deepEqual(res.groups.map(g => g.assembly.name),
-    ['Epoxy + High Wear Urethane', 'Crack Repair (Mender + Sand)'], 'two groups, base first');
-  // Combined total = system 1180.80 + crack_repair (mender_a 4.8·10.17 + mender_b 4.8·10.17 + sand 3.6·0.05).
+    ['2-Coat Epoxy', 'Crack Repair (Mender + Sand)'], 'two groups, base first');
+  // Combined total = system 414.72 + crack_repair (mender_a 4.8·10.17 + mender_b 4.8·10.17 + sand 3.6·0.05).
   const cr = 4.8 * 10.17 + 4.8 * 10.17 + 3.6 * 0.05; // 97.812
   assert.ok(Math.abs(res.groups[1].bom.materials_total - cr) < 1e-6, `crack_repair subtotal ${res.groups[1].bom.materials_total}`);
-  assert.ok(Math.abs(res.materialsTotal - (1180.8 + cr)) < 1e-6, `combined total ${res.materialsTotal}`);
+  assert.ok(Math.abs(res.materialsTotal - (EPOXY2_1200 + cr)) < 1e-6, `combined total ${res.materialsTotal}`);
   // DOM: two MATERIAL group headers (consumables get their own header) + totals.
   await page.click('.measRow .bomToggle');
   await page.waitForSelector('.bomPanel .bomGroupHdr');
   const hdrs = await page.$$eval('.bomPanel .bomGroupHdr:not(.bomConsHdr) span:first-child', els => els.map(e => e.textContent));
-  assert.deepEqual(hdrs, ['Epoxy + High Wear Urethane', 'Crack Repair (Mender + Sand)'], 'grouped by assembly in the DOM');
+  assert.deepEqual(hdrs, ['2-Coat Epoxy', 'Crack Repair (Mender + Sand)'], 'grouped by assembly in the DOM');
   const totals = await page.$$eval('.bomPanel .bomTotal', els => els.map(e => e.textContent));
   assert.ok(totals.some(t => t.startsWith('Materials')), `a Materials total: ${totals.join(' | ')}`);
   assert.ok(totals.some(t => t.startsWith('Total')), 'a grand Total row');
@@ -1412,7 +1417,7 @@ await run('stacking: a per-assembly override touches only its own section', asyn
 });
 
 await run('stacking: reload restores the stack and nested overrides; BOM re-derived', async page => {
-  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy2'));
   await page.evaluate(() => window.__harness.setStack(1, ['crack_repair', 'moisture']));
   await page.evaluate(() => window.__harness.setOverride(1, 'waste:material', 15, 'crack_repair'));
   await page.evaluate(() => window.__harness.flushSave());
@@ -1425,16 +1430,16 @@ await run('stacking: reload restores the stack and nested overrides; BOM re-deri
     total: window.__harness.stackedBom(1).materialsTotal,
   }));
   assert.deepEqual(st.stack, ['crack_repair', 'moisture'], 'stack restored');
-  assert.deepEqual(st.eff, ['epoxy_hw', 'crack_repair', 'moisture'], 'effective stack = base + stack');
+  assert.deepEqual(st.eff, ['epoxy2', 'crack_repair', 'moisture'], 'effective stack = base + stack');
   assert.deepEqual(st.overrides, { crack_repair: { 'waste:material': 15 } }, 'nested override restored');
   assert.ok(st.total > 0, 're-derived combined total');
 });
 
 await run('stacking UI: the add-on picker grows the BOM + material list; the chip removes it', async page => {
-  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy2'));
   const grand = () => page.evaluate(() => window.__harness.buildMaterialList().materialsTotal);
   const before = await grand();
-  assert.ok(Math.abs(before - 1180.8) < 1e-6, `system-only materials ${before}`);
+  assert.ok(Math.abs(before - EPOXY2_1200) < 1e-6, `system-only materials ${before}`);
   // Add Crack Repair via the row picker.
   await page.evaluate(() => {
     const sel = document.querySelector('.measRow .stackAdd');
@@ -1444,7 +1449,7 @@ await run('stacking UI: the add-on picker grows the BOM + material list; the chi
   assert.deepEqual(await page.evaluate(() => window.__harness.stackOf(1)), ['crack_repair'], 'add-on stacked');
   const withAddon = await grand();
   assert.ok(withAddon > before, `material list grew: ${before} → ${withAddon}`);
-  assert.ok(Math.abs(withAddon - (1180.8 + 97.812)) < 1e-6, `grand total ${withAddon}`);
+  assert.ok(Math.abs(withAddon - (EPOXY2_1200 + 97.812)) < 1e-6, `grand total ${withAddon}`);
   // The material list now carries a Crack-Repair part row.
   const lines = await page.evaluate(() => window.__harness.buildMaterialList().csv.trim().split('\n'));
   assert.ok(lines.some(l => l.includes(',Mender – Part A,')), 'add-on parts appear in the material list');
@@ -1455,7 +1460,7 @@ await run('stacking UI: the add-on picker grows the BOM + material list; the chi
 });
 
 await run('stacking UI: a Linear add-on is not offered on an area row', async page => {
-  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy_hw'));
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), pricedRoom('epoxy2'));
   const opts = await page.evaluate(() =>
     [...document.querySelectorAll('.measRow .stackAdd option')].map(o => o.textContent));
   // An area add-on is offered; Joint Fill (Linear caulk) is not.
@@ -1463,13 +1468,13 @@ await run('stacking UI: a Linear add-on is not offered on an area row', async pa
   assert.ok(!opts.some(o => o.includes('Joint Fill')), 'the Linear caulk add-on is not offered on an area');
 });
 
-// Two priced rooms for scope tests: one Epoxy+HW, one Polished Concrete.
+// Two priced rooms for scope tests: one 2-Coat Epoxy, one Concrete Polish.
 const twoRooms = () => ({
   version: 1, sha: 'x', name: 'scope',
   pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
   measurements: [
     { id: 1, page: 1, kind: 'area', label: 'Main', origin: 'manual', color: '#1e3a8a',
-      geometry: [0, 0, 400, 0, 400, 300, 0, 300], assemblyId: 'epoxy_hw' },
+      geometry: [0, 0, 400, 0, 400, 300, 0, 300], assemblyId: 'epoxy2' },
     { id: 2, page: 1, kind: 'area', label: 'Bathroom', origin: 'manual', color: '#1e3a8a',
       geometry: [0, 0, 200, 0, 200, 150, 0, 150], assemblyId: 'polish' },
   ],
@@ -1575,16 +1580,19 @@ await run('scope export: material list + CSV break out by scope; an alternate ne
 
 // ---- Phase 4a: the cost stack (labor → overhead → markup → price) ----
 
-// A 5,000 SF room with the Epoxy + High Wear Urethane system — the same case
-// the engine-core validation reproduces to the cent. fpi 7.2 → 0.1 ft/pt, so
-// 500×1000 pt = 50×100 ft = 5,000 SF. epoxy_hw is purely area-driven, so the
-// perimeter of a real polygon doesn't matter — materials land at $5,788.72.
+// A 5,000 SF room with 2-Coat Epoxy + the High Wear Urethane increment — the
+// same case the engine-core validation reproduces to the cent. fpi 7.2 → 0.1
+// ft/pt, so 500×1000 pt = 50×100 ft = 5,000 SF. Both assemblies are purely
+// area-driven, so the perimeter doesn't matter — materials land at $6,547.85
+// ($4,920.00 of product, unchanged from the bundled system, plus two coating
+// applications' consumables).
+const HW_STACK = ['hw_topcoat'];
 const quoteRoom = () => ({
   version: 1, sha: 'q', name: 'full-quote',
   pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
   measurements: [{
     id: 1, page: 1, kind: 'area', label: 'Big room', origin: 'manual', color: '#1e3a8a',
-    geometry: [0, 0, 500, 0, 500, 1000, 0, 1000], assemblyId: 'epoxy_hw',
+    geometry: [0, 0, 500, 0, 500, 1000, 0, 1000], assemblyId: 'epoxy2', stack: HW_STACK,
   }],
 });
 // Two identical 5,000 SF epoxy rooms — for the standalone-alternate case.
@@ -1593,32 +1601,66 @@ const quoteTwoRooms = () => ({
   pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
   measurements: [
     { id: 1, page: 1, kind: 'area', label: 'Big room', origin: 'manual', color: '#1e3a8a',
-      geometry: [0, 0, 500, 0, 500, 1000, 0, 1000], assemblyId: 'epoxy_hw' },
+      geometry: [0, 0, 500, 0, 500, 1000, 0, 1000], assemblyId: 'epoxy2', stack: HW_STACK },
     { id: 2, page: 1, kind: 'area', label: 'Add wing', origin: 'manual', color: '#b91c1c',
-      geometry: [0, 0, 500, 0, 500, 1000, 0, 1000], assemblyId: 'epoxy_hw' },
+      geometry: [0, 0, 500, 0, 500, 1000, 0, 1000], assemblyId: 'epoxy2', stack: HW_STACK },
   ],
+});
+// A project saved BEFORE the v3 restructure, still referencing the retired
+// bundled system. Loading it must rewrite the reference in place.
+const legacyQuoteRoom = () => ({
+  version: 1, sha: 'q3', name: 'legacy-quote',
+  pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
+  measurements: [{
+    id: 1, page: 1, kind: 'area', label: 'Big room', origin: 'manual', color: '#1e3a8a',
+    geometry: [0, 0, 500, 0, 500, 1000, 0, 1000], assemblyId: 'epoxy_hw',
+  }],
 });
 const cent = x => Math.round(x * 100) / 100;
 
-await run('pricing: the full quote reproduces $16,764.12 end-to-end', async page => {
+await run('pricing: the full quote reproduces $17,848.54 end-to-end', async page => {
   await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteRoom());
   // Defaults already carry the quote's wage/tax/overhead/legacy adder; only the
   // crew·hours are per-scope, so set them on the base bid.
   await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
   const b = await page.evaluate(() => window.__harness.priceScope('base'));
-  assert.equal(cent(b.materials), 5788.72, `materials ${b.materials}`);
+  // Was $5,788.72 pre-v3. Product cost is untouched at $4,920.00; the extra
+  // $1,627.85 − $868.72 is a second coating application's consumables, of which
+  // $329.90 is a second trowel charge (docs/pricing-review.md).
+  assert.equal(cent(b.materials), 6547.85, `materials ${b.materials}`);
   assert.equal(cent(b.labor), 1980.00, `labor ${b.labor}`);
   assert.equal(cent(b.payroll_tax), 151.47, `payroll tax ${b.payroll_tax}`);
   assert.equal(cent(b.overhead), 3815.28, `overhead ${b.overhead}`);
-  assert.equal(cent(b.cost), 11735.47, `cost ${b.cost}`);
-  assert.equal(cent(b.markup), 5028.65, `markup ${b.markup}`);
-  assert.equal(cent(b.price), 16764.12, `PRICE ${b.price}`);
-  assert.equal(cent(b.profit), 5028.65, `profit ${b.profit}`);
-  assert.equal(cent(b.price_per_sf), 3.35, `$/SF ${b.price_per_sf}`);
+  assert.equal(cent(b.cost), 12494.60, `cost ${b.cost}`);
+  assert.equal(cent(b.markup), 5353.94, `markup ${b.markup}`);
+  assert.equal(cent(b.price), 17848.54, `PRICE ${b.price}`);
+  assert.equal(cent(b.profit), 5353.94, `profit ${b.profit}`);
+  assert.equal(cent(b.price_per_sf), 3.57, `$/SF ${b.price_per_sf}`);
   // The bid-pricing panel renders the same headline price.
   const panel = await page.evaluate(() => document.querySelector('#scopeTotals').textContent);
-  assert.match(panel, /\$16,?764\.12/, `panel shows the price: ${panel}`);
-  assert.match(panel, /cost \$11,?735\.47/, `panel shows the cost breakdown: ${panel}`);
+  assert.match(panel, /\$17,?848\.54/, `panel shows the price: ${panel}`);
+  assert.match(panel, /cost \$12,?494\.60/, `panel shows the cost breakdown: ${panel}`);
+});
+
+await run('seed migration: a project on a retired system is re-pointed, priced identically', async page => {
+  const out = await page.evaluate(async (legacy, current) => {
+    const h = window.__harness;
+    h.importJson(JSON.stringify(legacy));
+    h.setScopeLabor('base', 3, 24);
+    const rewritten = { base: h.measurements()[0].assemblyId, stack: h.stackOf(1) };
+    const legacyPrice = h.priceScope('base');
+    h.importJson(JSON.stringify(current));
+    h.setScopeLabor('base', 3, 24);
+    return { rewritten, legacy: legacyPrice, current: h.priceScope('base') };
+  }, legacyQuoteRoom(), quoteRoom());
+
+  // epoxy_hw no longer exists; the load rewrote it to its base + increment.
+  assert.equal(out.rewritten.base, 'epoxy2', 'retired base re-pointed');
+  assert.deepEqual(out.rewritten.stack, ['hw_topcoat'], 'increment pushed onto the stack');
+  // And the rewrite is price-preserving against an explicitly-authored project.
+  assert.equal(cent(out.legacy.materials), cent(out.current.materials), 'materials identical');
+  assert.equal(cent(out.legacy.price), cent(out.current.price), 'price identical');
+  assert.equal(cent(out.legacy.price), 17848.54, 'and it is the current quote price');
 });
 
 await run('pricing: an alternate prices standalone and only folds in when included', async page => {
@@ -1629,12 +1671,12 @@ await run('pricing: an alternate prices standalone and only folds in when includ
   await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
   await page.evaluate(g => window.__harness.setScopeLabor(g, 3, 24), gid);
   let all = await page.evaluate(() => window.__harness.priceAll());
-  assert.equal(cent(all.base.price), 16764.12, `base standalone ${all.base.price}`);
+  assert.equal(cent(all.base.price), 17848.54, `base standalone ${all.base.price}`);
   assert.equal(all.alternates.length, 1, 'one alternate');
   // The alternate carries no base-only flat adds, so at identical inputs it
   // matches the base price exactly — priced on its own, not folded in.
-  assert.equal(cent(all.alternates[0].price), 16764.12, `alternate standalone ${all.alternates[0].price}`);
-  assert.equal(cent(all.combined.price), 16764.12, 'combined excludes the alternate until included');
+  assert.equal(cent(all.alternates[0].price), 17848.54, `alternate standalone ${all.alternates[0].price}`);
+  assert.equal(cent(all.combined.price), 17848.54, 'combined excludes the alternate until included');
   await page.evaluate(g => window.__harness.setIncluded([g]), gid);
   all = await page.evaluate(() => window.__harness.priceAll());
   assert.equal(cent(all.combined.price), cent(all.base.price + all.alternates[0].price), 'combined = base + included alternate');
@@ -1699,8 +1741,8 @@ await run('quote JSON: versioned, prices the base to the cent, carries provenanc
   JSON.parse(JSON.stringify(q));
   assert.equal(q.schema, 'tap.quote/v1', 'schema tag present + versioned');
   const base = q.scopes.find(s => s.id === 'base');
-  assert.equal(cent(base.price.price), 16764.12, `base price ${base.price.price}`);
-  assert.equal(cent(base.price.cost), 11735.47, `base cost ${base.price.cost}`);
+  assert.equal(cent(base.price.price), 17848.54, `base price ${base.price.price}`);
+  assert.equal(cent(base.price.cost), 12494.60, `base cost ${base.price.cost}`);
   assert.deepEqual(base.labor, { crew: 3, hours: 24 }, 'per-scope labor in the export');
   // Nested detail with §A2 provenance on every measurement.
   const meas = base.conditions.flatMap(c => c.measurements);
@@ -1743,16 +1785,16 @@ await run('bid worksheet: per-scope cost stack, base to the cent + a Combined ro
     'worksheet header is the full cost stack');
   const col = (row, name) => row.split(',')[lines[0].split(',').indexOf(name)];
   const base = lines.find(l => l.startsWith('Base Bid,'));
-  assert.equal(col(base, 'price'), '16764.12', `base price column: ${base}`);
-  assert.equal(col(base, 'cost'), '11735.47', `base cost column: ${base}`);
+  assert.equal(col(base, 'price'), '17848.54', `base price column: ${base}`);
+  assert.equal(col(base, 'cost'), '12494.60', `base cost column: ${base}`);
   assert.equal(col(base, 'margin_pct'), '30.0', `base margin column: ${base}`);
   // The alternate is its own standalone row — never folded into the base.
   const alt = lines.find(l => l.startsWith('Add wing,'));
-  assert.equal(col(alt, 'price'), '16764.12', `alternate priced standalone: ${alt}`);
+  assert.equal(col(alt, 'price'), '17848.54', `alternate priced standalone: ${alt}`);
   // A Combined row exists; with the alternate excluded it equals the base.
   const combined = lines.find(l => l.startsWith('Combined'));
   assert.ok(combined, 'a Combined row is present');
-  assert.equal(col(combined, 'price'), '16764.12', `combined excludes the alternate until included: ${combined}`);
+  assert.equal(col(combined, 'price'), '17848.54', `combined excludes the alternate until included: ${combined}`);
 });
 
 await run('proposal: customer-facing, price only — no internal figures leak', async page => {
@@ -1763,10 +1805,10 @@ await run('proposal: customer-facing, price only — no internal figures leak', 
   await page.evaluate(g => window.__harness.setScopeLabor(g, 3, 24), gid);
   const html = await page.evaluate(() => window.__harness.buildProposalHtml());
   // Shows the customer-facing price + the base bid + the alternate as an add-on.
-  assert.match(html, /\$16,?764\.12/, 'the base bid price is shown');
+  assert.match(html, /\$17,?848\.54/, 'the base bid price is shown');
   assert.match(html, /Base Bid/, 'the base bid is labelled');
   assert.match(html, /Add wing/, 'the alternate is offered as an add-on');
-  assert.match(html, /Add \$16,?764\.12/, 'the add-on carries its standalone price');
+  assert.match(html, /Add \$17,?848\.54/, 'the add-on carries its standalone price');
   // The scope-of-work list is actually rendered (not a dumped builder function).
   assert.match(html, /Scope of Work/, 'the scope-of-work heading is present');
   assert.match(html, /5000 SF/, 'the measured quantity is rendered in the scope of work');
@@ -1784,8 +1826,8 @@ await run('cost sheet: internal — carries the full cost stack', async page => 
   for (const word of [/overhead/i, /payroll/i, /margin/i, /profit/i, /markup/i, /materials/i]) {
     assert.match(html, word, `cost sheet shows ${word}`);
   }
-  assert.match(html, /\$11,?735\.47/, 'the cost is shown');
-  assert.match(html, /\$16,?764\.12/, 'the price is shown');
+  assert.match(html, /\$12,?494\.60/, 'the cost is shown');
+  assert.match(html, /\$17,?848\.54/, 'the price is shown');
   assert.match(html, /30\.0%/, 'the margin is shown');
 });
 

@@ -1315,13 +1315,25 @@ function retiredSeedIds(from, to) {
   }
   return out;
 }
-const RETIRED_BY_VERSION = {};
+const RETIRED_BY_VERSION = {
+  // v3 restructured three bundled "systems" into incremental add-ons.
+  3: ['epoxy_hw', 'flake_db', 'quartz_db'],
+};
 
 /// Rewrites for retired seed ids, so a project that referenced one keeps
 /// pricing identically: `retiredId → [replacement system, …add-on ids]`. The
 /// first id becomes the measurement's base assembly; the rest are pushed onto
 /// its stack. Applied on project load (see `rewriteRetiredAssemblies`).
-const RETIRED_ASSEMBLIES = {};
+const RETIRED_ASSEMBLIES = {
+  // v3: each bundled system becomes its base system plus the increments that
+  // reproduce it. Materials are identical to the cent (engine-core's
+  // `legacy_systems_equal_base_plus_addon` proves it), so an existing project
+  // keeps its material pricing across the restructure. Consumables DO rise:
+  // the stack now has more profile-bearing applications than the bundle did.
+  epoxy_hw: ['epoxy2', 'hw_topcoat'],
+  flake_db: ['flake', 'double_broadcast'],
+  quartz_db: ['epoxy2', 'quartz_broadcast', 'hw_topcoat'],
+};
 
 /// Re-point measurements that reference a retired assembly id. Runs on every
 /// project load; a no-op once nothing references a retired id.

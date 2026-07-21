@@ -10,6 +10,10 @@ mirror of the seeded data in `crates/engine-core/src/assembly/seeds.rs`
 > coating/grinding/repair split below (membership **and** scope) is a proposal
 > that needs review against real jobs. The **grinding** membership is the least
 > certain.
+>
+> **See [`pricing-review.md`](pricing-review.md)** — the single page listing
+> every unvalidated number in the estimating stack, including the quartz rate,
+> the trowel amortization, and the overhead default.
 
 ## Scope of each consumable
 
@@ -47,13 +51,13 @@ effective stack.
 
 | assembly | kind | profile | behavior |
 |---|---|---|---|
-| Epoxy 2-Coat | system | coating | full-area coat |
-| Epoxy + High Wear Urethane | system | coating | full-area coat |
-| Polyurea Flake | system | coating | full-area coat |
-| Flake Double Broadcast | system | coating | full-area coat |
-| Quartz Double Broadcast | system | coating | full-area coat |
-| Polished Concrete | system | **grinding** ⚠ | grind |
+| 2-Coat Epoxy | system | coating | full-area coat |
+| Polyurea w/ Flake | system | coating | full-area coat |
+| Concrete Polish | system | **grinding** ⚠ | grind |
 | Grind & Seal | system | **grinding** ⚠ | grind |
+| High Wear Urethane Top Coat | add-on | coating | an extra coat — its own application ⚠ |
+| Double Broadcast | add-on | coating | extra broadcast + 2nd top coat ⚠ |
+| Quartz Broadcast | add-on | coating | extra broadcast ⚠ |
 | Moisture Mitigation (H2 Out) | add-on | coating | full-area coat |
 | Crack Repair (Mender + Sand) | add-on | repair | localized repair |
 | Crack Stitching | add-on | repair | localized repair |
@@ -63,9 +67,23 @@ effective stack.
 
 ## What this changed (validation)
 
-The phase-2 stacking fixture (Epoxy+HW + Crack Repair, 5,000 SF) moves from
-**$6,196.27** → **$6,243.35** (+$47.08). The swing is Crack Repair's second
-application adding just its own quart cups + brush; the trowel is a durable tool
-kept in the coating profile only, and per-area items (gloves/rags/trash) stay
-charged once. A single-system job is unchanged (per-app once + per-area once =
-the old flat rate).
+**Phase 3 (profiles).** The stacking fixture (Epoxy+HW + Crack Repair, 5,000 SF)
+moved **$6,196.27** → **$6,243.35** (+$47.08): Crack Repair's second application
+adds just its own quart cups + brush; the trowel stays in coating only; per-area
+items stay charged once.
+
+**Phase 4b (catalog restructure).** Turning the three bundled systems into
+incremental add-ons means a job that was one application is now two. Materials
+are unchanged to the cent; consumables rise by one full coating set:
+
+| fixture (5,000 SF) | materials | consumables | grand |
+|---|---|---|---|
+| Epoxy + HW — before | $4,920.00 | $868.72 | $5,788.72 |
+| Epoxy + HW — after | $4,920.00 (=) | $1,627.85 | **$6,547.85** |
+| + Crack Repair — before | $5,327.55 | $915.80 | $6,243.35 |
+| + Crack Repair — after | $5,327.55 (=) | $1,674.93 | **$7,002.48** |
+
+⚠ **$329.90 of the $759.13 swing is a second trowel charge** — and trowels are
+flagged above as durable tools, not consumables. If that flag resolves the way
+it reads, most of this delta disappears. Tracked in
+[`pricing-review.md`](pricing-review.md).

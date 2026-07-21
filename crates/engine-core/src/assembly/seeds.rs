@@ -16,7 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// History:
 ///   1 — the two synthetic examples only (Commercial Flooring, Epoxy Coating).
 ///   2 — + the MCFC catalog (7 systems + 6 add-ons).
-pub const SEED_VERSION: u32 = 2;
+///   3 — 4 systems + 9 add-ons: the three "systems" that bundled a base system
+///       (epoxy_hw, flake_db, quartz_db) became true incremental add-ons.
+pub const SEED_VERSION: u32 = 3;
 
 fn param(name: &str, default: f64, unit: Unit) -> Parameter {
     Parameter { name: name.to_string(), default: Some(default), unit }
@@ -146,8 +148,19 @@ const PRODUCTS: &[(&str, &str, Unit, f64, f64)] = &[
     ("top2_a", "2nd Top Coat A", Unit::L, 15.85, 0.022),
     ("top2_b", "2nd Top Coat B", Unit::L, 15.85, 0.022),
     ("h2_out", "H2 Out (Moisture)", Unit::L, 19.82, 0.003),
+    // The source tool's double-broadcast flake rates. A double broadcast does
+    // not ADD a second set of flake products — it raises the rate on the same
+    // two. These two entries are therefore the FULL double-broadcast rates and
+    // are referenced only by the legacy-equivalence tests; the shipped add-on
+    // carries the INCREMENT (`flake_thrown_x` / `flake_rec_x`) instead.
     ("flake_thrown_db", "Flake Thrown – Double BC", Unit::BOX, 74.0, 0.01),
     ("flake_rec_db", "Flake Recovered – Double BC", Unit::BOX, -74.0, 0.005),
+    // Increments: double-BC rate minus single-BC rate, so stacking the add-on
+    // on Polyurea w/ Flake reproduces the old flake_db system exactly.
+    //   thrown:    0.01   − 0.0075  = 0.0025
+    //   recovered: 0.005  − 0.00425 = 0.00075  (cost stays negative — a credit)
+    ("flake_thrown_x", "Additional Flake Thrown (2nd broadcast)", Unit::BOX, 74.0, 0.0025),
+    ("flake_rec_x", "Additional Flake Recovered (credit)", Unit::BOX, -74.0, 0.00075),
     ("haze_gray", "Haze Gray Epoxy", Unit::GAL, 44.0, 0.004),
     ("clear_epoxy", "Clear Epoxy", Unit::GAL, 42.4, 0.004),
     ("fast_cure", "Fast Cure Activator", Unit::GAL, 30.0, 0.004),
@@ -180,19 +193,22 @@ fn product_system(id: &str, name: &str, product_ids: &[&str], profile: Option<&s
     }
 }
 
-/// The seven MCFC systems. Coating systems (epoxy/flake/quartz) carry the
-/// coating profile; grinding systems (polish/grind & seal) the grinding profile.
+/// The four MCFC systems — the base floor build a job starts from. Everything
+/// else is an add-on stacked on one of these. Coating systems carry the coating
+/// profile; grinding systems (polish / grind & seal) the grinding profile.
+///
+/// The source tool listed seven "systems", but three of them (epoxy_hw,
+/// flake_db, quartz_db) bundled a whole base system plus an upgrade. Offering
+/// those as add-ons would double-count the base coats, so they are modelled as
+/// incremental add-ons instead — see [`mcfc_addons`].
 pub fn mcfc_systems() -> Vec<Assembly> {
     let coat = Some("coating");
     let grind = Some("grinding");
     vec![
-        product_system("epoxy2", "Epoxy 2-Coat", &["haze_gray", "clear_epoxy"], coat),
-        product_system("epoxy_hw", "Epoxy + High Wear Urethane", &["haze_gray", "clear_epoxy", "hw_urethane"], coat),
-        product_system("flake", "Polyurea Flake", &["base_a", "base_b", "flake_thrown", "flake_recovered", "clear_a", "clear_b"], coat),
-        product_system("flake_db", "Flake Double Broadcast", &["base_a", "base_b", "flake_thrown_db", "flake_rec_db", "clear_a", "clear_b", "top2_a", "top2_b"], coat),
-        product_system("polish", "Polished Concrete", &["simihard"], grind),
+        product_system("epoxy2", "2-Coat Epoxy", &["haze_gray", "clear_epoxy"], coat),
+        product_system("flake", "Polyurea w/ Flake", &["base_a", "base_b", "flake_thrown", "flake_recovered", "clear_a", "clear_b"], coat),
+        product_system("polish", "Concrete Polish", &["simihard"], grind),
         product_system("grindseal", "Grind & Seal", &["cs_first", "cs_second"], grind),
-        product_system("quartz_db", "Quartz Double Broadcast", &["quartz", "haze_gray", "clear_epoxy", "hw_urethane"], coat),
     ]
 }
 
@@ -205,6 +221,24 @@ pub fn mcfc_systems() -> Vec<Assembly> {
 ///     onto a coat whose consumables are already billed, so zero additional.
 pub fn mcfc_addons() -> Vec<Assembly> {
     let mut v = vec![
+        // ---- upgrades: the INCREMENT over a base system, never the whole build ----
+        //
+        // Each carries only what the upgrade physically adds, so stacking it on
+        // its base system reproduces the source tool's bundled system to the
+        // cent (proved in `legacy_systems_equal_base_plus_addon`). Each is a
+        // real extra application — a separately mixed and rolled coat — so each
+        // carries the coating profile and bills its own consumables.
+        product_system("hw_topcoat", "High Wear Urethane Top Coat", &["hw_urethane"], Some("coating")),
+        // Double broadcast raises the flake RATE and adds a second top coat; it
+        // does not re-buy the base coats. Hence the two `_x` increment products.
+        product_system("double_broadcast", "Double Broadcast",
+                       &["flake_thrown_x", "flake_rec_x", "top2_a", "top2_b"], Some("coating")),
+        // Quartz carries the broadcast ALONE. The source quartz_db also bundled
+        // haze gray + clear epoxy + urethane; those come from 2-Coat Epoxy and
+        // the High Wear add-on, so stacking all three reproduces it without
+        // billing the urethane twice.
+        product_system("quartz_broadcast", "Quartz Broadcast", &["quartz"], Some("coating")),
+        // ---- repairs, additives and treatments ----
         product_system("crack_repair", "Crack Repair (Mender + Sand)", &["mender_a", "mender_b", "sand"], Some("repair")),
         product_system("moisture", "Moisture Mitigation (H2 Out)", &["h2_out"], Some("coating")),
         product_system("antislip", "Anti-Slip (Shark Grip)", &["shark_grip"], None),
@@ -407,45 +441,69 @@ mod tests {
 
     #[test]
     fn single_system_material_total_matches_quoting_tool_to_the_cent() {
-        // Epoxy + High Wear Urethane @ 5,000 SF, no add-ons. A single coating
-        // application → each consumable counted once (per-app ×1, per-area ×1),
-        // so the total is UNCHANGED from the phase-1 flat rate:
-        //   system                          = $4,920.00
-        //   consumables (coating, 1 app)    = $868.7193725
-        //   grand materials                 = $5,788.72 (to the cent)
+        // 2-Coat Epoxy + High Wear Urethane Top Coat @ 5,000 SF.
+        //
+        // PRODUCTS are unchanged from the quoting tool and still total
+        // $4,920.00 exactly — the restructure moved the urethane from a bundled
+        // system into an add-on without touching a single rate.
+        //
+        // CONSUMABLES changed, deliberately. The old epoxy_hw system was ONE
+        // profile-bearing application; base + add-on is TWO, because a urethane
+        // top coat is separately mixed and rolled. Per-application consumables
+        // are billed twice ($759.1313725 each), per-area PPE once ($109.588):
+        //   materials                    = $4,920.00       (unchanged)
+        //   consumables (coating, 2 app) = $1,627.850745    (was $868.7193725)
+        //   grand materials              = $6,547.85        (was $5,788.72)
+        //
+        // The +$759.13 delta is dominated by a second $329.90 of TROWELS, which
+        // the catalog itself flags as a durable tool amortized across a coat,
+        // not a per-job consumable. That amortization is unvalidated — see
+        // docs/pricing-review.md.
         let input = MeasurementInput::area(5000.0, 0.0);
 
-        let sys = mcfc_systems().into_iter().find(|a| a.id == "epoxy_hw").unwrap();
-        let sys_bom = apply(&sys, &input).unwrap();
-        assert!((sys_bom.materials_total - 4920.0).abs() < 1e-9, "system {}", sys_bom.materials_total);
+        let base = mcfc_systems().into_iter().find(|a| a.id == "epoxy2").unwrap();
+        let hw = mcfc_addons().into_iter().find(|a| a.id == "hw_topcoat").unwrap();
+        let materials = apply(&base, &input).unwrap().materials_total
+            + apply(&hw, &input).unwrap().materials_total;
+        assert!((materials - 4920.0).abs() < 1e-9, "materials {materials}");
 
-        let cons = stack_consumables(&[sys.consumable_profile_id.clone()], &input).unwrap();
-        let expected_cons = 74.25 + 70.5 + 68.1 + 25.0 + 22.08 + 126.0 + 329.9
-            + 43.3 + 69.1 + 17.088 + 0.0013725 + 23.4;
-        assert!((cons.materials_total - expected_cons).abs() < 1e-9, "consumables {}", cons.materials_total);
+        let per_app = 74.25 + 70.5 + 68.1 + 25.0 + 22.08 + 126.0 + 329.9 + 43.3 + 0.0013725;
+        let per_area = 69.1 + 17.088 + 23.4;
+        let cons = stack_consumables(
+            &[base.consumable_profile_id.clone(), hw.consumable_profile_id.clone()],
+            &input,
+        )
+        .unwrap();
+        assert!(
+            (cons.materials_total - (per_app * 2.0 + per_area)).abs() < 1e-9,
+            "consumables {}",
+            cons.materials_total,
+        );
 
-        let grand = sys_bom.materials_total + cons.materials_total;
-        assert_eq!((grand * 100.0).round() / 100.0, 5788.72, "grand to the cent");
+        let grand = materials + cons.materials_total;
+        assert_eq!((grand * 100.0).round() / 100.0, 6547.85, "grand to the cent");
     }
 
     #[test]
     fn stacked_job_material_total_under_profiles_to_the_cent() {
-        // Epoxy + High Wear Urethane (coating) + Crack Repair (repair) @ 5,000 SF.
-        // Consumables are AUTO-DERIVED from each assembly's profile:
-        //   materials    epoxy_hw $4,920.00 + crack_repair $407.55 = $5,327.55
-        //   consumables  coating (all 12) + repair (quart cups + brush per-app;
-        //                PPE per-area) with PerArea deduped once: cupq/brush
-        //                billed twice, everything else once = $915.7993725
-        //   grand materials                                     = $6,243.35
-        // NEW vs phase-2's $6,196.27: +$47.08 — Crack Repair's second application
-        // adds just its own quart cups + brush (trowel is a durable tool, kept in
-        // coating only; per-area gloves/rags/trash charged once). A single-system
-        // job is unchanged (per-app once + per-area once = the old flat rate).
+        // 2-Coat Epoxy + High Wear Urethane + Crack Repair @ 5,000 SF — three
+        // profile-bearing applications (two coating, one repair).
+        //   materials    epoxy2 $1,728.00 + hw $3,192.00 + crack_repair $407.55
+        //                                                          = $5,327.55
+        //   consumables  coating ×2 + repair ×1, PerArea deduped once.
+        //                Quart cups and brushes appear in BOTH profiles, so
+        //                they are billed ×3; the rest of the coating set ×2;
+        //                PPE once.                          = $1,674.930745
+        //   grand materials                                        = $7,002.48
+        // Materials are IDENTICAL to the pre-restructure $5,327.55; only the
+        // consumables moved, for the reason documented on the single-system
+        // test above.
         let input = MeasurementInput::area(5000.0, 0.0);
         let systems = mcfc_systems();
         let addons = mcfc_addons();
         let stack = [
-            systems.iter().find(|a| a.id == "epoxy_hw").unwrap().clone(),
+            systems.iter().find(|a| a.id == "epoxy2").unwrap().clone(),
+            addons.iter().find(|a| a.id == "hw_topcoat").unwrap().clone(),
             addons.iter().find(|a| a.id == "crack_repair").unwrap().clone(),
         ];
 
@@ -458,10 +516,9 @@ mod tests {
         let profile_ids: Vec<Option<String>> =
             stack.iter().map(|a| a.consumable_profile_id.clone()).collect();
         let cons = stack_consumables(&profile_ids, &input).unwrap();
-        assert!((cons.materials_total - 915.7993725).abs() < 1e-9, "consumables {}", cons.materials_total);
 
         let grand = materials + cons.materials_total;
-        assert_eq!((grand * 100.0).round() / 100.0, 6243.35, "stacked grand to the cent");
+        assert_eq!((grand * 100.0).round() / 100.0, 7002.48, "stacked grand to the cent");
     }
 
     #[test]
@@ -485,6 +542,102 @@ mod tests {
         assert!(bom.line_items.is_empty() && bom.materials_total == 0.0);
     }
 
+    /// The three systems the source tool bundled, rebuilt from PRODUCTS so the
+    /// equivalence tests below compare against the ACTUAL old definitions
+    /// rather than against a restatement of them.
+    fn legacy_system(id: &str) -> Assembly {
+        let products: &[&str] = match id {
+            "epoxy_hw" => &["haze_gray", "clear_epoxy", "hw_urethane"],
+            "flake_db" => &["base_a", "base_b", "flake_thrown_db", "flake_rec_db",
+                            "clear_a", "clear_b", "top2_a", "top2_b"],
+            "quartz_db" => &["quartz", "haze_gray", "clear_epoxy", "hw_urethane"],
+            other => panic!("unknown legacy system `{other}`"),
+        };
+        product_system(id, id, products, Some("coating"))
+    }
+
+    /// THE load-bearing test for the add-on restructure: each retired system
+    /// equals its base system plus the incremental add-on(s), to the cent, at
+    /// several areas. If an "increment" were really a relabelled full system,
+    /// these totals would come out roughly double.
+    #[test]
+    fn legacy_systems_equal_base_plus_addon() {
+        let sys = |id: &str| mcfc_systems().into_iter().find(|a| a.id == id).unwrap();
+        let addon = |id: &str| mcfc_addons().into_iter().find(|a| a.id == id).unwrap();
+
+        // (retired system, base system, add-ons stacked on it)
+        let cases: [(&str, Assembly, Vec<Assembly>); 3] = [
+            ("epoxy_hw", sys("epoxy2"), vec![addon("hw_topcoat")]),
+            ("flake_db", sys("flake"), vec![addon("double_broadcast")]),
+            ("quartz_db", sys("epoxy2"), vec![addon("quartz_broadcast"), addon("hw_topcoat")]),
+        ];
+
+        for area in [1.0, 1000.0, 5000.0, 12_345.67] {
+            let input = MeasurementInput::area(area, 0.0);
+            for (legacy_id, base, addons) in &cases {
+                let want = apply(&legacy_system(legacy_id), &input).unwrap().materials_total;
+                let mut got = apply(base, &input).unwrap().materials_total;
+                for a in addons {
+                    got += apply(a, &input).unwrap().materials_total;
+                }
+                assert!(
+                    (want - got).abs() < 1e-9,
+                    "{legacy_id} @ {area} SF: legacy {want} != base+addon {got}",
+                );
+            }
+        }
+    }
+
+    /// Per-SF rates, spelled out, so a bad increment is legible in the failure
+    /// rather than hidden inside a total.
+    #[test]
+    fn increment_addons_carry_only_the_incremental_rate() {
+        let input = MeasurementInput::area(1.0, 0.0);
+        let total = |a: &Assembly| apply(a, &input).unwrap().materials_total;
+        let addon = |id: &str| mcfc_addons().into_iter().find(|a| a.id == id).unwrap();
+        let sys = |id: &str| mcfc_systems().into_iter().find(|a| a.id == id).unwrap();
+
+        let near = |got: f64, want: f64, what: &str| {
+            assert!((got - want).abs() < 1e-9, "{what}: {got} != {want}");
+        };
+        near(total(&sys("epoxy2")), 0.3456, "2-Coat Epoxy $/SF");
+        near(total(&sys("flake")), 1.0278, "Polyurea w/ Flake $/SF");
+        near(total(&addon("hw_topcoat")), 0.6384, "High Wear increment $/SF");
+        near(total(&addon("double_broadcast")), 0.8269, "Double Broadcast increment $/SF");
+        near(total(&addon("quartz_broadcast")), 1.0, "Quartz increment $/SF");
+        // The increment is a fraction of the base, not a second copy of it.
+        assert!(
+            total(&addon("double_broadcast")) < total(&sys("flake")),
+            "a double-broadcast increment must cost less than the flake system itself",
+        );
+    }
+
+    /// Every shipped catalog part is priced. An unpriced part silently produces
+    /// a $0.00 bid — the failure that started this work.
+    #[test]
+    fn every_catalog_part_is_priced() {
+        let unpriced: Vec<String> = mcfc_catalog()
+            .iter()
+            .flat_map(|a| {
+                a.parts.iter().filter(|p| !p.manual && p.unit_cost == 0.0)
+                    .map(move |p| format!("{}.{}", a.id, p.id))
+            })
+            .collect();
+        assert!(unpriced.is_empty(), "unpriced catalog parts: {unpriced:?}");
+    }
+
+    /// Each system, applied alone to a real area, produces a non-zero total.
+    #[test]
+    fn every_system_prices_a_fresh_area() {
+        let input = MeasurementInput::area(1000.0, 130.0);
+        for sys in mcfc_systems() {
+            let bom = apply(&sys, &input).unwrap();
+            assert!(bom.materials_total > 0.0, "{} priced at {}", sys.id, bom.materials_total);
+            let cons = stack_consumables(&[sys.consumable_profile_id.clone()], &input).unwrap();
+            assert!(cons.materials_total > 0.0, "{} consumables {}", sys.id, cons.materials_total);
+        }
+    }
+
     #[test]
     fn flake_system_carries_the_negative_recovered_credit() {
         let bom = apply(
@@ -503,10 +656,17 @@ mod tests {
     #[test]
     fn catalog_has_no_job_consumables_and_profiles_are_assigned() {
         let cat = mcfc_catalog();
-        assert_eq!(cat.len(), 7 + 6, "7 systems + 6 add-ons (no standalone consumables)");
+        assert_eq!(cat.len(), 4 + 9, "4 systems + 9 add-ons (no standalone consumables)");
         assert!(!cat.iter().any(|a| a.id == "job_consumables"), "Job Consumables removed");
+        // The three bundled systems are retired; their add-on replacements ship.
+        for retired in ["epoxy_hw", "flake_db", "quartz_db"] {
+            assert!(!cat.iter().any(|a| a.id == retired), "{retired} retired as a system");
+        }
         let profile = |id: &str| cat.iter().find(|a| a.id == id).unwrap().consumable_profile_id.as_deref();
-        assert_eq!(profile("epoxy_hw"), Some("coating"));
+        assert_eq!(profile("hw_topcoat"), Some("coating"), "a top coat is its own application");
+        assert_eq!(profile("double_broadcast"), Some("coating"));
+        assert_eq!(profile("quartz_broadcast"), Some("coating"));
+        assert_eq!(profile("epoxy2"), Some("coating"));
         assert_eq!(profile("polish"), Some("grinding"));
         assert_eq!(profile("crack_repair"), Some("repair"));
         assert_eq!(profile("moisture"), Some("coating"));
