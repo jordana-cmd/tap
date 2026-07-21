@@ -1493,6 +1493,122 @@ await run('scope export: material list + CSV break out by scope; an alternate ne
   assert.equal(bath[0], 'Add bathroom', 'CSV row scoped to the alternate');
 });
 
+// ---- Phase 4a: the cost stack (labor → overhead → markup → price) ----
+
+// A 5,000 SF room with the Epoxy + High Wear Urethane system — the same case
+// the engine-core validation reproduces to the cent. fpi 7.2 → 0.1 ft/pt, so
+// 500×1000 pt = 50×100 ft = 5,000 SF. epoxy_hw is purely area-driven, so the
+// perimeter of a real polygon doesn't matter — materials land at $5,788.72.
+const quoteRoom = () => ({
+  version: 1, sha: 'q', name: 'full-quote',
+  pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
+  measurements: [{
+    id: 1, page: 1, kind: 'area', label: 'Big room', origin: 'manual', color: '#1e3a8a',
+    geometry: [0, 0, 500, 0, 500, 1000, 0, 1000], assemblyId: 'epoxy_hw',
+  }],
+});
+// Two identical 5,000 SF epoxy rooms — for the standalone-alternate case.
+const quoteTwoRooms = () => ({
+  version: 1, sha: 'q2', name: 'full-quote-2',
+  pageScales: [{ page: 1, feet_per_paper_inch: 7.2, source: 'test' }],
+  measurements: [
+    { id: 1, page: 1, kind: 'area', label: 'Big room', origin: 'manual', color: '#1e3a8a',
+      geometry: [0, 0, 500, 0, 500, 1000, 0, 1000], assemblyId: 'epoxy_hw' },
+    { id: 2, page: 1, kind: 'area', label: 'Add wing', origin: 'manual', color: '#b91c1c',
+      geometry: [0, 0, 500, 0, 500, 1000, 0, 1000], assemblyId: 'epoxy_hw' },
+  ],
+});
+const cent = x => Math.round(x * 100) / 100;
+
+await run('pricing: the full quote reproduces $16,764.12 end-to-end', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteRoom());
+  // Defaults already carry the quote's wage/tax/overhead/legacy adder; only the
+  // crew·hours are per-scope, so set them on the base bid.
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  const b = await page.evaluate(() => window.__harness.priceScope('base'));
+  assert.equal(cent(b.materials), 5788.72, `materials ${b.materials}`);
+  assert.equal(cent(b.labor), 1980.00, `labor ${b.labor}`);
+  assert.equal(cent(b.payroll_tax), 151.47, `payroll tax ${b.payroll_tax}`);
+  assert.equal(cent(b.overhead), 3815.28, `overhead ${b.overhead}`);
+  assert.equal(cent(b.cost), 11735.47, `cost ${b.cost}`);
+  assert.equal(cent(b.markup), 5028.65, `markup ${b.markup}`);
+  assert.equal(cent(b.price), 16764.12, `PRICE ${b.price}`);
+  assert.equal(cent(b.profit), 5028.65, `profit ${b.profit}`);
+  assert.equal(cent(b.price_per_sf), 3.35, `$/SF ${b.price_per_sf}`);
+  // The bid-pricing panel renders the same headline price.
+  const panel = await page.evaluate(() => document.querySelector('#scopeTotals').textContent);
+  assert.match(panel, /\$16,?764\.12/, `panel shows the price: ${panel}`);
+  assert.match(panel, /cost \$11,?735\.47/, `panel shows the cost breakdown: ${panel}`);
+});
+
+await run('pricing: an alternate prices standalone and only folds in when included', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteTwoRooms());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  // The second 5,000 SF epoxy room moves into an alternate scope with its own crew.
+  const gid = await page.evaluate(() => window.__harness.addAlternateGroup('Add wing'));
+  await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
+  await page.evaluate(g => window.__harness.setScopeLabor(g, 3, 24), gid);
+  let all = await page.evaluate(() => window.__harness.priceAll());
+  assert.equal(cent(all.base.price), 16764.12, `base standalone ${all.base.price}`);
+  assert.equal(all.alternates.length, 1, 'one alternate');
+  // The alternate carries no base-only flat adds, so at identical inputs it
+  // matches the base price exactly — priced on its own, not folded in.
+  assert.equal(cent(all.alternates[0].price), 16764.12, `alternate standalone ${all.alternates[0].price}`);
+  assert.equal(cent(all.combined.price), 16764.12, 'combined excludes the alternate until included');
+  await page.evaluate(g => window.__harness.setIncluded([g]), gid);
+  all = await page.evaluate(() => window.__harness.priceAll());
+  assert.equal(cent(all.combined.price), cent(all.base.price + all.alternates[0].price), 'combined = base + included alternate');
+});
+
+await run('pricing: mode switches — exact margin and target $/SF', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteRoom());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  await page.evaluate(() => window.__harness.setCostInputs({ mode: 'margin', marginPct: 40 }));
+  let b = await page.evaluate(() => window.__harness.priceScope('base'));
+  assert.ok(Math.abs(b.margin_pct - 40) < 1e-6, `margin mode gives exactly 40%: ${b.margin_pct}`);
+  assert.ok(Math.abs(b.price - b.cost / 0.6) < 1e-4, `price = cost/(1−0.4): ${b.price}`);
+  await page.evaluate(() => window.__harness.setCostInputs({ mode: 'sqft', sqftPrice: 4 }));
+  b = await page.evaluate(() => window.__harness.priceScope('base'));
+  assert.ok(Math.abs(b.price - 20000) < 1e-6, `5,000 SF × $4 = $20,000: ${b.price}`);
+  // The mode selector reflects the active mode.
+  assert.equal(await page.evaluate(() => document.querySelector('#ciMode').value), 'sqft', 'selector synced to $/SF');
+});
+
+await run('pricing: discount and card fee apply after markup', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteRoom());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  const plain = await page.evaluate(() => window.__harness.priceScope('base'));
+  await page.evaluate(() => window.__harness.setCostInputs({ discountPct: 10, ccOn: true, ccRatePct: 3.5 }));
+  const b = await page.evaluate(() => window.__harness.priceScope('base'));
+  // Legacy mode: the discount is −10% of COST; the card fee is 3.5% of the
+  // post-markup, post-discount subtotal — matching the quoting tool's order.
+  const disc = -plain.cost * 0.10;
+  const subtotal = plain.cost + plain.markup + disc;
+  assert.ok(Math.abs(b.discount - disc) < 1e-4, `discount is −10% of cost: ${b.discount} vs ${disc}`);
+  assert.ok(Math.abs(b.cc - subtotal * 0.035) < 1e-4, `card fee is 3.5% of the discounted subtotal: ${b.cc}`);
+  assert.ok(Math.abs(b.price - (subtotal + b.cc)) < 1e-4, `price = subtotal + card: ${b.price}`);
+});
+
+await run('pricing: reload restores cost inputs + per-scope labor, re-derives the price', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteRoom());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  await page.evaluate(() => window.__harness.setCostInputs({ overheadRate: 52.99, discountPct: 5 }));
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.goto(URL);
+  await waitReady(page);
+  const st = await page.evaluate(() => ({
+    ci: window.__harness.costInputs(),
+    labor: window.__harness.scopeLabor('base'),
+    price: window.__harness.priceScope('base').price,
+  }));
+  assert.equal(st.ci.discountPct, 5, 'discount restored');
+  assert.equal(st.labor.crew, 3, 'crew restored');
+  assert.equal(st.labor.hours, 24, 'hours restored');
+  assert.ok(st.price > 0, 'price re-derived from restored inputs (not persisted)');
+  // The form reflects the restored discount.
+  assert.equal(await page.evaluate(() => document.querySelector('#ciDiscount').value), '5', 'form synced on reload');
+});
+
 await run('advanced: detection tuning is collapsed by default and holds the knobs + stats', async page => {
   const st = await page.evaluate(() => {
     const adv = document.querySelector('#advanced');

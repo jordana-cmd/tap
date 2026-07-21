@@ -120,6 +120,17 @@
   .scopeTotRow .stVal { font-variant-numeric: tabular-nums; font-weight: 600; }
   .scopeTotRow.stCombined { border-top: 1px solid #cbd5e1; margin-top: 3px; padding-top: 3px; font-weight: 700; }
   .scopeTotRow .stDel { border: none; background: none; color: #dc2626; cursor: pointer; font-size: 0.7rem; }
+  .scopeTotRow .stLabor { width: 3.2em; font-size: 0.78rem; padding: 1px 3px; }
+  .stBreak { color: #78716c; font-size: 0.72rem; padding: 0 0 2px 2px; font-variant-numeric: tabular-nums; }
+  #assumptions { border: 1px solid #d6d3d1; border-radius: 4px; margin: 4px 0; background: #fafaf9; font-size: 0.82rem; }
+  #assumptions > summary { cursor: pointer; padding: 4px 8px; font-weight: 600; color: #57534e;
+                           font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  #assumptionsGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px 10px; padding: 4px 8px 8px; }
+  #assumptionsGrid label { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  #assumptionsGrid label[hidden] { display: none; } /* explicit display beats [hidden]'s UA rule */
+  #assumptionsGrid input[type=number], #assumptionsGrid select { width: 6em; font-size: 0.78rem; padding: 1px 3px; }
+  #assumptionsGrid label.ciCheck { justify-content: flex-start; }
+  #assumptionsGrid label.ciCheck input { width: auto; }
   .measGroup { margin-top: 6px; }
   .measGroupHdr { display: flex; align-items: center; gap: 6px; font-weight: 600;
                   padding: 3px 4px; background: #f5f5f4; border-radius: 3px; position: sticky; top: 0; }
@@ -279,6 +290,30 @@
         <button id="newAlternate" title="create a named alternate scope">+ alternate</button>
       </div>
     </div>
+    <details id="assumptions">
+      <summary>Cost assumptions</summary>
+      <div id="assumptionsGrid">
+        <label>wage $/hr <input id="ciWage" type="number" step="any" min="0"></label>
+        <label>payroll tax % <input id="ciTax" type="number" step="any" min="0"></label>
+        <label>overhead $/labor-hr <input id="ciOverhead" type="number" step="any" min="0"></label>
+        <label>legacy adder % <input id="ciAdder" type="number" step="any" min="0"></label>
+        <label>card fee % <input id="ciCC" type="number" step="any" min="0"></label>
+        <label>insurance $ <input id="ciInsurance" type="number" step="any" min="0"></label>
+        <label>equipment $ <input id="ciEquipment" type="number" step="any" min="0"></label>
+        <label>permits $ <input id="ciPermits" type="number" step="any" min="0"></label>
+        <label>pricing mode
+          <select id="ciMode">
+            <option value="legacy">Rob's formula</option>
+            <option value="margin">Exact margin</option>
+            <option value="sqft">$ / sq ft</option>
+          </select></label>
+        <label id="ciProfitLbl">profit % <input id="ciProfit" type="number" step="any" min="0"></label>
+        <label id="ciMarginLbl" hidden>margin % <input id="ciMargin" type="number" step="any" min="0"></label>
+        <label id="ciSqftPriceLbl" hidden>price $/SF <input id="ciSqftPrice" type="number" step="any" min="0"></label>
+        <label>discount % <input id="ciDiscount" type="number" step="any" min="0"></label>
+        <label class="ciCheck"><input id="ciCCOn" type="checkbox"> add card fee</label>
+      </div>
+    </details>
     <div id="scopeTotals" hidden></div>
     <div id="measList">(none yet)</div>
   </div>
@@ -298,7 +333,7 @@
 <script type="module">
 import init, { detect_room, measure_polyline, measure_polygon_area, calibrate_two_point,
   scale_presets_json, PageGeometry, apply_assembly, eval_formula, seed_assemblies_json,
-  polygon_contains_flat, stack_consumables }
+  polygon_contains_flat, stack_consumables, price }
   from './pkg/engine_web.js';
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
 import { extractSegments } from './extract.js';
@@ -362,6 +397,18 @@ let nextAltId = 1;
 let includedAlternates = new Set(); // session-only: alternate ids toggled into "combined"
 const altGroupOf = m => (m.scope === 'alternate'
   ? alternateGroups.find(g => g.id === m.alternateGroupId) ?? null : null);
+
+// ---- cost stack inputs (§ phase 4; MCFC quoting-tool defaults). These are the
+// only cost data PERSISTED — cost/price are always DERIVED (invariant 5). ----
+const COST_DEFAULTS = {
+  wage: 27.5, payrollTaxPct: 7.65, overheadRate: 52.99, legacyAdder: 12.85, ccRatePct: 3.5,
+  insurance: 0, equipment: 0, permits: 0,
+  mode: 'legacy', profitPct: 30, marginPct: 30, sqftPrice: 4.0,
+  discountPct: 0, ccOn: false,
+};
+let costInputs = { ...COST_DEFAULTS };
+let laborByScope = {};       // scopeId ('base' | alternateGroupId) -> { crew, hours }
+const laborFor = id => laborByScope[id] ?? { crew: 0, hours: 0 };
 /// Effective colour/assembly: per-measurement override first, else the
 /// condition's, else the harness default / none.
 const effColor = m => m.color ?? condOf(m)?.color ?? '#1e3a8a';
@@ -987,6 +1034,8 @@ function exportJson() {
     conditions: conditions.map(condToStored),
     activeConditionId,
     alternateGroups: alternateGroups.map(g => ({ id: g.id, name: g.name })),
+    costInputs: { ...costInputs },
+    laborByScope: { ...laborByScope },
     minWidthOverride,
   }, null, 2);
 }
@@ -995,11 +1044,13 @@ function importJson(str) {
   scalesFromStored(data.pageScales ?? []);
   conditionsFromStored(data.conditions, data.activeConditionId);
   alternateGroupsFromStored(data.alternateGroups);
+  costInputsFromStored(data.costInputs, data.laborByScope);
   measurements = (data.measurements ?? []).map(fromStored);
   minWidthOverride = data.minWidthOverride ?? null;
   reindexAfterRestore();
   refreshScaleUI();
   refreshConditionUI();
+  syncAssumptions(); // reflect imported cost inputs into the form
   renderMeasList();
   render();
   markDirty();
@@ -1027,6 +1078,13 @@ function alternateGroupsFromStored(arr) {
   includedAlternates = new Set(); // view state resets on load (persisted truth is scope)
 }
 
+/// Restore the cost-stack inputs (migration: missing keys → quoting-tool
+/// defaults; per-scope labor → {}). Only inputs persist; price is re-derived.
+function costInputsFromStored(ci, labor) {
+  costInputs = { ...COST_DEFAULTS, ...(ci ?? {}) };
+  laborByScope = labor && typeof labor === 'object' ? { ...labor } : {};
+}
+
 function projectRecord() {
   return {
     sha: currentSha, name: currentName,
@@ -1035,6 +1093,8 @@ function projectRecord() {
     conditions: conditions.map(condToStored),
     activeConditionId,
     alternateGroups: alternateGroups.map(g => ({ id: g.id, name: g.name })),
+    costInputs: { ...costInputs },
+    laborByScope: { ...laborByScope },
     minWidthOverride, updatedAt: Date.now(),
   };
 }
@@ -2122,58 +2182,149 @@ function setMeasScope(m, scope, groupId) {
   markDirty(); renderMeasList(); render();
 }
 
-/// Bid totals across the WHOLE project: Base Bid, each alternate standalone, and
-/// Combined = base + the alternates toggled in. Include/exclude is VIEW state —
-/// it never changes a measurement's scope.
+// ---- pricing: the cost stack per scope + combined (derived via wasm) ----
+const inBaseScope = m => m.scope !== 'alternate' || !alternateGroups.some(g => g.id === m.alternateGroupId);
+function scopeMembers(scopeId) {
+  return measurements.filter(m => m.kind !== 'deduct'
+    && (scopeId === 'base' ? inBaseScope(m) : (m.scope === 'alternate' && m.alternateGroupId === scopeId)));
+}
+function pricingModeJson() {
+  if (costInputs.mode === 'margin') return { Margin: { margin_pct: +costInputs.marginPct || 0 } };
+  if (costInputs.mode === 'sqft') return { Sqft: { price_per_sf: +costInputs.sqftPrice || 0 } };
+  return { Legacy: { profit_pct: +costInputs.profitPct || 0, legacy_adder: +costInputs.legacyAdder || 0 } };
+}
+/// Full cost stack for one scope: materials = Σ its measurements' grand
+/// (materials + consumables); sqft = Σ its AREA net SF; flat adds
+/// (insurance/equipment/permits) apply to the Base Bid only. Derived via wasm.
+function priceScope(scopeId) {
+  const mem = scopeMembers(scopeId);
+  const materials = mem.reduce((s, m) => s + measurementGrand(m), 0);
+  const sqft = mem.filter(m => m.kind === 'area').reduce((s, m) => s + m.value, 0);
+  const { crew, hours } = laborFor(scopeId);
+  const isBase = scopeId === 'base';
+  const inputs = {
+    materials, crew: +crew || 0, hours: +hours || 0, wage: +costInputs.wage || 0,
+    payroll_tax_pct: +costInputs.payrollTaxPct || 0, overhead_rate: +costInputs.overheadRate || 0,
+    insurance: isBase ? +costInputs.insurance || 0 : 0,
+    equipment: isBase ? +costInputs.equipment || 0 : 0,
+    permits: isBase ? +costInputs.permits || 0 : 0,
+    sqft, mode: pricingModeJson(), discount_pct: +costInputs.discountPct || 0,
+    cc_pct: costInputs.ccOn ? (+costInputs.ccRatePct || 0) : null,
+  };
+  return JSON.parse(price(JSON.stringify(inputs)));
+}
+/// Base, each alternate standalone, and combined (base + the toggled-in alternates).
+function priceAll() {
+  const base = priceScope('base');
+  const alternates = alternateGroups.map(g => ({ id: g.id, name: g.name, ...priceScope(g.id) }));
+  const included = alternates.filter(a => includedAlternates.has(a.id));
+  const cost = base.cost + included.reduce((s, a) => s + a.cost, 0);
+  const priceC = base.price + included.reduce((s, a) => s + a.price, 0);
+  const profit = priceC - cost;
+  return { base, alternates, combined: { cost, price: priceC, profit, margin_pct: priceC > 0 ? profit / priceC * 100 : 0 } };
+}
+
+/// The bid pricing panel: each scope's full cost→price stack with editable
+/// crew/hours, an include toggle per alternate, and the combined total.
+/// Price is DERIVED — nothing here is persisted but the crew/hours inputs.
 function renderScopeTotals() {
   const panel = $('scopeTotals');
   panel.textContent = '';
-  const nonDeduct = measurements.filter(m => m.kind !== 'deduct');
-  const inBase = m => m.scope !== 'alternate' || !alternateGroups.some(g => g.id === m.alternateGroupId);
-  const baseTotal = nonDeduct.filter(inBase).reduce((s, m) => s + measurementGrand(m), 0);
-  const altTotals = alternateGroups.map(g => ({
-    g,
-    total: nonDeduct.filter(m => m.scope === 'alternate' && m.alternateGroupId === g.id)
-      .reduce((s, m) => s + measurementGrand(m), 0),
-  }));
-  if (!alternateGroups.length && baseTotal === 0) { panel.hidden = true; return; }
+  const bp = priceAll();
+  if (!alternateGroups.length && bp.base.price === 0 && bp.base.cost === 0) { panel.hidden = true; return; }
   panel.hidden = false;
-  const addRow = (label, value, opts = {}) => {
-    const r = document.createElement('div');
-    r.className = 'scopeTotRow' + (opts.cls ? ' ' + opts.cls : '');
+  const hdr = document.createElement('div'); hdr.className = 'stHdr'; hdr.textContent = 'Bid pricing';
+  panel.append(hdr);
+
+  const scopeBlock = (scopeId, name, pb, opts = {}) => {
+    const row = document.createElement('div');
+    row.className = 'scopeTotRow' + (opts.cls ? ' ' + opts.cls : '');
     if (opts.check) {
       const cb = document.createElement('input');
-      cb.type = 'checkbox'; cb.className = 'stInc'; cb.checked = includedAlternates.has(opts.id);
+      cb.type = 'checkbox'; cb.className = 'stInc'; cb.checked = includedAlternates.has(scopeId);
       cb.title = 'include this alternate in the combined total';
       cb.addEventListener('change', () => {
-        if (cb.checked) includedAlternates.add(opts.id); else includedAlternates.delete(opts.id);
+        if (cb.checked) includedAlternates.add(scopeId); else includedAlternates.delete(scopeId);
         renderScopeTotals();
       });
-      r.append(cb);
+      row.append(cb);
     }
-    const l = document.createElement('span'); l.className = 'stLabel'; l.textContent = label;
-    const v = document.createElement('span'); v.className = 'stVal'; v.textContent = usd(value);
-    r.append(l, v);
+    const l = document.createElement('span'); l.className = 'stLabel'; l.textContent = name;
+    // crew / hours inputs for this scope.
+    const lab = laborFor(scopeId);
+    const mk = (field, ph) => {
+      const i = document.createElement('input');
+      i.type = 'number'; i.step = 'any'; i.min = '0'; i.className = 'stLabor'; i.placeholder = ph;
+      i.value = lab[field] || '';
+      i.title = ph;
+      i.addEventListener('change', () => {
+        laborByScope[scopeId] = { ...laborFor(scopeId), [field]: parseFloat(i.value) || 0 };
+        markDirty(); renderScopeTotals();
+      });
+      return i;
+    };
+    const v = document.createElement('span'); v.className = 'stVal'; v.textContent = usd(pb.price);
+    row.append(l, mk('crew', 'crew'), mk('hours', 'hrs'), v);
     if (opts.del) {
       const d = document.createElement('button');
       d.className = 'stDel'; d.textContent = '✕';
       d.title = 'delete alternate (its measurements move to the base bid)';
       d.addEventListener('click', () => {
-        if (confirm(`Delete alternate "${label}"? Its measurements move to the base bid.`)) deleteAlternateGroup(opts.id);
+        if (confirm(`Delete alternate "${name}"? Its measurements move to the base bid.`)) deleteAlternateGroup(scopeId);
       });
-      r.append(d);
+      row.append(d);
     }
-    panel.append(r);
+    panel.append(row);
+    // Breakdown line: cost · profit · margin.
+    const br = document.createElement('div');
+    br.className = 'stBreak';
+    br.textContent = `cost ${usd(pb.cost)} · profit ${usd(pb.profit)} · ${pb.margin_pct.toFixed(1)}%`;
+    panel.append(br);
   };
-  const hdr = document.createElement('div'); hdr.className = 'stHdr'; hdr.textContent = 'Bid totals';
-  panel.append(hdr);
-  addRow('Base Bid', baseTotal, { cls: 'stBase' });
-  let combined = baseTotal;
-  for (const { g, total } of altTotals) {
-    if (includedAlternates.has(g.id)) combined += total;
-    addRow(g.name, total, { check: true, id: g.id, del: true, cls: 'stAlt' });
+
+  scopeBlock('base', 'Base Bid', bp.base, { cls: 'stBase' });
+  for (const a of bp.alternates) scopeBlock(a.id, a.name, a, { check: true, del: true, cls: 'stAlt' });
+  if (bp.alternates.length) {
+    const c = bp.combined;
+    const row = document.createElement('div'); row.className = 'scopeTotRow stCombined';
+    const l = document.createElement('span'); l.className = 'stLabel'; l.textContent = 'Combined (base + included)';
+    const v = document.createElement('span'); v.className = 'stVal'; v.textContent = usd(c.price);
+    row.append(l, v);
+    panel.append(row);
   }
-  if (altTotals.length) addRow('Combined (base + included)', combined, { cls: 'stCombined' });
+}
+
+/// Reflect costInputs into the assumptions form + show the mode's field.
+function syncAssumptions() {
+  const set = (id, val) => { const el = $(id); if (el) el.value = val; };
+  set('ciWage', costInputs.wage); set('ciTax', costInputs.payrollTaxPct);
+  set('ciOverhead', costInputs.overheadRate); set('ciAdder', costInputs.legacyAdder);
+  set('ciCC', costInputs.ccRatePct); set('ciInsurance', costInputs.insurance);
+  set('ciEquipment', costInputs.equipment); set('ciPermits', costInputs.permits);
+  set('ciProfit', costInputs.profitPct); set('ciMargin', costInputs.marginPct);
+  set('ciSqftPrice', costInputs.sqftPrice); set('ciDiscount', costInputs.discountPct);
+  $('ciMode').value = costInputs.mode;
+  $('ciCCOn').checked = !!costInputs.ccOn;
+  $('ciProfitLbl').hidden = costInputs.mode !== 'legacy';
+  $('ciMarginLbl').hidden = costInputs.mode !== 'margin';
+  $('ciSqftPriceLbl').hidden = costInputs.mode !== 'sqft';
+}
+/// Wire the assumptions form once (change → costInputs + re-price).
+function wireAssumptions() {
+  const num = (id, field) => $(id).addEventListener('change', () => {
+    costInputs[field] = parseFloat($(id).value) || 0; markDirty(); renderScopeTotals();
+  });
+  num('ciWage', 'wage'); num('ciTax', 'payrollTaxPct'); num('ciOverhead', 'overheadRate');
+  num('ciAdder', 'legacyAdder'); num('ciCC', 'ccRatePct'); num('ciInsurance', 'insurance');
+  num('ciEquipment', 'equipment'); num('ciPermits', 'permits');
+  num('ciProfit', 'profitPct'); num('ciMargin', 'marginPct'); num('ciSqftPrice', 'sqftPrice');
+  num('ciDiscount', 'discountPct');
+  $('ciMode').addEventListener('change', () => {
+    costInputs.mode = $('ciMode').value; syncAssumptions(); markDirty(); renderScopeTotals();
+  });
+  $('ciCCOn').addEventListener('change', () => {
+    costInputs.ccOn = $('ciCCOn').checked; markDirty(); renderScopeTotals();
+  });
 }
 
 const UNIT = { linear: 'LF', area: 'SF', count: 'EA', deduct: 'SF' };
@@ -2637,6 +2788,7 @@ async function loadPdf(data, name) {
     scalesFromStored(proj.pageScales);
     conditionsFromStored(proj.conditions, proj.activeConditionId); // migration-safe
     alternateGroupsFromStored(proj.alternateGroups);
+    costInputsFromStored(proj.costInputs, proj.laborByScope);
     measurements = proj.measurements.map(fromStored);
     minWidthOverride = proj.minWidthOverride ?? null;
     reindexAfterRestore();
@@ -2646,10 +2798,12 @@ async function loadPdf(data, name) {
     measurements = []; nextMeasId = 1;
     conditions = []; activeConditionId = null; nextCondId = 1;
     alternateGroups = []; nextAltId = 1; includedAlternates = new Set();
+    costInputs = { ...COST_DEFAULTS }; laborByScope = {};
     measSeq = { Line: 0, Area: 0, Deduct: 0, 'Wall run': 0, Room: 0, Count: 0 };
     setSaveState('—'); // no project until the first mutation
   }
   refreshConditionUI();
+  syncAssumptions(); // reflect restored/reset cost inputs into the form
 
   const base = (await pdfDoc.getPage(1)).getViewport({ scale: 1 });
   pageDims = { w: base.width, h: base.height };
@@ -2918,6 +3072,16 @@ window.__harness = {
     const combined = base + alternates.filter(a => includedAlternates.has(a.id)).reduce((s, a) => s + a.total, 0);
     return { base, alternates, combined };
   },
+  // Cost stack (phase 4a).
+  costInputs: () => ({ ...costInputs }),
+  setCostInputs: patch => { Object.assign(costInputs, patch); syncAssumptions(); markDirty(); renderScopeTotals(); },
+  scopeLabor: id => ({ ...laborFor(id) }),
+  setScopeLabor: (scopeId, crew, hours) => {
+    laborByScope[scopeId] = { crew: Number(crew) || 0, hours: Number(hours) || 0 };
+    markDirty(); renderScopeTotals();
+  },
+  priceScope: scopeId => priceScope(scopeId),
+  priceAll: () => priceAll(),
 };
 
 // ---- boot ----
@@ -2926,6 +3090,8 @@ store.requestPersist(); // best-effort: keep our storage across eviction
 await seedAssembliesOnce(); // populate the library from engine-core seeds
 await refreshAssemblyCache(); // load the library into the sync render cache
 refreshConditionUI(); // populate the active-condition chip (empty until conditions exist)
+wireAssumptions(); // cost-assumptions form → costInputs (once)
+syncAssumptions(); // reflect defaults into the form
 for (const p of JSON.parse(scale_presets_json())) {
   const o = document.createElement('option');
   o.value = p.fpi; o.textContent = p.label;
