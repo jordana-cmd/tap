@@ -1650,6 +1650,31 @@ await run('quote JSON: combined folds in an alternate only when it is included',
   assert.equal(cent(q.combined.price), cent(base.price.price + alt.price.price), 'combined = base + included alternate');
 });
 
+await run('bid worksheet: per-scope cost stack, base to the cent + a Combined row', async page => {
+  await page.evaluate(p => window.__harness.importJson(JSON.stringify(p)), quoteTwoRooms());
+  await page.evaluate(() => window.__harness.setScopeLabor('base', 3, 24));
+  const gid = await page.evaluate(() => window.__harness.addAlternateGroup('Add wing'));
+  await page.evaluate(g => window.__harness.setMeasScope(2, 'alternate', g), gid);
+  await page.evaluate(g => window.__harness.setScopeLabor(g, 3, 24), gid);
+  const csv = await page.evaluate(() => window.__harness.buildBidWorksheet());
+  const lines = csv.trim().split('\n');
+  assert.equal(lines[0],
+    'scope,materials,labor,payroll_tax,overhead,insurance,equipment,permits,cost,markup,discount,cc,price,profit,margin_pct,price_per_sf,cost_per_sf',
+    'worksheet header is the full cost stack');
+  const col = (row, name) => row.split(',')[lines[0].split(',').indexOf(name)];
+  const base = lines.find(l => l.startsWith('Base Bid,'));
+  assert.equal(col(base, 'price'), '16764.12', `base price column: ${base}`);
+  assert.equal(col(base, 'cost'), '11735.47', `base cost column: ${base}`);
+  assert.equal(col(base, 'margin_pct'), '30.0', `base margin column: ${base}`);
+  // The alternate is its own standalone row — never folded into the base.
+  const alt = lines.find(l => l.startsWith('Add wing,'));
+  assert.equal(col(alt, 'price'), '16764.12', `alternate priced standalone: ${alt}`);
+  // A Combined row exists; with the alternate excluded it equals the base.
+  const combined = lines.find(l => l.startsWith('Combined'));
+  assert.ok(combined, 'a Combined row is present');
+  assert.equal(col(combined, 'price'), '16764.12', `combined excludes the alternate until included: ${combined}`);
+});
+
 await run('advanced: detection tuning is collapsed by default and holds the knobs + stats', async page => {
   const st = await page.evaluate(() => {
     const adv = document.querySelector('#advanced');

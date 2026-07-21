@@ -285,6 +285,7 @@
         <button id="exportCsv" title="download all measurements as CSV">export CSV</button>
         <button id="exportMaterialList" title="download a consolidated material list (BOM rollup) as CSV">export material list</button>
         <button id="exportQuote" title="download the full computed quote (price rollup + nested detail) as versioned JSON">export quote</button>
+        <button id="exportWorksheet" title="download the per-scope cost-stack bid worksheet as CSV">export worksheet</button>
         <button id="exportJson" title="download a JSON backup of this project">export JSON</button>
         <label id="importJsonLabel" title="restore a project from a JSON backup">
           import JSON<input id="importJson" type="file" accept="application/json,.json" hidden></label>
@@ -2514,6 +2515,40 @@ function buildQuoteJson() {
   };
 }
 
+/// The bid worksheet: the cost-stack buildup as CSV, one row per scope plus a
+/// Combined (base + included) row. DERIVED via `price()` (invariant 5) — the
+/// estimator's cost sheet in a spreadsheet, distinct from the material list.
+function buildBidWorksheet() {
+  const cols = ['scope', 'materials', 'labor', 'payroll_tax', 'overhead', 'insurance',
+    'equipment', 'permits', 'cost', 'markup', 'discount', 'cc', 'price', 'profit',
+    'margin_pct', 'price_per_sf', 'cost_per_sf'];
+  const rows = [cols.join(',')];
+  const emit = (name, pb) => rows.push(cols.map(c => {
+    if (c === 'scope') return csvCell(name);
+    if (c === 'margin_pct') return (pb.margin_pct ?? 0).toFixed(1);
+    const v = pb[c];
+    return v == null ? '' : v.toFixed(2); // per-SF densities are blank on Combined
+  }).join(','));
+
+  const all = priceAll();
+  emit('Base Bid', all.base);
+  for (const a of all.alternates) emit(a.name, a); // each carries a full PriceBreakdown
+  if (all.alternates.length) {
+    // Combined = base + the INCLUDED alternates, summed component-wise. Per-SF
+    // densities don't sum across scopes, so they're intentionally left blank.
+    const included = all.alternates.filter(a => includedAlternates.has(a.id));
+    const parts = [all.base, ...included];
+    const combined = {};
+    for (const f of ['materials', 'labor', 'payroll_tax', 'overhead', 'insurance', 'equipment',
+      'permits', 'cost', 'markup', 'discount', 'cc', 'price', 'profit']) {
+      combined[f] = parts.reduce((s, pb) => s + (pb[f] ?? 0), 0);
+    }
+    combined.margin_pct = combined.price > 0 ? combined.profit / combined.price * 100 : 0;
+    emit('Combined (base + included)', combined);
+  }
+  return rows.join('\n') + '\n';
+}
+
 /// Swap a name span for an inline text input; Enter/blur commits, Esc
 /// reverts. Names are per-measurement free text.
 function beginRename(m, span) {
@@ -2995,6 +3030,11 @@ $('exportQuote').addEventListener('click', () => {
   downloadText('quote.json', 'application/json', JSON.stringify(buildQuoteJson(), null, 2));
   say('exported the full quote to quote.json');
 });
+$('exportWorksheet').addEventListener('click', () => {
+  if (!measurements.length) { say('nothing to price yet — measure something first'); return; }
+  downloadText('bid-worksheet.csv', 'text/csv', buildBidWorksheet());
+  say('exported the bid worksheet to bid-worksheet.csv');
+});
 $('exportJson').addEventListener('click', () => {
   if (!currentSha) { say('open a PDF before exporting a project'); return; }
   downloadText(`${(currentName || 'project').replace(/\.pdf$/i, '')}.json`, 'application/json', exportJson());
@@ -3039,6 +3079,7 @@ window.__harness = {
   buildCsv: () => buildCsv(),
   buildMaterialList: () => buildMaterialList(),
   buildQuoteJson: () => buildQuoteJson(),
+  buildBidWorksheet: () => buildBidWorksheet(),
   loadPdf,
   currentSha: () => currentSha,
   flushSave: () => flushSave(),
