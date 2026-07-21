@@ -12,6 +12,7 @@ pub mod assembly;
 pub mod detect;
 pub mod error;
 pub mod geom;
+pub mod pricing;
 pub mod scale;
 pub mod snap;
 pub mod traits;
@@ -21,6 +22,7 @@ pub use assembly::{
     apply, apply_with_manual, Assembly, AssemblyError, BillOfMaterials, Category, ConsumableProfile,
     ExprError, LineItem, MeasureKind, MeasurementInput, Parameter, Part, Rounding, Scope, Unit,
 };
+pub use pricing::{price, CostInputs, PriceBreakdown, PricingMode};
 pub use detect::{
     classify_hatch, default_min_width, detect_candidates, detect_room, detect_room_from_mask,
     passes_width_filter, rasterize_wall_mask, width_histogram, DetectError, DetectParams,
