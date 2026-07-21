@@ -632,6 +632,86 @@ await run('assembly library seeds the engine catalog (synthetic examples + MCFC)
   }
 });
 
+// The v1 library: the two synthetic examples, unpriced, with no origin marker —
+// exactly what a library seeded before the MCFC catalog landed still contains.
+const V1_LIBRARY = [
+  { id: 'commercial_flooring', name: 'Commercial Flooring', applies_to: ['Area'], parameters: [], parts: [{ id: 'material', name: 'Flooring material', unit: 'SF', formula: 'area_sf', waste_pct: 10, rounding: 'None', unit_cost: 0, manual: false }] },
+  { id: 'epoxy_coating', name: 'Epoxy Coating', applies_to: ['Area'], parameters: [], parts: [{ id: 'primer', name: 'Primer', unit: 'GAL', formula: 'area_sf / 300', waste_pct: 5, rounding: 'Ceil', unit_cost: 0, manual: false }] },
+];
+const AUTHORED = {
+  id: 'asm_1700000000000_0', name: 'My Own Recipe', applies_to: ['Area'], parameters: [],
+  parts: [{ id: 'thing', name: 'Thing', unit: 'SF', formula: 'area_sf * 2', waste_pct: null, rounding: 'None', unit_cost: 3.5, manual: false }],
+};
+
+await run('seed migration: a v1 library upgrades to the full current catalog', async page => {
+  const out = await page.evaluate(async (v1, mine) => {
+    const h = window.__harness;
+    await h.stageLibraryAtVersion(1, [...v1, mine]);
+    const before = (await h.listAssemblies()).map(a => a.id);
+    await h.migrateAssemblyLibrary();
+    const after = await h.listAssemblies();
+    return { before, after, version: await h.currentSeedVersion(), target: h.seedVersion() };
+  }, V1_LIBRARY, AUTHORED);
+
+  assert.equal(out.before.length, 3, 'staged a v1 library (2 seeds + 1 authored)');
+  assert.equal(out.version, out.target, 'library records the current seed version');
+  const ids = out.after.map(a => a.id);
+  // The whole point: the MCFC catalog arrives on a library that had none of it.
+  for (const id of ['epoxy2', 'flake', 'polish', 'grindseal', 'crack_repair', 'moisture']) {
+    assert.ok(ids.includes(id), `migration delivered ${id}`);
+  }
+  // Every part of every migrated seed is priced — the $0.00 Base Bid cause.
+  const unpriced = out.after
+    .filter(a => a.origin === 'seed' && !['commercial_flooring', 'epoxy_coating'].includes(a.id))
+    .flatMap(a => a.parts.filter(p => !p.manual && !p.unit_cost).map(p => `${a.id}.${p.id}`));
+  assert.deepEqual(unpriced, [], 'every migrated catalog part carries a unit_cost');
+});
+
+await run('seed migration: never clobbers an authored assembly or an edited seed', async page => {
+  const out = await page.evaluate(async (v1, mine) => {
+    const h = window.__harness;
+    // An edited seed: user renamed it and set a real cost. userEdited marks it.
+    const edited = { ...v1[0], name: 'Flooring (my rates)', userEdited: true, origin: 'seed',
+      parts: [{ ...v1[0].parts[0], unit_cost: 9.99 }] };
+    await h.stageLibraryAtVersion(1, [edited, v1[1], mine]);
+    await h.migrateAssemblyLibrary();
+    const after = await h.listAssemblies();
+    const by = id => after.find(a => a.id === id);
+    return { mine: by(mine.id), edited: by('commercial_flooring'), count: after.length };
+  }, V1_LIBRARY, AUTHORED);
+
+  assert.equal(out.mine.name, 'My Own Recipe', 'authored assembly survives');
+  assert.equal(out.mine.parts[0].unit_cost, 3.5, 'authored assembly is byte-identical');
+  assert.equal(out.mine.origin, 'user', 'authored assembly classified as yours');
+  assert.equal(out.edited.name, 'Flooring (my rates)', 'edited seed keeps its name');
+  assert.equal(out.edited.parts[0].unit_cost, 9.99, 'edited seed keeps its rates');
+});
+
+await run('seed migration: a deleted seed never resurrects', async page => {
+  const out = await page.evaluate(async () => {
+    const h = window.__harness;
+    await h.deleteAssembly('epoxy_coating');        // as the library UI deletes
+    await h.setMeta('assemblySeedVersion', 1);      // force a re-migration
+    await h.migrateAssemblyLibrary();
+    const ids = (await h.listAssemblies()).map(a => a.id);
+    return { ids, gone: await h.getMeta('deletedSeedIds') };
+  });
+  assert.ok(!out.ids.includes('epoxy_coating'), 'deleted seed stays deleted');
+  assert.ok(out.gone.includes('epoxy_coating'), 'deletion is recorded');
+  assert.ok(out.ids.includes('epoxy2'), 'other seeds still arrive');
+});
+
+await run('seed migration: is idempotent at the current version', async page => {
+  const out = await page.evaluate(async () => {
+    const h = window.__harness;
+    const first = await h.listAssemblies();
+    await h.migrateAssemblyLibrary();
+    await h.migrateAssemblyLibrary();
+    return { first: first.length, after: (await h.listAssemblies()).length };
+  });
+  assert.equal(out.after, out.first, 're-running the migration changes nothing');
+});
+
 await run('author: invalid formula blocked, valid formula accepted', async page => {
   await page.click('#assembliesBtn');
   await page.click('#newAssembly');

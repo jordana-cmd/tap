@@ -8,6 +8,16 @@ use super::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Version of the shipped seed catalog. BUMP THIS whenever [`mcfc_catalog`]
+/// changes — a client stores the version it last seeded at and upgrades an
+/// older library to the current catalog on load, so a library seeded before a
+/// catalog change does not stay frozen at the old contents.
+///
+/// History:
+///   1 — the two synthetic examples only (Commercial Flooring, Epoxy Coating).
+///   2 — + the MCFC catalog (7 systems + 6 add-ons).
+pub const SEED_VERSION: u32 = 2;
+
 fn param(name: &str, default: f64, unit: Unit) -> Parameter {
     Parameter { name: name.to_string(), default: Some(default), unit }
 }

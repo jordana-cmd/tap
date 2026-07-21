@@ -362,7 +362,7 @@
 <script type="module">
 import init, { detect_room, measure_polyline, measure_polygon_area, calibrate_two_point,
   scale_presets_json, PageGeometry, apply_assembly, eval_formula, seed_assemblies_json,
-  polygon_contains_flat, stack_consumables, price }
+  seed_version, polygon_contains_flat, stack_consumables, price }
   from './pkg/engine_web.js';
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
 import { extractSegments } from './extract.js';
@@ -1074,7 +1074,7 @@ function importJson(str) {
   conditionsFromStored(data.conditions, data.activeConditionId);
   alternateGroupsFromStored(data.alternateGroups);
   costInputsFromStored(data.costInputs, data.laborByScope);
-  measurements = (data.measurements ?? []).map(fromStored);
+  measurements = rewriteRetiredAssemblies((data.measurements ?? []).map(fromStored));
   minWidthOverride = data.minWidthOverride ?? null;
   reindexAfterRestore();
   refreshScaleUI();
@@ -1218,12 +1218,126 @@ async function renderProjectPanel() {
 const KIND_LABELS = { Area: 'area', Linear: 'linear', Count: 'count' };
 const UNITS = ['SF', 'LF', 'EA', 'GAL', 'HR', 'BOX', 'L', 'Cup', 'Cap', 'Stitch', 'Tube', 'lb'];
 
-/// Seed the library from engine-core's seeds ONCE (a flag makes deletes
-/// stick — no resurrection on reload).
-async function seedAssembliesOnce() {
-  if (await store.getMeta('assembliesSeeded')) return;
-  for (const asm of JSON.parse(seed_assemblies_json())) await store.putAssembly(asm);
-  await store.setMeta('assembliesSeeded', true);
+// ---- versioned seed migration ----
+//
+// The library is seeded from engine-core's catalog and then UPGRADED whenever
+// the engine's SEED_VERSION rises. Three properties this must hold, in tension:
+//
+//   1. deletes stay sticky — a seed you deleted never resurrects (the reason
+//      the original one-shot `assembliesSeeded` flag existed);
+//   2. an old library reaches the CURRENT catalog — the bug that flag caused:
+//      a library seeded at v1 kept only the two synthetic examples and never
+//      picked up the MCFC catalog, so real work priced at $0.00;
+//   3. your own edits are never clobbered — an authored assembly, or a seed
+//      you modified, survives every future migration untouched.
+//
+// Bookkeeping lives in three meta keys: `assemblySeedVersion` (number),
+// `deletedSeedIds` (array), and the legacy `assembliesSeeded` boolean, which
+// is read exactly once to infer "this library is at v1".
+
+/// Library records carry `origin` so a migration can tell a seed it owns from
+/// an assembly you wrote. Records written before this existed are classified
+/// by id: in the catalog ⇒ seed-owned; anything else ⇒ yours (authored
+/// assemblies get generated `asm_*` ids, so they can never collide).
+function classifyLegacy(rec, catalogIds) {
+  return { ...rec, origin: catalogIds.has(rec.id) ? 'seed' : 'user', userEdited: false };
+}
+
+/// The version this library was last seeded at. 0 = never seeded.
+async function currentSeedVersion() {
+  const v = await store.getMeta('assemblySeedVersion');
+  if (typeof v === 'number') return v;
+  // Pre-versioning libraries: the boolean flag means "seeded at v1".
+  return (await store.getMeta('assembliesSeeded')) ? 1 : 0;
+}
+
+async function deletedSeedIds() {
+  return new Set((await store.getMeta('deletedSeedIds')) ?? []);
+}
+
+/// Remember that a seed was deleted so no later migration brings it back.
+async function rememberSeedDeletion(id) {
+  const gone = await deletedSeedIds();
+  if (gone.has(id)) return;
+  gone.add(id);
+  await store.setMeta('deletedSeedIds', [...gone]);
+}
+
+/// Upgrade the library to the engine's current seed catalog. Idempotent: a
+/// library already at SEED_VERSION does nothing and touches no records.
+async function migrateAssemblyLibrary() {
+  const target = seed_version();
+  const from = await currentSeedVersion();
+  const catalog = JSON.parse(seed_assemblies_json());
+  const catalogIds = new Set(catalog.map(a => a.id));
+  const gone = await deletedSeedIds();
+
+  // Backfill classification FIRST, and unconditionally: every record must carry
+  // an origin before anything else reasons about ownership, including on a
+  // library that is already at the current version.
+  const existing = new Map();
+  for (const rec of await store.listAssemblies()) {
+    const classified = rec.origin ? rec : classifyLegacy(rec, catalogIds);
+    existing.set(rec.id, classified);
+    if (!rec.origin) await store.putAssembly(classified);
+  }
+
+  if (from >= target) return;
+
+  for (const seed of catalog) {
+    if (gone.has(seed.id)) continue;                       // (1) stays deleted
+    const have = existing.get(seed.id);
+    if (have && (have.userEdited || have.origin === 'user')) continue; // (3) yours
+    // (2) absent, or a seed we own and you have not touched → write the
+    // current definition.
+    await store.putAssembly({ ...seed, origin: 'seed', seedVersion: target, userEdited: false });
+  }
+
+  // Retired seeds: definitions this version withdrew (e.g. a system that
+  // became an add-on). Drop the ones we still own; leave edited ones alone.
+  for (const id of retiredSeedIds(from, target)) {
+    const have = existing.get(id);
+    if (have && have.origin === 'seed' && !have.userEdited) await store.deleteAssembly(id);
+  }
+
+  await store.setMeta('assemblySeedVersion', target);
+  await store.setMeta('assembliesSeeded', true); // keep the legacy flag truthful
+}
+
+/// Seed ids withdrawn between two catalog versions. Retiring a seed is a
+/// breaking change for projects that reference it, so every entry here needs a
+/// matching rewrite in `RETIRED_ASSEMBLIES` (below) that keeps those projects
+/// priced identically.
+function retiredSeedIds(from, to) {
+  const out = [];
+  for (const [ver, ids] of Object.entries(RETIRED_BY_VERSION)) {
+    if (from < Number(ver) && to >= Number(ver)) out.push(...ids);
+  }
+  return out;
+}
+const RETIRED_BY_VERSION = {};
+
+/// Rewrites for retired seed ids, so a project that referenced one keeps
+/// pricing identically: `retiredId → [replacement system, …add-on ids]`. The
+/// first id becomes the measurement's base assembly; the rest are pushed onto
+/// its stack. Applied on project load (see `rewriteRetiredAssemblies`).
+const RETIRED_ASSEMBLIES = {};
+
+/// Re-point measurements that reference a retired assembly id. Runs on every
+/// project load; a no-op once nothing references a retired id.
+function rewriteRetiredAssemblies(list) {
+  for (const m of list) {
+    const base = RETIRED_ASSEMBLIES[m.assemblyId];
+    if (base) {
+      m.assemblyId = base[0];
+      m.stack = [...base.slice(1), ...(m.stack ?? [])];
+    }
+    if (m.stack?.length) {
+      m.stack = m.stack.flatMap(id => RETIRED_ASSEMBLIES[id] ?? [id]);
+      m.stack = m.stack.filter((id, i) => m.stack.indexOf(id) === i && id !== m.assemblyId);
+    }
+  }
+  return list;
 }
 
 // In-memory mirror of the assembly library so measurement rows (rendered
@@ -1511,6 +1625,7 @@ async function renderAssemblyPanel() {
     del.addEventListener('click', async () => {
       if (!confirm(`Delete assembly "${a.name}"? This cannot be undone.`)) return;
       await store.deleteAssembly(a.id);
+      await rememberSeedDeletion(a.id); // no future migration resurrects it
       await refreshAssemblyCache();
       renderAssemblyPanel();
       renderMeasList(); // rows referencing the deleted assembly fall back to "(none)"
@@ -1658,6 +1773,10 @@ let editingAssemblyId = null;
 
 function openAssemblyEditor(asm) {
   editingAssemblyId = asm ? asm.id : null;
+  // Keep the whole record: the editor exposes only name/applies_to/params/parts,
+  // so fields it cannot show (consumable_profile_id, origin, seedVersion) must
+  // be carried through a save rather than dropped.
+  editingAssemblyRecord = asm ?? null;
   $('editorTitle').textContent = asm ? `Edit ${asm.name}` : 'New assembly';
   $('asmName').value = asm ? asm.name : '';
   const applies = new Set(asm ? asm.applies_to : ['Area']);
@@ -1703,13 +1822,22 @@ function readEditorAssembly() {
       manual: r.querySelector('.ptManual').checked,
     };
   });
+  const prev = editingAssemblyRecord;
   return {
+    // Fields the editor does not surface ride along untouched — notably
+    // consumable_profile_id, without which an edited MCFC system would
+    // silently stop billing its consumables.
+    ...(prev ?? {}),
     id: editingAssemblyId || `asm_${Date.now()}_${asmIdSeq++}`,
     name: $('asmName').value.trim() || 'Untitled assembly',
     applies_to, parameters, parts,
+    // Hand-editing takes ownership: seed migrations skip this record forever.
+    origin: prev ? (prev.origin ?? 'seed') : 'user',
+    userEdited: true,
   };
 }
 let asmIdSeq = 0;
+let editingAssemblyRecord = null;
 
 async function saveAssembly() {
   const err = $('editorError');
@@ -2988,7 +3116,7 @@ async function loadPdf(data, name) {
     conditionsFromStored(proj.conditions, proj.activeConditionId); // migration-safe
     alternateGroupsFromStored(proj.alternateGroups);
     costInputsFromStored(proj.costInputs, proj.laborByScope);
-    measurements = proj.measurements.map(fromStored);
+    measurements = rewriteRetiredAssemblies(proj.measurements.map(fromStored));
     minWidthOverride = proj.minWidthOverride ?? null;
     reindexAfterRestore();
     setSaveState(`Saved ${new Date(proj.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
@@ -3304,12 +3432,33 @@ window.__harness = {
   },
   priceScope: scopeId => priceScope(scopeId),
   priceAll: () => priceAll(),
+  // Seed migration (phase 4b) — lets a test stage an old library and re-run it.
+  seedVersion: () => seed_version(),
+  currentSeedVersion: () => currentSeedVersion(),
+  migrateAssemblyLibrary: () => migrateAssemblyLibrary(),
+  listAssemblies: () => store.listAssemblies(),
+  putAssembly: rec => store.putAssembly(rec),
+  deleteAssembly: async id => { await store.deleteAssembly(id); await rememberSeedDeletion(id); },
+  rawDeleteAssembly: id => store.deleteAssembly(id), // staging only — not sticky
+  /// Rebuild the library as it would have looked at an older seed version.
+  stageLibraryAtVersion: async (version, records) => {
+    for (const a of await store.listAssemblies()) await store.deleteAssembly(a.id);
+    for (const r of records) await store.putAssembly(r);
+    await store.setMeta('deletedSeedIds', []);
+    // v1 is the PRE-versioning state: the boolean flag exists, the version key
+    // does not. That is exactly the library shape this migration has to rescue.
+    await store.setMeta('assemblySeedVersion', version === 1 ? undefined : version);
+    await store.setMeta('assembliesSeeded', true);
+  },
+  getMeta: k => store.getMeta(k),
+  setMeta: (k, v) => store.setMeta(k, v),
+  refreshAssemblyCache: () => refreshAssemblyCache(),
 };
 
 // ---- boot ----
 await init();
 store.requestPersist(); // best-effort: keep our storage across eviction
-await seedAssembliesOnce(); // populate the library from engine-core seeds
+await migrateAssemblyLibrary(); // seed, or upgrade an older library, from engine-core
 await refreshAssemblyCache(); // load the library into the sync render cache
 refreshConditionUI(); // populate the active-condition chip (empty until conditions exist)
 wireAssumptions(); // cost-assumptions form → costInputs (once)

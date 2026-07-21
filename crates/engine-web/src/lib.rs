@@ -677,6 +677,14 @@ pub fn seed_assemblies_json() -> String {
     seed_assemblies()
 }
 
+/// Version of the seed catalog `seed_assemblies_json` returns. A client
+/// persists the version it last seeded at and re-runs its seed migration when
+/// this is higher — see the harness's `migrateAssemblyLibrary`.
+#[wasm_bindgen]
+pub fn seed_version() -> u32 {
+    engine_core::assembly::seeds::SEED_VERSION
+}
+
 #[wasm_bindgen]
 pub struct RoomResult {
     contour: Vec<f64>,
