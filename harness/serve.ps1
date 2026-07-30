@@ -13,6 +13,7 @@ $mime = @{
   ".html" = "text/html"; ".js" = "text/javascript"; ".mjs" = "text/javascript"
   ".wasm" = "application/wasm"; ".css" = "text/css"; ".json" = "application/json"
   ".ts"   = "application/typescript"; ".map" = "application/json"; ".pdf" = "application/pdf"
+  ".webp" = "image/webp"; ".png" = "image/png"; ".svg" = "image/svg+xml"
 }
 while ($listener.IsListening) {
   $ctx = $listener.GetContext()

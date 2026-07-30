@@ -4,102 +4,364 @@
 <meta charset="utf-8">
 <title>engine-core wasm harness</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 16px; background: #f5f5f4; color: #1c1917; }
-  h1 { font-size: 1.05rem; }
-  #status { font-family: ui-monospace, monospace; white-space: pre-line; background: #fff;
-            border: 1px solid #d6d3d1; padding: 8px 12px; min-height: 5.5em; margin-top: 8px; }
-  canvas { border: 1px solid #a8a29e; background: #fff; cursor: crosshair; display: block; }
-  #canvasWrap { overflow: auto; max-height: 70vh; flex: 1 1 auto; min-width: 0; }
-  .bar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 6px 0; font-size: 0.9rem; }
-  button { font-size: 0.9rem; }
-  #calibFeet { width: 5em; }
-  .tool.active { background: #1d4ed8; color: #fff; }
-  #workRow { display: flex; gap: 12px; align-items: flex-start; }
-  #measPanel { flex: 0 0 285px; background: #fff; border: 1px solid #d6d3d1;
-               padding: 8px; font-size: 0.85rem; max-height: 655px; overflow-y: auto; }
-  .measRow { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap;
-             padding: 3px 4px; border-bottom: 1px solid #e7e5e4; }
-  .measRow:hover { background: #eff6ff; }
+  :root {
+    --bg: #0b0e14;
+    --surface: #12161f;
+    --surface-2: #171c28;
+    --surface-3: #1e2433;
+    --border: #262c3d;
+    --text: #e6e8ef;
+    --text-dim: #8b93a7;
+    --text-faint: #5b6376;
+    --accent: #cc3d49;
+    --accent-soft: rgba(204, 61, 73, 0.16);
+    --accent-text: #f8e4e6;
+    --danger: #ef4444;
+    --good: #22c55e;
+    --radius: 8px;
+    --radius-sm: 6px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    overflow: hidden;
+  }
+  button, select, input {
+    font-family: inherit;
+    font-size: 12.5px;
+    color: var(--text);
+  }
+  button {
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: var(--radius-sm);
+    padding: 5px 10px;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+  }
+  button:hover { background: #262d40; border-color: #333c54; }
+  button:active { transform: translateY(1px); }
+  button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+  }
+  select, input[type=number], input[type=text] {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+  }
+  input[type=range] { accent-color: var(--accent); }
+  input[type=checkbox] { accent-color: var(--accent); }
+
+  #appShell { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
+
+  /* ---------- ribbon ---------- */
+  #ribbon { background: var(--surface); border-bottom: 1px solid var(--border); }
+  .ribbon-row { display: flex; align-items: center; gap: 16px; padding: 8px 14px; min-height: 36px; }
+  #ribbonRow1 { justify-content: space-between; border-bottom: 1px solid var(--border); }
+  #brand { display: flex; align-items: center; gap: 10px; }
+  .brand-logo {
+    display: inline-flex; align-items: center; background: #fff;
+    border-radius: 6px; padding: 3px 8px;
+  }
+  .brand-logo img { display: block; height: 20px; width: auto; }
+  .brand-name { font-weight: 500; letter-spacing: 0.2px; margin-right: 6px; color: var(--text-dim); font-size: 12px; }
+  .file-btn {
+    background: var(--surface-3); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 5px 10px; cursor: pointer;
+  }
+  .file-btn:hover { background: #262d40; }
+  #fileNameDisplay { color: var(--text-dim); font-size: 12px; max-width: 260px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #ribbonTabs { display: flex; gap: 4px; }
+  .ribbonTab {
+    background: transparent; border: 1px solid transparent; color: var(--text-dim);
+    padding: 6px 14px; border-radius: var(--radius-sm); font-weight: 500;
+  }
+  .ribbonTab:hover { color: var(--text); background: var(--surface-2); }
+  .ribbonTab.active { color: var(--accent-text); background: var(--accent-soft); border-color: rgba(204,61,73,0.35); }
+  #quickActions { display: flex; align-items: center; gap: 8px; }
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; padding: 0; border-radius: var(--radius-sm);
+  }
+  .icon-btn svg { width: 16px; height: 16px; }
+
+  #ribbonRow2 { justify-content: space-between; }
+  #viewControls { display: flex; align-items: center; gap: 16px; color: var(--text-dim); font-size: 12.5px; }
+  #viewControls .pageNav, #viewControls .zoomGroup { display: flex; align-items: center; gap: 6px; }
+  #tabContentWrap { display: flex; align-items: center; }
+  .tabPanel { display: none; align-items: center; gap: 12px; }
+  .tabPanel.active { display: flex; }
+  #tools { display: flex; gap: 6px; }
+  .tool { display: flex; align-items: center; gap: 6px; }
+  .tool .ic { font-size: 13px; opacity: 0.85; }
+  .tool.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tool.active:hover { background: #a7323c; }
+  .fpiChip { color: var(--text-dim); }
+  .fpiChip b { color: var(--text); }
+  #tabPanel-engine .hint { color: var(--text-dim); font-style: italic; }
+
+  /* ---------- work area ---------- */
+  #workArea { display: grid; grid-template-columns: 1fr 320px; min-height: 0; overflow: hidden; }
+  #canvasWrap {
+    position: relative;
+    overflow: auto; min-width: 0; background: #05070c;
+    display: flex; padding: 18px;
+  }
+  canvas#plan { border: 1px solid #a8a29e; background: #fff; cursor: crosshair; display: block; margin: auto; }
+
+  /* ---------- welcome screen (placeholder branding, no PDF loaded yet) ---------- */
+  #welcomeScreen {
+    position: absolute; inset: 0; z-index: 5;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    background: radial-gradient(circle at 50% 35%, var(--surface-3), var(--bg) 70%);
+    text-align: center; padding: 24px;
+  }
+  #welcomeScreen[hidden] { display: none; }
+  .welcomeLogo {
+    background: #fff; border-radius: 14px; padding: 18px 26px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.35);
+  }
+  .welcomeLogo img { display: block; height: 72px; width: auto; }
+  .welcomeTitle { font-size: 12px; font-weight: 600; letter-spacing: 2px; color: var(--text-dim); text-transform: uppercase; }
+  .welcomeTagline { color: var(--text-dim); font-size: 12.5px; max-width: 340px; }
+  .welcomeCta {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+    padding: 8px 18px; font-size: 13px; font-weight: 600; margin-top: 4px;
+  }
+  .welcomeCta:hover { background: #a7323c; }
+
+  #measPanel {
+    background: var(--surface); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  #measPanelHead {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 10px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+  }
+  #measPanelHead b { font-size: 13px; }
+  #measPanelHead .rightBits { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-dim); }
+  #importJsonLabel { cursor: pointer; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  #importJsonLabel:hover { background: var(--surface-2); }
+  #measList { flex: 1 1 auto; overflow-y: auto; padding: 4px 0; }
+
+  .measGroup { border-bottom: 1px solid var(--border); }
+  .measGroupHead {
+    display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+    cursor: pointer; background: var(--surface-2); user-select: none;
+  }
+  .measGroupHead:hover { background: var(--surface-3); }
+  .measGroupHead .chev { color: var(--text-faint); width: 10px; }
+  .measGroupName { flex: 1 1 auto; font-weight: 600; font-size: 12px; }
+  .measGroupName:hover { text-decoration: underline dotted; }
+  .measGroupTotal { color: var(--text-dim); font-size: 11.5px; }
+
+  .measRow {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 6px 12px 6px 26px; border-bottom: 1px solid #1b2130; font-size: 12px;
+  }
+  .measRow:hover { background: var(--accent-soft); }
   .measName { cursor: text; font-weight: 500; }
   .measName:hover { text-decoration: underline dotted; }
-  .measVal { flex: 1 1 auto; }
-  .measRow .origin { color: #78716c; font-size: 0.75rem; }
-  .measRow .measColor { width: 22px; height: 16px; padding: 0; border: none; cursor: pointer; }
-  .renameInput { flex: 1 1 100%; font-size: 0.85rem; }
-  .measRow button { border: none; background: none; color: #dc2626; cursor: pointer; }
-  #projectPanel { background: #fff; border: 1px solid #d6d3d1; padding: 8px; margin: 6px 0;
-                  max-width: 640px; font-size: 0.85rem; }
-  .projRow { display: flex; align-items: baseline; gap: 10px; padding: 4px;
-             border-bottom: 1px solid #e7e5e4; }
+  .measVal { flex: 1 1 auto; color: var(--text); }
+  .measRow .origin { color: var(--text-faint); font-size: 10.5px; }
+  .measRow .measColor { width: 20px; height: 18px; padding: 0; border: none; border-radius: 4px; cursor: pointer; background: none; }
+  .renameInput { flex: 1 1 100%; font-size: 12px; }
+  .iconToggle {
+    border: none; background: none; padding: 2px; width: 22px; height: 22px;
+    display: inline-flex; align-items: center; justify-content: center; color: var(--text-dim); border-radius: 5px;
+  }
+  .iconToggle:hover { background: var(--surface-3); color: var(--text); }
+  .iconToggle svg { width: 14px; height: 14px; }
+  .iconToggle.off { color: var(--text-faint); opacity: 0.55; }
+  .delToggle { color: var(--danger); font-size: 13px; }
+  .delToggle:hover { background: rgba(239,68,68,0.15); color: var(--danger); }
+
+  #projectPanel {
+    position: fixed; top: 84px; right: 16px; width: 360px; max-height: 60vh; overflow-y: auto;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 10px; font-size: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.45); z-index: 500;
+  }
+  .projRow { display: flex; align-items: baseline; gap: 10px; padding: 6px 4px; border-bottom: 1px solid var(--border); }
   .projRow .projName { font-weight: 500; flex: 1 1 auto; }
-  .projRow .projMeta { color: #78716c; font-size: 0.78rem; }
-  .projRow button { font-size: 0.8rem; }
-  #storageModal:not([hidden]) { position: fixed; inset: 0; background: rgba(0,0,0,0.55);
-                  z-index: 1000; display: flex; align-items: center; justify-content: center; }
-  #storageModal > div { background: #fff; max-width: 480px; padding: 20px; border-radius: 6px;
-                        border: 2px solid #dc2626; }
-  #storageModal h2 { color: #dc2626; margin: 0 0 8px; font-size: 1rem; }
+  .projRow .projMeta { color: var(--text-dim); font-size: 10.5px; }
+  .projRow button { font-size: 11px; }
+  #projectQuota { color: var(--text-dim); font-size: 11px; margin-bottom: 4px; }
+
+  /* ---------- status bar ---------- */
+  #statusBar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 0 12px; height: 30px; background: var(--surface); border-top: 1px solid var(--border);
+    font-size: 11.5px; color: var(--text-dim);
+  }
+  #status {
+    flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #statusBadges { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px;
+    border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2);
+    font-size: 11px; cursor: pointer; color: var(--text-dim);
+  }
+  .pill input { margin: 0; }
+  .pill:has(input:checked) { background: var(--accent-soft); border-color: rgba(204,61,73,0.4); color: var(--accent-text); }
+  .scale-pill { cursor: default; }
+
+  /* ---------- engine settings drawer ---------- */
+  #engineDrawer:not([hidden]) {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 900;
+    display: flex; justify-content: flex-end;
+  }
+  #engineDrawerPanel {
+    width: 320px; height: 100%; background: var(--surface); border-left: 1px solid var(--border);
+    padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
+  }
+  .drawerHead { display: flex; align-items: center; justify-content: space-between; }
+  .drawerHead b { font-size: 13px; }
+  #engineDrawerPanel label { display: block; font-size: 12px; color: var(--text-dim); }
+  #engineDrawerPanel label input[type=range] { width: 100%; margin-top: 4px; }
+  .maskRow { font-size: 12px; color: var(--text-dim); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #vecInfo { font-size: 11px; color: var(--text-faint); line-height: 1.5; word-break: break-word; }
+
+  /* ---------- storage modal ---------- */
+  #storageModal:not([hidden]) {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #storageModal > div {
+    background: var(--surface-2); max-width: 480px; padding: 20px; border-radius: var(--radius);
+    border: 1px solid var(--danger);
+  }
+  #storageModal h2 { color: var(--danger); margin: 0 0 8px; font-size: 1rem; }
   #storageModal .actions { margin-top: 14px; display: flex; gap: 10px; }
 </style>
 </head>
 <body>
-<h1>Throwaway harness — click inside a room to flood-fill it (engine-core via wasm)</h1>
-<!-- NOTE (§A8 guard): pdf.js here is a measurement INSTRUMENT for this
-     throwaway harness only. The product renders server-side tile pyramids;
-     client-side full-PDF rendering remains rejected for the product. -->
-<div class="bar">
-  <input id="file" type="file" accept="application/pdf">
-  <span><button id="prev">◀</button> page <span id="pageLabel">–</span> <button id="next">▶</button></span>
-  <span>zoom: <button id="zoomOut">−</button> <button id="zoomFit">fit</button>
-    <button id="zoomIn">+</button> <span id="zoomLabel">–</span></span>
-  <label>scale: <select id="preset"><option value="">— choose or calibrate —</option></select></label>
-  <span id="tools">
-    <button class="tool active" data-tool="detect">detect</button>
-    <button class="tool" data-tool="line">line</button>
-    <button class="tool" data-tool="area">area</button>
-    <button class="tool" data-tool="wall">wall</button>
-    <button class="tool" data-tool="count">count</button>
-  </span>
-  <button id="calibBtn">Calibrate (2 clicks)</button>
-  <span id="calibEntry" hidden>feet: <input id="calibFeet" type="number" min="0.1" step="0.5" value="10">
-    <button id="calibApply">Apply</button></span>
-  <span>fpi = <b id="fpiLabel">4.0 (synthetic)</b></span>
-  <span id="saveState" title="autosave status">—</span>
-  <button id="projectsBtn" title="saved projects">Projects</button>
+<div id="appShell">
+  <header id="ribbon">
+    <!-- NOTE (§A8 guard): pdf.js here is a measurement INSTRUMENT for this
+         throwaway harness only. The product renders server-side tile pyramids;
+         client-side full-PDF rendering remains rejected for the product. -->
+    <div id="ribbonRow1" class="ribbon-row">
+      <div id="brand">
+        <span class="brand-logo"><img src="./assets/motor-city-logo.webp" alt="Motor City Floors and Coatings"></span>
+        <span class="brand-name">Takeoff Workspace</span>
+        <label class="file-btn">Choose File<input id="file" type="file" accept="application/pdf" hidden></label>
+        <span id="fileNameDisplay">no file loaded</span>
+      </div>
+      <nav id="ribbonTabs">
+        <button class="ribbonTab active" data-tab="tools">Takeoff Tools</button>
+        <button class="ribbonTab" data-tab="scale">Scale &amp; Pages</button>
+        <button class="ribbonTab" data-tab="engine">WASM Engine</button>
+      </nav>
+      <div id="quickActions">
+        <button id="exportCsv" title="download all measurements as CSV">Export CSV</button>
+        <button id="exportJson" title="download a JSON backup of this project">Export JSON</button>
+        <button id="projectsBtn" title="saved projects">Projects</button>
+        <button id="engineSettingsBtn" class="icon-btn" title="Engine settings" aria-label="Engine settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.56V21a2 2 0 0 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1H3a2 2 0 0 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.56V3a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 1 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.56 1H21a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </div>
+    <div id="ribbonRow2" class="ribbon-row">
+      <div id="viewControls">
+        <span class="pageNav"><button id="prev">◀</button> <span id="pageLabel">–</span> <button id="next">▶</button></span>
+        <span class="zoomGroup">zoom: <button id="zoomOut">−</button> <button id="zoomFit">fit</button>
+          <button id="zoomIn">+</button> <span id="zoomLabel">–</span></span>
+      </div>
+      <div id="tabContentWrap">
+        <div id="tabPanel-tools" class="tabPanel active">
+          <span id="tools">
+            <button class="tool active" data-tool="detect"><span class="ic">▦</span>Detect</button>
+            <button class="tool" data-tool="line"><span class="ic">╱</span>Line</button>
+            <button class="tool" data-tool="area"><span class="ic">▱</span>Area</button>
+            <button class="tool" data-tool="wall"><span class="ic">▤</span>Wall</button>
+            <button class="tool" data-tool="count"><span class="ic">①</span>Count</button>
+          </span>
+        </div>
+        <div id="tabPanel-scale" class="tabPanel">
+          <label>scale: <select id="preset"><option value="">— choose or calibrate —</option></select></label>
+          <button id="calibBtn">Calibrate (2 clicks)</button>
+          <span id="calibEntry" hidden>feet: <input id="calibFeet" type="number" min="0.1" step="0.5" value="10">
+            <button id="calibApply">Apply</button></span>
+          <span class="fpiChip">fpi = <b id="fpiLabel">4.0 (synthetic)</b></span>
+        </div>
+        <div id="tabPanel-engine" class="tabPanel">
+          <span class="hint">Detection tuning lives in the Engine Settings panel (gear icon).</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main id="workArea">
+    <div id="canvasWrap">
+      <canvas id="plan" width="900" height="650"></canvas>
+      <div id="welcomeScreen">
+        <div class="welcomeLogo"><img src="./assets/motor-city-logo.webp" alt="Motor City Floors and Coatings"></div>
+        <div class="welcomeTitle">Takeoff Workspace</div>
+        <div class="welcomeTagline">Load a plan PDF to calibrate scale and start measuring.</div>
+        <button class="welcomeCta" id="welcomeChooseFile">Choose a PDF to begin</button>
+      </div>
+    </div>
+    <aside id="measPanel">
+      <div id="measPanelHead">
+        <b>Takeoff</b>
+        <div class="rightBits">
+          <label><input id="allPages" type="checkbox"> all pages</label>
+          <label id="importJsonLabel" title="restore a project from a JSON backup">import JSON<input id="importJson" type="file" accept="application/json,.json" hidden></label>
+        </div>
+      </div>
+      <div id="measList">(none yet)</div>
+    </aside>
+  </main>
+
+  <footer id="statusBar">
+    <div id="status">loading wasm…</div>
+    <div id="statusBadges">
+      <label class="pill" id="snapPill"><input id="snapChk" type="checkbox" checked> Snap Calib</label>
+      <label class="pill" id="hatchPill"><input id="hideHatch" type="checkbox" checked disabled> Hide Hatch</label>
+      <span class="pill scale-pill" id="fpiBadge">–</span>
+      <span id="saveState" class="pill" title="autosave status">—</span>
+    </div>
+  </footer>
 </div>
+
+<div id="engineDrawer" hidden>
+  <div id="engineDrawerPanel">
+    <div class="drawerHead"><b>Engine Settings</b><button id="engineDrawerClose" class="icon-btn" aria-label="Close">✕</button></div>
+    <label>wall_threshold
+      <input id="thresh" type="range" min="0" max="255" step="5" value="200">
+      <span id="threshVal">200</span>
+    </label>
+    <label>door_gap_ft
+      <input id="doorGap" type="range" min="1" max="15" step="0.5" value="3.5">
+      <span id="doorGapVal">3.5</span> ft
+    </label>
+    <div class="maskRow">mask:
+      <label style="display:inline"><input type="radio" name="maskSrc" id="maskRaster" value="raster" checked> raster</label>
+      <label style="display:inline"><input type="radio" name="maskSrc" id="maskVector" value="vector" disabled> vector</label>
+    </div>
+    <label>min_width
+      <input id="minWidth" type="range" min="0" max="2" step="0.01" value="0" disabled>
+      <span id="minWidthVal">–</span> pts
+    </label>
+    <button id="minWidthReset" hidden title="reset min_width to the per-page derived default">↺ derived</button>
+    <div id="vecInfo">no vector geometry</div>
+  </div>
+</div>
+
 <div id="projectPanel" hidden>
   <div id="projectQuota" class="origin"></div>
   <div id="projectList"></div>
 </div>
-<div class="bar">
-  <label>wall_threshold: <input id="thresh" type="range" min="0" max="255" step="5" value="200">
-    <span id="threshVal">200</span></label>
-  <label>door_gap_ft: <input id="doorGap" type="range" min="1" max="15" step="0.5" value="3.5">
-    <span id="doorGapVal">3.5</span> ft</label>
-</div>
-<div class="bar">
-  <span>mask:
-    <label><input type="radio" name="maskSrc" id="maskRaster" value="raster" checked> raster</label>
-    <label><input type="radio" name="maskSrc" id="maskVector" value="vector" disabled> vector</label>
-  </span>
-  <label>min_width: <input id="minWidth" type="range" min="0" max="2" step="0.01" value="0" disabled>
-    <span id="minWidthVal">–</span> pts</label>
-  <button id="minWidthReset" hidden title="reset min_width to the per-page derived default">↺ derived</button>
-  <label><input id="snapChk" type="checkbox" checked> snap calib clicks</label>
-  <label><input id="hideHatch" type="checkbox" checked disabled> hide hatch</label>
-  <span id="vecInfo">no vector geometry</span>
-</div>
-<div id="workRow">
-  <div id="canvasWrap"><canvas id="plan" width="900" height="650"></canvas></div>
-  <div id="measPanel"><b>Measurements</b>
-    <button id="exportCsv" style="float:right" title="download all measurements as CSV">export CSV</button>
-    <button id="exportJson" style="float:right;margin-right:6px" title="download a JSON backup of this project">export JSON</button>
-    <label id="importJsonLabel" style="float:right;margin-right:6px;cursor:pointer" title="restore a project from a JSON backup">
-      import JSON<input id="importJson" type="file" accept="application/json,.json" hidden></label>
-    <label style="float:right;font-weight:normal;margin-right:8px"><input id="allPages" type="checkbox"> all pages</label>
-    <div id="measList">(none yet)</div></div>
-</div>
-<div id="status">loading wasm…</div>
+
 <div id="storageModal" hidden>
   <div>
     <h2>⚠ Storage write failed</h2>
@@ -124,6 +386,10 @@ const canvas = document.getElementById('plan');
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 const $ = id => document.getElementById(id);
 const status = $('status');
+
+const ICON_EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.9 17.9A10.9 10.9 0 0 1 12 19c-7 0-11-7-11-7a19.7 19.7 0 0 1 4.2-5.1M9.9 4.2A9.8 9.8 0 0 1 12 4c7 0 11 7 11 7a19.7 19.7 0 0 1-2.2 3.1"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2"/><path d="M1 1l22 22"/></svg>';
+const ICON_SNAP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/></svg>';
 
 // ---- state ----
 let pdfDoc = null, pageNum = 1;
@@ -154,11 +420,12 @@ let draft = null;           // {verts:[{x,y,snapped}], anySnap} while line/area 
 let countDraft = [];        // in-progress count markers, base units (count tool)
 let chainPreview = null;    // parsed chain_json result awaiting commit
 let hover = null;           // {x, y, snap} last cursor position (base units)
-let measurements = [];      // {id, kind, name, value, valueText, origin, geometry}
+let measurements = [];      // {id, kind, name, category, visible, snapEnabled, value, valueText, origin, geometry}
 let hoverMeas = null;       // measurement id emphasized from the list panel
 let measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
 let nextMeasId = 1;
 let lastClick = null;       // {t, cx, cy} — double-click debounce
+let collapsedCategories = new Set(); // measurement-tree groups the user collapsed (session-only)
 
 // ---- persistence (harness-only IndexedDB; see store.js / README) ----
 let currentSha = null;      // content hash of the open PDF (project key)
@@ -168,7 +435,7 @@ let saveTimer = null;       // debounce handle
 let storageBlocked = false; // set on a write failure — blocks further edits
 
 const pxPerFoot = () => (72 / curFpi()) * s;
-const say = t => { status.textContent = t; };
+const say = t => { status.textContent = t; status.title = t; };
 
 // ---- synthetic fallback plan (unchanged demo) ----
 function drawSynthetic() {
@@ -227,6 +494,57 @@ async function setZoom(next, anchor) {
 
 let renderGen = 0; // serialize overlapping renderPage calls (rapid zoom)
 
+// ---- best-effort sheet title (outline bookmark, else title-block scrape) ----
+let outlineTitles = null;      // Map<pageNumber(1-based), title> | null once built
+let sheetTitleCache = new Map(); // pageNum -> title string | null
+
+async function buildOutlineTitles() {
+  outlineTitles = new Map();
+  try {
+    const outline = await pdfDoc.getOutline();
+    if (!outline) return;
+    const walk = async items => {
+      for (const it of items) {
+        try {
+          let dest = it.dest;
+          if (typeof dest === 'string') dest = await pdfDoc.getDestination(dest);
+          if (dest) {
+            const idx = await pdfDoc.getPageIndex(dest[0]);
+            if (!outlineTitles.has(idx + 1)) outlineTitles.set(idx + 1, it.title);
+          }
+        } catch { /* unresolvable dest: skip this entry */ }
+        if (it.items && it.items.length) await walk(it.items);
+      }
+    };
+    await walk(outline);
+  } catch { /* no outline in this document */ }
+}
+
+/// Best-effort sheet title for the page label: an outline/bookmark entry
+/// if the PDF has one, else a heuristic scrape of the bottom-right title
+/// block (where sheet numbers/titles live on most arch/eng sets). Never
+/// touches the wasm engine — pure pdf.js text content, cached per page.
+async function sheetTitleFor(n) {
+  if (sheetTitleCache.has(n)) return sheetTitleCache.get(n);
+  if (outlineTitles === null) await buildOutlineTitles();
+  let title = outlineTitles.get(n) ?? null;
+  if (!title) {
+    try {
+      const page = await pdfDoc.getPage(n);
+      const vp = page.getViewport({ scale: 1 });
+      const tc = await page.getTextContent();
+      const bx = vp.width * 0.55, by = vp.height * 0.15; // bottom-right title block
+      const candidates = tc.items
+        .filter(it => it.transform[4] >= bx && it.transform[5] <= by)
+        .map(it => it.str.trim())
+        .filter(t => t.length >= 3 && t.length <= 48 && /[a-zA-Z]/.test(t));
+      title = candidates.sort((a, b) => b.length - a.length)[0] ?? null;
+    } catch { title = null; }
+  }
+  sheetTitleCache.set(n, title);
+  return title;
+}
+
 async function renderPage() {
   const gen = ++renderGen;
   if (!pdfDoc) { drawSynthetic(); await cacheClean(); setGeometry(null); return; }
@@ -240,6 +558,10 @@ async function renderPage() {
     await page.render({ canvasContext: ctx, viewport: vp }).promise;
     if (gen !== renderGen) return;
     $('pageLabel').textContent = `${pageNum} / ${pdfDoc.numPages}`;
+    sheetTitleFor(pageNum).then(title => {
+      if (gen !== renderGen || !title) return;
+      $('pageLabel').textContent = `${pageNum} / ${pdfDoc.numPages} — ${title}`;
+    });
     zoomLabel();
     await cacheClean();
     // Vector geometry is per PAGE (base units), independent of render scale.
@@ -436,6 +758,7 @@ function render() {
   }
   for (const m of measurements) {
     if (m.page !== currentPage()) continue; // page-scoped rendering
+    if (m.visible === false) continue;       // eye-toggled off
     const hot = m.id === hoverMeas;
     const col = m.color;
     if (m.kind === 'count') {
@@ -566,16 +889,14 @@ async function runDetect(baseX, baseY) {
       ? `min_width ${minWidthPts().toFixed(2)} pts`
       : `threshold ${threshold}`;
     say(`click (${x}, ${y}) det-px | mask ${src} | fpi ${curFpi().toFixed(3)} | ` +
-        `det ppf ${ppfUsed.toFixed(2)} | ${knobs} | door_gap ${doorGap}\n` +
-        `area_sf       = ${r.area_sf.toFixed(1)} SF\n` +
-        `perimeter_lf  = ${r.perimeter_lf.toFixed(1)} LF\n` +
-        `measure_polyline(closed contour) = ${viaPolyline.toFixed(1)} LF  (cross-check: ` +
-        `${Math.abs(viaPolyline - r.perimeter_lf) < 1e-6 ? 'MATCH' : 'MISMATCH'})\n` +
-        `contour vertices = ${c.length / 2}`);
+        `det ppf ${ppfUsed.toFixed(2)} | ${knobs} | door_gap ${doorGap} | ` +
+        `area_sf ${r.area_sf.toFixed(1)} SF | perimeter_lf ${r.perimeter_lf.toFixed(1)} LF | ` +
+        `polyline check ${Math.abs(viaPolyline - r.perimeter_lf) < 1e-6 ? 'MATCH' : 'MISMATCH'} | ` +
+        `contour vertices ${c.length / 2}`);
   } catch (e) {
     render();
     if (e && e.code === 'REGION_NOT_ENCLOSED') {
-      say(`[${e.code}] Region not enclosed — falling back to manual trace.\n(${e.message})`);
+      say(`[${e.code}] Region not enclosed — falling back to manual trace. (${e.message})`);
     } else if (e && e.code) {
       say(`[${e.code}] ${e.message}`);
     } else {
@@ -599,12 +920,18 @@ function applyCalibration(feet) {
 }
 
 // ---- measurement list ----
+/// Measurement fields beyond geometry/kind/value are harness display
+/// extensions (like `color` already was): `category` groups the tree,
+/// `visible`/`snapEnabled` back the per-row eye/snap toggles.
 function addMeasurement(kind, family, value, valueText, origin, geometry) {
   measSeq[family] += 1;
   measurements.push({
     id: nextMeasId++,
     kind,
     name: `${family} ${measSeq[family]}`,
+    category: family,
+    visible: true,
+    snapEnabled: true,
     value, valueText, origin,
     page: currentPage(), // authoritative at commit time (§A2)
     color: '#1e3a8a',    // user-recolourable (measurement editing)
@@ -644,7 +971,9 @@ function revalueMeasurements() {
 /// move (invariant 5: values re-derive, geometry stays put).
 function applyScaleChange(newFpi, sourceLabel) {
   pageScales.set(currentPage(), { fpi: newFpi, source: sourceLabel });
-  $('fpiLabel').textContent = `${newFpi.toFixed(4)} (${sourceLabel}, p${currentPage()})`;
+  const label = `${newFpi.toFixed(4)} (${sourceLabel}, p${currentPage()})`;
+  $('fpiLabel').textContent = label;
+  $('fpiBadge').textContent = `fpi ${newFpi.toFixed(2)}`;
   detCache = null;
   revalueMeasurements();
   render();
@@ -655,19 +984,24 @@ function applyScaleChange(newFpi, sourceLabel) {
 
 /// Measurement → stored record. Mirrors §A2 field names; NEVER stores
 /// derived values (invariant 5 — value/valueText recompute on load).
-/// `color` is a documented harness display-only extension.
+/// `color`/`category`/`visible`/`snapEnabled` are documented harness
+/// display-only extensions.
 function toStored(m) {
   return {
     id: m.id, page: m.page, kind: m.kind, label: m.name, origin: m.origin,
     geometry: Array.from(m.geometry),
     confirmedBy: null, parentId: null, deleted: null, // §A2 optionals, unused here
-    color: m.color,
+    color: m.color, category: m.category,
+    visible: m.visible !== false, snapEnabled: m.snapEnabled !== false,
   };
 }
 function fromStored(r) {
   return {
     id: r.id, kind: r.kind, name: r.label, origin: r.origin, page: r.page,
     color: r.color ?? '#1e3a8a',
+    category: r.category ?? r.kind,
+    visible: r.visible !== false,
+    snapEnabled: r.snapEnabled !== false,
     value: 0, valueText: '', // recomputed below
     geometry: Float64Array.from(r.geometry),
   };
@@ -833,10 +1167,139 @@ async function renderProjectPanel() {
 /// Sync the scale chip to the current page (page switches, file loads).
 function refreshScaleUI() {
   const f = scaleOf(currentPage());
-  $('fpiLabel').textContent = f == null ? '— set scale —' : `${f.toFixed(4)} (p${currentPage()})`;
+  const label = f == null ? '— set scale —' : `${f.toFixed(4)} (p${currentPage()})`;
+  $('fpiLabel').textContent = label;
+  $('fpiBadge').textContent = f == null ? 'no scale' : `fpi ${f.toFixed(2)}`;
   $('preset').value = '';
 }
 
+const UNIT = { linear: 'LF', area: 'SF', count: 'EA' };
+
+/// Sum quantities within a category group for its header, split by unit
+/// (a mixed-kind group shows one total per unit rather than a meaningless
+/// cross-unit sum).
+function summarizeGroup(members) {
+  const byUnit = new Map();
+  for (const m of members) {
+    const u = UNIT[m.kind] ?? '';
+    byUnit.set(u, (byUnit.get(u) ?? 0) + m.value);
+  }
+  return [...byUnit].map(([u, v]) => `${v.toFixed(1)} ${u}`).join(' · ');
+}
+
+/// Swap a category header label for an inline text input; committing
+/// renames the category for every measurement currently in that group
+/// (the tree's "rename this bucket to a trade name" gesture).
+function beginRenameCategory(oldCat, span) {
+  const input = document.createElement('input');
+  input.className = 'renameInput'; input.value = oldCat;
+  let done = false;
+  const commit = save => {
+    if (done) return; done = true;
+    if (save) {
+      const v = input.value.trim();
+      if (v && v !== oldCat) {
+        for (const m of measurements) if ((m.category ?? m.kind) === oldCat) m.category = v;
+        markDirty();
+      }
+    }
+    renderMeasList();
+  };
+  input.addEventListener('click', ev => ev.stopPropagation());
+  input.addEventListener('keydown', ev => {
+    ev.stopPropagation();
+    if (ev.key === 'Enter') commit(true);
+    else if (ev.key === 'Escape') commit(false);
+  });
+  input.addEventListener('blur', () => commit(true));
+  span.replaceWith(input);
+  input.focus(); input.select();
+}
+
+/// Swap a name span for an inline text input; Enter/blur commits, Esc
+/// reverts. Names are per-measurement free text.
+function beginRename(m, span) {
+  const input = document.createElement('input');
+  input.className = 'renameInput'; input.value = m.name;
+  let done = false;
+  const commit = save => {
+    if (done) return; done = true;
+    if (save) { const v = input.value.trim(); if (v && v !== m.name) { m.name = v; markDirty(); } }
+    renderMeasList();
+  };
+  input.addEventListener('keydown', ev => {
+    ev.stopPropagation(); // don't let Enter/Backspace reach the canvas tools
+    if (ev.key === 'Enter') commit(true);
+    else if (ev.key === 'Escape') commit(false);
+  });
+  input.addEventListener('blur', () => commit(true));
+  span.replaceWith(input);
+  input.focus(); input.select();
+}
+
+/// Build one measurement row: name (rename), value, provenance/page
+/// origin, colour swatch, eye (visibility), snap (used as a snap target
+/// for new draws), delete.
+function buildMeasRow(m) {
+  const row = document.createElement('div');
+  row.className = 'measRow';
+  const name = document.createElement('span');
+  name.className = 'measName';
+  name.title = 'click to rename';
+  name.textContent = m.name;
+  name.addEventListener('click', () => beginRename(m, name));
+  const value = document.createElement('span');
+  value.className = 'measVal';
+  value.textContent = ` — ${m.valueText}`;
+  const origin = document.createElement('span');
+  origin.className = 'origin';
+  origin.textContent = `${m.origin} · ${m.page === 0 ? 'syn' : `p${m.page}`}`;
+  const colour = document.createElement('input');
+  colour.type = 'color'; colour.className = 'measColor'; colour.value = m.color;
+  colour.title = 'measurement colour';
+  colour.addEventListener('input', () => { m.color = colour.value; render(); markDirty(); });
+  const eye = document.createElement('button');
+  eye.className = 'iconToggle eyeToggle';
+  eye.type = 'button';
+  eye.title = m.visible === false ? 'hidden on canvas — click to show' : 'visible on canvas — click to hide';
+  eye.innerHTML = m.visible === false ? ICON_EYE_OFF : ICON_EYE;
+  eye.classList.toggle('off', m.visible === false);
+  eye.addEventListener('click', () => {
+    m.visible = m.visible === false ? true : false;
+    renderMeasList(); render(); markDirty();
+  });
+  const snap = document.createElement('button');
+  snap.className = 'iconToggle snapToggle';
+  snap.type = 'button';
+  snap.title = m.snapEnabled === false
+    ? 'not a snap target — click to enable'
+    : 'snap target for new draws — click to disable';
+  snap.innerHTML = ICON_SNAP;
+  snap.classList.toggle('off', m.snapEnabled === false);
+  snap.addEventListener('click', () => {
+    m.snapEnabled = m.snapEnabled === false ? true : false;
+    renderMeasList(); markDirty();
+  });
+  const del = document.createElement('button');
+  del.className = 'iconToggle delToggle';
+  del.type = 'button';
+  del.textContent = '✕';
+  del.title = 'delete';
+  del.addEventListener('click', () => {
+    measurements = measurements.filter(x => x.id !== m.id);
+    if (hoverMeas === m.id) hoverMeas = null;
+    renderMeasList(); render(); markDirty();
+  });
+  row.addEventListener('mouseenter', () => { hoverMeas = m.id; render(); });
+  row.addEventListener('mouseleave', () => { hoverMeas = null; render(); });
+  row.append(name, value, origin, colour, eye, snap, del);
+  return row;
+}
+
+/// Hierarchical tree: measurements grouped by category (defaults to the
+/// tool family — Line/Area/Wall run/Room/Count — renamable per group to a
+/// real trade category via the group header). Groups collapse/expand;
+/// membership and row internals are otherwise identical to the flat list.
 function renderMeasList() {
   const list = $('measList');
   list.textContent = '';
@@ -846,40 +1309,41 @@ function renderMeasList() {
     list.textContent = all ? '(none yet)' : `(none on ${pdfDoc ? `page ${currentPage()}` : 'this sheet'})`;
     return;
   }
+  const groups = new Map(); // category -> measurement[]
   for (const m of visible) {
-    const row = document.createElement('div');
-    row.className = 'measRow';
-    // Name — click to rename inline (free text, flows to CSV export).
+    const key = m.category ?? m.kind;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(m);
+  }
+  for (const [cat, members] of groups) {
+    const section = document.createElement('div');
+    section.className = 'measGroup';
+    const head = document.createElement('div');
+    head.className = 'measGroupHead';
+    const collapsed = collapsedCategories.has(cat);
+    const chev = document.createElement('span');
+    chev.className = 'chev';
+    chev.textContent = collapsed ? '▸' : '▾';
     const name = document.createElement('span');
-    name.className = 'measName';
-    name.title = 'click to rename';
-    name.textContent = m.name;
-    name.addEventListener('click', () => beginRename(m, name));
-    const value = document.createElement('span');
-    value.className = 'measVal';
-    value.textContent = ` — ${m.valueText}`;
-    const origin = document.createElement('span');
-    origin.className = 'origin';
-    origin.textContent = `${m.origin} · ${m.page === 0 ? 'syn' : `p${m.page}`}`;
-    const colour = document.createElement('input');
-    colour.type = 'color'; colour.className = 'measColor'; colour.value = m.color;
-    colour.title = 'measurement colour';
-    colour.addEventListener('input', () => { m.color = colour.value; render(); markDirty(); });
-    const del = document.createElement('button');
-    del.textContent = '✕';
-    del.addEventListener('click', () => {
-      measurements = measurements.filter(x => x.id !== m.id);
-      if (hoverMeas === m.id) hoverMeas = null;
-      renderMeasList(); render(); markDirty();
+    name.className = 'measGroupName';
+    name.title = 'click to rename this category';
+    name.textContent = `${cat} (${members.length})`;
+    name.addEventListener('click', ev => { ev.stopPropagation(); beginRenameCategory(cat, name); });
+    const total = document.createElement('span');
+    total.className = 'measGroupTotal';
+    total.textContent = summarizeGroup(members);
+    head.append(chev, name, total);
+    head.addEventListener('click', () => {
+      if (collapsedCategories.has(cat)) collapsedCategories.delete(cat); else collapsedCategories.add(cat);
+      renderMeasList();
     });
-    row.addEventListener('mouseenter', () => { hoverMeas = m.id; render(); });
-    row.addEventListener('mouseleave', () => { hoverMeas = null; render(); });
-    row.append(name, value, origin, colour, del);
-    list.append(row);
+    section.appendChild(head);
+    if (!collapsed) {
+      for (const m of members) section.appendChild(buildMeasRow(m));
+    }
+    list.appendChild(section);
   }
 }
-
-const UNIT = { linear: 'LF', area: 'SF', count: 'EA' };
 
 /// One CSV cell: quote if it contains comma, quote, or newline; double
 /// internal quotes. Names are free text, so this is load-bearing.
@@ -911,27 +1375,6 @@ function buildCsv() {
   return rows.join('\n') + '\n';
 }
 
-/// Swap a name span for an inline text input; Enter/blur commits, Esc
-/// reverts. Names are per-measurement free text.
-function beginRename(m, span) {
-  const input = document.createElement('input');
-  input.className = 'renameInput'; input.value = m.name;
-  let done = false;
-  const commit = save => {
-    if (done) return; done = true;
-    if (save) { const v = input.value.trim(); if (v && v !== m.name) { m.name = v; markDirty(); } }
-    renderMeasList();
-  };
-  input.addEventListener('keydown', ev => {
-    ev.stopPropagation(); // don't let Enter/Backspace reach the canvas tools
-    if (ev.key === 'Enter') commit(true);
-    else if (ev.key === 'Escape') commit(false);
-  });
-  input.addEventListener('blur', () => commit(true));
-  span.replaceWith(input);
-  input.focus(); input.select();
-}
-
 // ---- tool interaction ----
 function setTool(next) {
   tool = next;
@@ -949,6 +1392,24 @@ function setTool(next) {
   };
   say(hints[next]);
   render();
+}
+
+/// Nearest ENDPOINT among snap-enabled, visible measurements on the
+/// current page. Checked before the vector-geometry snap so a
+/// user-toggled measurement vertex always wins (endpoint priority, per
+/// the addendum's stated snap-priority convention). Pure JS geometry —
+/// never touches the wasm engine.
+function measurementSnapNear(x, y, tolBase) {
+  let best = null, bestD = tolBase;
+  for (const m of measurements) {
+    if (m.page !== currentPage() || m.visible === false || m.snapEnabled === false) continue;
+    const g = m.geometry;
+    for (let i = 0; i < g.length; i += 2) {
+      const d = Math.hypot(g[i] - x, g[i + 1] - y);
+      if (d < bestD) { bestD = d; best = { x: g[i], y: g[i + 1], kind: 'measurement' }; }
+    }
+  }
+  return best;
 }
 
 /// Cursor event → base units, with snap (unless Shift constrains) applied.
@@ -974,13 +1435,18 @@ function cursorPoint(ev) {
     const t = dx * Math.cos(ang) + dy * Math.sin(ang);
     pt.x = last.x + t * Math.cos(ang);
     pt.y = last.y + t * Math.sin(ang);
-  } else if ($('snapChk').checked && pageGeom && tool !== 'count') {
+  } else if ($('snapChk').checked && tool !== 'count') {
     // Counts click symbols, not geometry — snapping stays off for them.
-    const hit = pageGeom.snap_json(pt.x, pt.y, 10 / s);
-    if (hit) {
-      pt.snap = JSON.parse(hit);
-      pt.x = pt.snap.x;
-      pt.y = pt.snap.y;
+    const mHit = measurementSnapNear(pt.x, pt.y, 10 / s);
+    if (mHit) {
+      pt.snap = mHit; pt.x = mHit.x; pt.y = mHit.y;
+    } else if (pageGeom) {
+      const hit = pageGeom.snap_json(pt.x, pt.y, 10 / s);
+      if (hit) {
+        pt.snap = JSON.parse(hit);
+        pt.x = pt.snap.x;
+        pt.y = pt.snap.y;
+      }
     }
   }
   return pt;
@@ -1192,12 +1658,16 @@ async function loadPdf(data, name) {
   const bytes = data instanceof ArrayBuffer ? data : data.buffer;
   currentBytes = bytes.slice(0);
   currentName = name;
+  $('welcomeScreen').hidden = true;
   currentSha = await store.sha256(currentBytes);
   storageBlocked = false;
   pdfDoc = await pdfjs.getDocument({ data: bytes.slice(0) }).promise;
   pageNum = 1; extractCache.clear(); detCache = null;
+  outlineTitles = null; sheetTitleCache.clear();
   cancelTransients(null);
   minWidthOverride = null;
+  $('fileNameDisplay').textContent = name;
+  $('fileNameDisplay').title = name;
 
   // Restore a saved project for this content, or start fresh.
   let proj = null;
@@ -1236,14 +1706,25 @@ async function changePage(n) {
   renderMeasList();
   await renderPage();
 }
-$('zoomIn').addEventListener('click', () => setZoom(s * 1.25, null));
-$('zoomOut').addEventListener('click', () => setZoom(s / 1.25, null));
-$('zoomFit').addEventListener('click', async () => {
+
+/// Fit the page to the canvas wrap's current width. Shared by the "fit"
+/// button and the window-resize handler so the drawing surface always
+/// fills its container without distorting aspect ratio or scale.
+async function fitToWidth() {
   if (!pdfDoc) return;
   fitS = fitWidthScale();
   await setZoom(fitS, null);
   const wrap = $('canvasWrap');
   wrap.scrollLeft = 0; wrap.scrollTop = 0;
+}
+
+$('zoomIn').addEventListener('click', () => setZoom(s * 1.25, null));
+$('zoomOut').addEventListener('click', () => setZoom(s / 1.25, null));
+$('zoomFit').addEventListener('click', fitToWidth);
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(fitToWidth, 150);
 });
 canvas.addEventListener('wheel', ev => {
   if (!ev.ctrlKey || !pdfDoc) return;
@@ -1412,6 +1893,38 @@ if (!qs.has('url') && (await store.listProjects()).length) {
   $('projectPanel').hidden = false;
   await renderProjectPanel();
 }
+</script>
+
+<script>
+// Ribbon tab switching + Engine Settings drawer — pure DOM/CSS wiring,
+// entirely independent of the wasm engine and the module script above.
+(() => {
+  const tabs = document.querySelectorAll('.ribbonTab');
+  const panels = {
+    tools: document.getElementById('tabPanel-tools'),
+    scale: document.getElementById('tabPanel-scale'),
+    engine: document.getElementById('tabPanel-engine'),
+  };
+  const drawer = document.getElementById('engineDrawer');
+  const openDrawer = () => { drawer.hidden = false; };
+  const closeDrawer = () => { drawer.hidden = true; };
+  function activateTab(name) {
+    for (const t of tabs) t.classList.toggle('active', t.dataset.tab === name);
+    for (const [k, el] of Object.entries(panels)) el.classList.toggle('active', k === name);
+    if (name === 'engine') openDrawer();
+  }
+  for (const t of tabs) t.addEventListener('click', () => activateTab(t.dataset.tab));
+  document.getElementById('engineSettingsBtn').addEventListener('click', () => activateTab('engine'));
+  document.getElementById('engineDrawerClose').addEventListener('click', closeDrawer);
+  drawer.addEventListener('click', ev => { if (ev.target === drawer) closeDrawer(); });
+  window.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape' && !drawer.hidden) closeDrawer();
+  });
+  // Welcome screen's CTA reuses the real file picker — no separate load path.
+  document.getElementById('welcomeChooseFile').addEventListener('click', () => {
+    document.getElementById('file').click();
+  });
+})();
 </script>
 </body>
 </html>

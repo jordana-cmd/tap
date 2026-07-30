@@ -69,6 +69,11 @@ const snapOff = page => page.evaluate(() => {
   const c = document.querySelector('#snapChk');
   if (c.checked) c.click();
 });
+// The redesigned ribbon tab-gates the scale/preset controls and drawer-gates
+// the raw engine knobs; real Puppeteer clicks (unlike in-page .click()/$eval)
+// require the target to actually be visible, so switch context first.
+const openScaleTab = page => page.click('.ribbonTab[data-tab="scale"]');
+const openEngineDrawer = page => page.click('#engineSettingsBtn');
 const near = (a, b, tol) => Math.abs(a - b) <= tol;
 
 async function run(name, fn) {
@@ -195,6 +200,7 @@ await run('Enter still finishes after focusing a control (slider)', async page =
   await setTool(page, 'area');
   await snapOff(page);
   for (const [x, y] of SQ) await clickBase(page, x, y);
+  await openEngineDrawer(page);
   await page.focus('#doorGap'); // leftover focus on a range input
   await page.keyboard.press('Enter');
   const st = await state(page);
@@ -309,7 +315,11 @@ await run('scale is per page (guard + independent values)', async page => {
   let st = await state(page);
   assert.match(st.status, /[Ss]et a scale/, `page 2 should demand a scale: ${st.status}`);
   // Give page 2 its own scale (engineer 1"=20' → fpi 20) via preset.
+  await openScaleTab(page);
   await page.select('#preset', '20');
+  // The tool buttons live under the Takeoff Tools ribbon tab (hidden while
+  // Scale & Pages is active) — a real user switches back to reach them.
+  await page.click('.ribbonTab[data-tab="tools"]');
   await setTool(page, 'area');
   for (const [x, y] of [[600, 100], [700, 100], [700, 200], [600, 200]]) await clickBase(page, x, y);
   await page.keyboard.press('Enter');
@@ -446,6 +456,7 @@ await run('min_width override sticks across pages; reset re-derives', async page
   assert.equal(st.val, '0.77', 'override persists across the page switch');
   assert.equal(st.resetHidden, false);
   // Reset → back to this page's derived default, control hidden.
+  await openEngineDrawer(page);
   await page.click('#minWidthReset');
   st = await read();
   assert.equal(st.resetHidden, true, 'reset hides the control');
@@ -599,8 +610,10 @@ await run('storage write failure blocks edits until acknowledged', async page =>
   await page.evaluate(() => window.__harness.simulateStorageError());
   assert.equal(await page.evaluate(() => window.__harness.storageBlocked()), true);
   assert.equal(await page.$eval('#storageModal', el => el.hidden), false, 'modal shown');
-  // A canvas edit attempt while blocked does nothing (guard + overlay).
-  await clickBase(page, 600, 300);
+  // A canvas edit attempt while blocked does nothing (guard + overlay). The
+  // modal is viewport-centered, so probe a corner point — a center point
+  // would land on the modal's own buttons rather than the canvas underneath.
+  await clickBase(page, 20, 20);
   await page.keyboard.press('Enter');
   assert.equal((await state(page)).meas.length, 1, 'no new measurement while blocked');
   // Dismiss (the modal button is on top) → unblocked, edits resume.
@@ -637,6 +650,7 @@ await run('all-tools smoke: zero page errors across every tool', async page => {
   await page.keyboard.press('Enter');
   await setTool(page, 'detect');
   await clickBase(page, 200, 350); // inside room 1
+  await openScaleTab(page);
   await page.click('#calibBtn');
   await clickBase(page, 100, 400);
   await clickBase(page, 250, 400);
