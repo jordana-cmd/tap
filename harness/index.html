@@ -62,6 +62,14 @@
 
   #appShell { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
 
+  /* Hash-routed views: #workArea and #quoteView are siblings and exactly
+     one is displayed, so the 3-row shell grid (header / view / status)
+     holds regardless of route. Ribbon row 2 is takeoff-only — its tool and
+     scale commands mean nothing on the quote route. */
+  #appShell[data-route="quote"] #workArea,
+  #appShell[data-route="quote"] #ribbonRow2,
+  #appShell[data-route="takeoff"] #quoteView { display: none; }
+
   /* ---------- ribbon ---------- */
   #ribbon {
     background: var(--surface); border-bottom: 1px solid var(--border);
@@ -173,6 +181,18 @@
   #importJsonLabel:hover { background: var(--surface-2); }
   #measList { flex: 1 1 auto; overflow-y: auto; padding: 4px 0; }
 
+  /* Primary action, pinned below the list it acts on — the takeoff totals
+     are the quote's input, so the button sits directly under them. */
+  #measPanelFoot { flex: 0 0 auto; padding: 10px 12px; border-top: 1px solid var(--border); }
+  #quoteBtn {
+    width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: var(--accent); border-color: var(--accent); color: #fff;
+    padding: 9px 14px; font-size: 13px; font-weight: 600;
+    box-shadow: 0 2px 10px rgba(204, 61, 73, 0.25);
+  }
+  #quoteBtn:hover { background: #a7323c; border-color: #a7323c; }
+  #quoteBtn .ic { font-size: 13px; }
+
   .measGroup { border-bottom: 1px solid var(--border); }
   .measGroup + .measGroup { margin-top: 10px; } /* breathing room between groups > within a group */
   .measGroupHead {
@@ -212,6 +232,43 @@
   .iconToggle.off { color: var(--text-faint); opacity: 0.55; }
   .delToggle { color: var(--danger); font-size: 13px; }
   .delToggle:hover { background: rgba(239,68,68,0.15); color: var(--danger); }
+
+  /* ---------- quote view (placeholder; consumes the handoff payload) ---------- */
+  #quoteView { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding: 28px 32px; }
+  #quoteHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+  #quoteTitle { font-size: 20px; font-weight: 600; }
+  #quoteSoon {
+    display: inline-block; margin-left: 10px; padding: 2px 9px; border-radius: 999px;
+    background: var(--accent-soft); border: 1px solid rgba(204,61,73,0.35);
+    color: var(--accent-text); font-size: 10.5px; font-weight: 600;
+    letter-spacing: 0.6px; text-transform: uppercase; vertical-align: 3px;
+  }
+  #quoteJobName { font-size: 15px; font-weight: 600; margin-top: 12px; }
+  #quoteJobAddress { font-size: 12.5px; color: var(--text-dim); }
+  #quoteProvenance { color: var(--text-faint); font-size: 11px; margin-top: 6px; }
+  #quoteBody { margin-top: 22px; max-width: 900px; }
+  #quoteTotals { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .quoteTotal {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 9px 14px; min-width: 104px;
+  }
+  .quoteTotal .qtVal { font-size: 17px; font-weight: 600; }
+  .quoteTotal .qtLabel { color: var(--text-dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; }
+  /* Narrow viewports must scroll the table, never the page. */
+  #quoteTableWrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+  #quoteTable { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #quoteTable th, #quoteTable td { padding: 7px 12px; text-align: left; white-space: nowrap; }
+  #quoteTable thead th {
+    background: var(--surface-2); color: var(--text-dim); font-size: 10.5px;
+    font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase;
+  }
+  #quoteTable tbody tr { border-top: 1px solid var(--border); }
+  #quoteTable .qCat { color: var(--text-dim); }
+  #quoteTable .qNum { text-align: right; font-variant-numeric: tabular-nums; }
+  #quoteTable .qSub { color: var(--text-faint); font-size: 11px; }
+  #quoteTable .qOrigin { color: var(--text-faint); font-size: 10.5px; }
+  #quoteEmpty { color: var(--text-dim); font-style: italic; padding: 18px 2px; }
+  #quoteNote { color: var(--text-faint); font-size: 11px; margin-top: 16px; max-width: 640px; line-height: 1.6; }
 
   #projectPanel {
     position: fixed; top: 84px; right: 16px; width: 360px; max-height: 60vh; overflow-y: auto;
@@ -282,10 +339,13 @@
        onto additional pages. */
     html, body { height: auto; overflow: visible; background: #fff; }
     #appShell { display: block; height: auto; }
-    #ribbon, #statusBar, #welcomeScreen, #engineDrawer, #projectPanel, #storageModal {
+    #ribbon, #statusBar, #welcomeScreen, #engineDrawer, #projectPanel, #storageModal,
+    #measPanelFoot, #quoteView {
       display: none !important;
     }
-    #workArea { display: block; height: auto; }
+    /* !important beats the route rule's higher specificity: printing from
+       the quote route must still emit the takeoff sheet, not a blank page. */
+    #workArea { display: block !important; height: auto; }
     #canvasWrap {
       position: static; overflow: visible; height: auto; background: #fff;
       padding: 0; display: block;
@@ -312,7 +372,7 @@
 <style id="printOrientation"></style>
 </head>
 <body>
-<div id="appShell">
+<div id="appShell" data-route="takeoff">
   <header id="ribbon">
     <!-- NOTE (§A8 guard): pdf.js here is a measurement INSTRUMENT for this
          throwaway harness only. The product renders server-side tile pyramids;
@@ -397,8 +457,36 @@
         </div>
       </div>
       <div id="measList">(none yet)</div>
+      <div id="measPanelFoot">
+        <button id="quoteBtn" title="build a quote from this takeoff"><span class="ic">▦</span>Quote this job</button>
+      </div>
     </aside>
   </main>
+
+  <!-- Quote route (#/quote). Placeholder for the pricing tool: it renders
+       nothing of its own truth, only what buildQuotePayload() hands it. -->
+  <section id="quoteView">
+    <div id="quoteHead">
+      <div>
+        <div id="quoteTitle">Quoting<span id="quoteSoon">Coming soon</span></div>
+        <div id="quoteJobName"></div>
+        <div id="quoteJobAddress"></div>
+        <div id="quoteProvenance"></div>
+      </div>
+      <button id="quoteBackBtn">← Back to Takeoff</button>
+    </div>
+    <div id="quoteBody">
+      <div id="quoteTotals"></div>
+      <div id="quoteTableWrap"><table id="quoteTable"></table></div>
+      <div id="quoteEmpty" hidden></div>
+      <div id="quoteNote">
+        Quantities above are derived from the takeoff at the moment you opened this page
+        (invariant 5 — nothing here is stored). The pricing engine will consume this same
+        payload: each row maps to one <code>MeasurementInput</code> in
+        <code>engine-core</code>'s assembly module.
+      </div>
+    </div>
+  </section>
 
   <footer id="statusBar">
     <div id="status">loading wasm…</div>
@@ -1605,6 +1693,212 @@ function buildCsv() {
   return rows.join('\n') + '\n';
 }
 
+// ---- quote handoff (harness-level only; engine-core/engine-web untouched) ----
+
+/// The takeoff → quoting interface, and the ONLY coupling between the two
+/// views. Three properties make it the thing a real pricing tool can build on:
+///
+///  1. `quantity` mirrors engine-core `assembly::MeasurementInput` field
+///     names (area_sf / perimeter_lf / length_lf / count_ea), so a row maps
+///     onto an assembly input with no translation layer. Fields a kind does
+///     not carry are null, never 0 — "no perimeter" and "a perimeter that
+///     happens to be zero" must not collide in a formula.
+///  2. DERIVED, never persisted (invariant 5 — the same rule Rust's
+///     `BillOfMaterials` follows). Rebuilt on every navigation, so it cannot
+///     drift from the measurements it describes, and nothing new is stored.
+///  3. `projectId` is the PDF SHA — the same content-addressed key the
+///     IndexedDB project record uses. Navigating back and forth, or
+///     reloading straight onto #/quote, stays bound to the right job.
+///
+/// Transport is deliberately NOT baked in: today the quote view reads the
+/// returned object directly. Moving to postMessage/fetch later changes the
+/// caller, not this shape.
+function buildQuotePayload() {
+  const items = measurements.map(m => {
+    const f = scaleOf(m.page);
+    const flat = Array.from(m.geometry);
+    const quantity = { area_sf: null, perimeter_lf: null, length_lf: null, count_ea: null };
+    if (m.kind === 'count') {
+      quantity.count_ea = m.value;                  // EA is scale-independent
+    } else if (f != null) {                         // no scale ⇒ no derived quantity
+      if (m.kind === 'linear') {
+        quantity.length_lf = m.value;
+      } else {
+        quantity.area_sf = m.value;
+        // Perimeter is a real field here, not the parenthetical inside
+        // valueText: a flooring assembly prices cove base and transition
+        // strip off it.
+        quantity.perimeter_lf = measure_polyline(flat.concat(flat.slice(0, 2)), f);
+      }
+    }
+    return {
+      id: m.id, page: m.page, name: m.name,
+      category: m.category ?? m.kind, kind: m.kind,
+      unit: UNIT[m.kind] ?? '',
+      quantity,
+      origin: m.origin,
+      scale: f == null ? null : { feet_per_paper_inch: f, source: scaleSourceOf(m.page) },
+    };
+  });
+
+  // Group totals split by unit, matching the measurement tree's own
+  // summarizeGroup() rule (never sum across units). An item with no derived
+  // quantity contributes nothing rather than a misleading 0.
+  const groups = new Map();
+  for (const it of items) {
+    if (!groups.has(it.category)) {
+      groups.set(it.category, { category: it.category, totals: {}, itemIds: [] });
+    }
+    const g = groups.get(it.category);
+    g.itemIds.push(it.id);
+    const v = primaryQuantity(it);
+    if (v != null) g.totals[it.unit] = (g.totals[it.unit] ?? 0) + v;
+  }
+
+  return {
+    schema: 'takeoff-quote-payload@1',
+    projectId: currentSha,
+    source: { fileName: currentName || null, generatedAt: new Date().toISOString() },
+    job: {
+      name: jobNameOrFallback(), address: jobAddressOrFallback(),
+      nameSource: jobNameSource, addressSource: jobAddressSource,
+    },
+    pageScales: scalesToStored(),
+    items,
+    groups: [...groups.values()],
+  };
+}
+
+/// The one quantity that defines an item's unit total; null when the item's
+/// page has no scale (counts excepted — EA needs none).
+function primaryQuantity(it) {
+  if (it.kind === 'area') return it.quantity.area_sf;
+  if (it.kind === 'linear') return it.quantity.length_lf;
+  return it.quantity.count_ea;
+}
+
+const UNIT_LABEL = { SF: 'total area', LF: 'total linear', EA: 'total count' };
+const QUOTE_COLS = ['Item', 'Category', 'Kind', 'Page', 'Quantity', 'Origin'];
+
+function td(text, cls) {
+  const el = document.createElement('td');
+  if (cls) el.className = cls;
+  el.textContent = text;              // free text — never innerHTML
+  return el;
+}
+
+/// Render a payload into the placeholder view. Job info and measurement
+/// names are user-authored free text, so everything lands via textContent
+/// for the same reason exportPdf() builds its header that way.
+function renderQuoteView(payload) {
+  $('quoteJobName').textContent = payload.job.name;
+  $('quoteJobAddress').textContent = payload.job.address;
+  $('quoteProvenance').textContent = payload.projectId
+    ? ['Received from takeoff', `project ${payload.projectId.slice(0, 12)}…`,
+       payload.source.fileName].filter(Boolean).join(' · ')
+    : 'Received from takeoff · unsaved sheet (no PDF loaded)';
+
+  const totals = $('quoteTotals');
+  totals.textContent = '';
+  const grand = {};
+  for (const g of payload.groups) {
+    for (const [unit, v] of Object.entries(g.totals)) grand[unit] = (grand[unit] ?? 0) + v;
+  }
+  for (const [unit, v] of Object.entries(grand)) {
+    const card = document.createElement('div');
+    card.className = 'quoteTotal';
+    const val = document.createElement('div');
+    val.className = 'qtVal';
+    val.textContent = `${v.toFixed(1)} ${unit}`;
+    const lab = document.createElement('div');
+    lab.className = 'qtLabel';
+    lab.textContent = UNIT_LABEL[unit] ?? unit;
+    card.append(val, lab);
+    totals.appendChild(card);
+  }
+
+  const table = $('quoteTable');
+  table.textContent = '';
+  const empty = !payload.items.length;
+  $('quoteTableWrap').hidden = empty;
+  $('quoteEmpty').hidden = !empty;
+  if (empty) {
+    $('quoteEmpty').textContent =
+      'No measurements yet — draw a takeoff and the quantities will appear here.';
+    return;
+  }
+
+  const thead = document.createElement('thead');
+  const hr = document.createElement('tr');
+  for (const c of QUOTE_COLS) {
+    const th = document.createElement('th');
+    th.textContent = c;
+    if (c === 'Quantity') th.className = 'qNum';
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+
+  const tbody = document.createElement('tbody');
+  for (const it of payload.items) {
+    const tr = document.createElement('tr');
+    const v = primaryQuantity(it);
+    const qty = document.createElement('td');
+    qty.className = 'qNum';
+    qty.textContent = v == null ? '(no scale)'
+      : it.kind === 'count' ? `${v} ${it.unit}` : `${v.toFixed(1)} ${it.unit}`;
+    // Perimeter rides along under an area's SF — it is a second driving
+    // quantity for the same row, not a row of its own.
+    if (it.quantity.perimeter_lf != null) {
+      const sub = document.createElement('div');
+      sub.className = 'qSub';
+      sub.textContent = `${it.quantity.perimeter_lf.toFixed(1)} LF perimeter`;
+      qty.appendChild(sub);
+    }
+    tr.append(td(it.name), td(it.category, 'qCat'), td(it.kind), td(String(it.page)));
+    tr.appendChild(qty);
+    tr.appendChild(td(it.origin ?? '', 'qOrigin'));
+    tbody.appendChild(tr);
+  }
+  table.append(thead, tbody);
+}
+
+// ---- routing: hash-based view swap (#/takeoff | #/quote) ----
+// A route rather than a second HTML page: same tab, real back/forward, and
+// the wasm engine + live measurement state stay in memory (a separate page
+// would re-boot wasm and recompute every quantity just to render).
+
+const ROUTES = new Set(['takeoff', 'quote']);
+let lastQuotePayload = null;   // most recent handoff (test hook / debugging)
+
+const routeFromHash = () => {
+  const r = location.hash.replace(/^#\/?/, '').toLowerCase();
+  return ROUTES.has(r) ? r : 'takeoff';
+};
+
+/// Swap views for the current hash. Entering #/quote rebuilds the payload
+/// (never cached — see buildQuotePayload) and cancels any in-progress draw,
+/// so a half-finished polygon can't linger invisibly behind the quote view.
+function applyRoute() {
+  const route = routeFromHash();
+  if (route === 'quote') {
+    cancelTransients('opened quote');
+    lastQuotePayload = buildQuotePayload();
+    renderQuoteView(lastQuotePayload);
+  }
+  $('appShell').dataset.route = route;
+}
+
+/// Re-derive the quote view when the underlying project changes UNDER it.
+/// Two ways that happens: a #/quote deep-link renders before the deep-linked
+/// PDF has finished loading, and the Projects button (ribbon row 1, visible
+/// on both routes) can swap projects without leaving the quote view. A no-op
+/// on the takeoff route.
+function refreshQuoteIfActive() {
+  if (routeFromHash() !== 'quote') return;
+  lastQuotePayload = buildQuotePayload();
+  renderQuoteView(lastQuotePayload);
+}
+
 /// Print/PDF export: populate the print-only header (job/address/page/
 /// date — textContent, not innerHTML, so free-text job info can't inject
 /// markup) and hand off to the browser's print dialog (see the @media
@@ -2144,6 +2438,7 @@ async function loadPdf(data, name) {
   // existed) gets one extraction pass; jobExtracted persists so a reopen
   // never re-scans (extractJobInfo() itself calls markDirty()).
   if (!jobExtracted) await extractJobInfo();
+  refreshQuoteIfActive(); // the quote view may be showing the OLD project
   const restored = proj ? ` — restored ${measurements.length} measurement(s)` : '';
   say(`${name}: ${pdfDoc.numPages} page(s)${restored}. Pick a preset scale or calibrate on a known dimension.`);
 }
@@ -2249,6 +2544,11 @@ $('exportJson').addEventListener('click', () => {
 });
 $('exportPdfBtn').addEventListener('click', () => exportPdf());
 $('downloadPdfBtn').addEventListener('click', () => downloadPdf());
+// Navigation goes through the hash, not a direct view swap, so the button
+// and the back/forward buttons drive the exact same code path.
+$('quoteBtn').addEventListener('click', () => { location.hash = '#/quote'; });
+$('quoteBackBtn').addEventListener('click', () => { location.hash = '#/takeoff'; });
+window.addEventListener('hashchange', applyRoute);
 $('importJson').addEventListener('change', async ev => {
   const f = ev.target.files[0];
   if (!f) return;
@@ -2296,6 +2596,9 @@ window.__harness = {
   simulateStorageError: () => onStorageError(new Error('simulated quota exceeded')),
   storageBlocked: () => storageBlocked,
   jobInfo: () => ({ jobName, jobAddress, jobNameSource, jobAddressSource, jobExtracted }),
+  buildQuotePayload: () => buildQuotePayload(),
+  lastQuotePayload: () => lastQuotePayload,
+  route: () => routeFromHash(),
   extractJobInfo: () => extractJobInfo(),
   scanTitleBlockForJob: () => scanTitleBlockForJob(),
 };
@@ -2310,6 +2613,7 @@ for (const p of JSON.parse(scale_presets_json())) {
 }
 await renderPage();
 updateJobBar();
+applyRoute(); // honour a reload/deep-link straight onto #/quote
 say('wasm loaded — click inside a room, or load a PDF.');
 
 // Deep-link/self-test affordance (also drives headless smoke tests):

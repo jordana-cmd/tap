@@ -440,6 +440,199 @@ await run('CSV quotes free-text names containing commas', async page => {
   assert.match(csv, /"Doors, exterior"/, 'comma-bearing name is CSV-quoted');
 });
 
+// ---- quote handoff cases ----
+
+/// One area (100 SF / 40 LF perimeter), one line (15 LF), one count (3 EA)
+/// at the deep-linked fpi 7.2, where 10 pts = 1 ft.
+async function drawQuoteFixture(page) {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await setTool(page, 'line');
+  for (const [x, y] of [[600, 300], [700, 300], [700, 350]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await setTool(page, 'count');
+  for (const [x, y] of [[600, 400], [640, 400], [680, 400]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+}
+
+const routeState = page => page.evaluate(() => ({
+  route: window.__harness.route(),
+  attr: document.querySelector('#appShell').dataset.route,
+  hash: location.hash,
+  // offsetParent is null for a display:none subtree — real visibility, not
+  // just the attribute we set.
+  quoteShown: !!document.querySelector('#quoteView').offsetParent,
+  takeoffShown: !!document.querySelector('#workArea').offsetParent,
+}));
+
+await run('quote: button routes to #/quote, Back returns to takeoff', async page => {
+  const before = await routeState(page);
+  assert.equal(before.route, 'takeoff', 'boots on the takeoff route');
+  assert.ok(before.takeoffShown && !before.quoteShown, 'takeoff visible at boot');
+
+  await page.click('#quoteBtn');
+  const onQuote = await routeState(page);
+  assert.equal(onQuote.route, 'quote');
+  assert.equal(onQuote.attr, 'quote', 'shell carries the route attribute');
+  assert.equal(onQuote.hash, '#/quote');
+  assert.ok(onQuote.quoteShown && !onQuote.takeoffShown, 'quote view replaces the work area');
+  // Same tab, same document — a new tab or external nav would break this.
+  assert.equal(await page.evaluate(() => document.querySelectorAll('#quoteView').length), 1);
+
+  await page.click('#quoteBackBtn');
+  const back = await routeState(page);
+  assert.equal(back.route, 'takeoff');
+  assert.ok(back.takeoffShown && !back.quoteShown, 'work area restored');
+});
+
+// Same-document history navigation resolves without a load event, so wait
+// on the applied route rather than assuming goBack() has been processed.
+const waitRoute = (page, want) => page.waitForFunction(
+  w => document.querySelector('#appShell').dataset.route === w, { timeout: 5_000 }, want);
+
+await run('quote: browser Back/Forward drives the same route swap', async page => {
+  await page.click('#quoteBtn');
+  assert.equal((await routeState(page)).route, 'quote');
+  await page.goBack();
+  await waitRoute(page, 'takeoff');
+  assert.ok((await routeState(page)).takeoffShown, 'history back leaves the quote route');
+  await page.goForward();
+  await waitRoute(page, 'quote');
+  const fwd = await routeState(page);
+  assert.equal(fwd.route, 'quote', 'history forward re-enters it');
+  assert.ok(fwd.quoteShown, 'and the view actually re-renders');
+});
+
+await run('quote payload: quantity mirrors MeasurementInput per kind', async page => {
+  await drawQuoteFixture(page);
+  await page.click('#quoteBtn');
+  const p = await page.evaluate(() => window.__harness.lastQuotePayload());
+
+  assert.equal(p.schema, 'takeoff-quote-payload@1');
+  assert.equal(p.items.length, 3, 'one item per measurement');
+
+  const area = p.items.find(i => i.kind === 'area');
+  const line = p.items.find(i => i.kind === 'linear');
+  const count = p.items.find(i => i.kind === 'count');
+  assert.ok(area && line && count, 'one item per kind');
+
+  // Area carries BOTH driving quantities; perimeter is a real field, not a
+  // substring of the display text.
+  assert.ok(near(area.quantity.area_sf, 100, 0.5), `area_sf ${area.quantity.area_sf}`);
+  assert.ok(near(area.quantity.perimeter_lf, 40, 0.5), `perimeter_lf ${area.quantity.perimeter_lf}`);
+  assert.equal(area.quantity.length_lf, null, 'unused fields are null, never 0');
+  assert.equal(area.quantity.count_ea, null);
+  assert.equal(area.unit, 'SF');
+
+  assert.ok(near(line.quantity.length_lf, 15, 0.5), `length_lf ${line.quantity.length_lf}`);
+  assert.equal(line.quantity.area_sf, null);
+  assert.equal(line.unit, 'LF');
+
+  assert.equal(count.quantity.count_ea, 3);
+  assert.equal(count.quantity.area_sf, null);
+  assert.equal(count.unit, 'EA');
+
+  // Provenance + scale ride along per item (§A2), as they do in CSV.
+  assert.equal(area.scale.feet_per_paper_inch, 7.2);
+  assert.equal(area.scale.source, 'param');
+  assert.ok(area.origin, 'origin carried');
+});
+
+await run('quote payload: identifies the project, job, and category groups', async page => {
+  await drawQuoteFixture(page);
+  const sha = await page.evaluate(() => window.__harness.currentSha());
+  await page.click('#quoteBtn');
+  const p = await page.evaluate(() => window.__harness.lastQuotePayload());
+
+  assert.equal(p.projectId, sha, 'projectId is the content-addressed project key');
+  assert.ok(p.job.name && p.job.address, 'job identity carried');
+  assert.ok(p.pageScales.some(s => s.feet_per_paper_inch === 7.2), 'page scales carried');
+
+  const cats = Object.fromEntries(p.groups.map(g => [g.category, g]));
+  assert.ok(near(cats.Area.totals.SF, 100, 0.5), 'Area group totals SF');
+  assert.ok(near(cats.Line.totals.LF, 15, 0.5), 'Line group totals LF');
+  assert.equal(cats.Count.totals.EA, 3, 'Count group totals EA');
+  assert.equal(cats.Area.totals.LF, undefined, 'totals never cross units');
+  assert.deepEqual(cats.Count.itemIds, p.items.filter(i => i.kind === 'count').map(i => i.id));
+});
+
+await run('quote payload: rebuilt on each visit, never stale', async page => {
+  await drawQuoteFixture(page);
+  await page.click('#quoteBtn');
+  assert.equal((await page.evaluate(() => window.__harness.lastQuotePayload())).items.length, 3);
+
+  await page.click('#quoteBackBtn');
+  await setTool(page, 'count');
+  await clickBase(page, 620, 450);
+  await page.keyboard.press('Enter');
+
+  await page.click('#quoteBtn');
+  const p = await page.evaluate(() => window.__harness.lastQuotePayload());
+  assert.equal(p.items.length, 4, 'the new measurement is in the second payload');
+  const rows = await page.$$eval('#quoteTable tbody tr', rs => rs.length);
+  assert.equal(rows, 4, 'and the rendered table matches');
+});
+
+await run('quote view: renders job, one row per item, and per-unit totals', async page => {
+  await drawQuoteFixture(page);
+  await page.click('#quoteBtn');
+  const view = await page.evaluate(() => ({
+    job: document.querySelector('#quoteJobName').textContent,
+    provenance: document.querySelector('#quoteProvenance').textContent,
+    totals: [...document.querySelectorAll('.quoteTotal .qtVal')].map(e => e.textContent),
+    rows: [...document.querySelectorAll('#quoteTable tbody tr')].map(r => r.textContent),
+    emptyHidden: document.querySelector('#quoteEmpty').hidden,
+  }));
+  assert.ok(view.job.length, 'job name rendered');
+  assert.match(view.provenance, /Received from takeoff/);
+  assert.equal(view.rows.length, 3, 'one row per item');
+  assert.ok(view.rows.some(r => /100\.0 SF/.test(r) && /40\.0 LF perimeter/.test(r)),
+    'area row shows SF with its perimeter beneath');
+  assert.ok(view.rows.some(r => /15\.0 LF/.test(r)), 'line row');
+  assert.ok(view.rows.some(r => /3 EA/.test(r)), 'count row');
+  assert.deepEqual(view.totals.sort(), ['100.0 SF', '15.0 LF', '3.0 EA'].sort());
+  assert.ok(view.emptyHidden, 'empty state hidden when items exist');
+});
+
+await run('quote view: empty takeoff shows an empty state, not a bare table', async page => {
+  await page.click('#quoteBtn');
+  const view = await page.evaluate(() => ({
+    empty: document.querySelector('#quoteEmpty').hidden,
+    wrap: document.querySelector('#quoteTableWrap').hidden,
+    items: window.__harness.lastQuotePayload().items.length,
+  }));
+  assert.equal(view.items, 0);
+  assert.equal(view.empty, false, 'empty state shown');
+  assert.equal(view.wrap, true, 'table hidden');
+});
+
+await run('quote: entering the route cancels an in-progress draft', async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ.slice(0, 2)) await clickBase(page, x, y);
+  assert.equal((await state(page)).draftVerts, 2, 'draft in progress');
+  await page.click('#quoteBtn');
+  assert.equal(await page.evaluate(() => window.__harness.draft()), null, 'draft cancelled');
+});
+
+await run('quote: a deep link onto #/quote boots into it with restored data', async page => {
+  // The boot path must honour the hash rather than always landing on
+  // takeoff — AND the view must pick up the deep-linked PDF, which finishes
+  // loading after the first render.
+  await drawQuoteFixture(page);
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.evaluate(() => { location.hash = '#/quote'; });
+  await page.reload();
+  await waitReady(page);
+  const st = await routeState(page);
+  assert.equal(st.route, 'quote');
+  assert.ok(st.quoteShown && !st.takeoffShown, 'boots directly into the quote view');
+  const rows = await page.$$eval('#quoteTable tbody tr', rs => rs.length);
+  assert.equal(rows, 3, 'restored measurements rendered, not an empty first pass');
+});
+
 await run('min_width override sticks across pages; reset re-derives', async page => {
   assert.ok(await page.$eval('#minWidth', el => !el.disabled),
     'min_width slider enabled on a vector page');
