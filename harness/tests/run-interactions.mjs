@@ -411,10 +411,14 @@ await run('CSV export: rows with §A2 provenance for area + line + count', async
 
   const csv = await page.evaluate(() => window.__harness.buildCsv());
   const lines = csv.trim().split('\n');
-  assert.equal(lines[0],
+  // Leading job_name/job_address rows come before the column header —
+  // top-level and immediately visible, not buried in a nested field.
+  assert.match(lines[0], /^job_name,/, 'job_name row leads the file');
+  assert.match(lines[1], /^job_address,/, 'job_address row follows');
+  assert.equal(lines[2],
     'page,name,kind,quantity,unit,origin,page_scale_fpi,scale_source', 'header');
-  assert.equal(lines.length, 4, 'header + 3 data rows');
-  const cols = lines.slice(1).map(l => l.split(','));
+  assert.equal(lines.length, 6, '2 job rows + header + 3 data rows');
+  const cols = lines.slice(3).map(l => l.split(','));
   const area = cols.find(c => c[2] === 'area');
   const line = cols.find(c => c[2] === 'linear');
   const count = cols.find(c => c[2] === 'count');

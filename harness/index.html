@@ -108,6 +108,23 @@
   .fpiChip b { color: var(--text); }
   #tabPanel-engine .hint { color: var(--text-dim); font-style: italic; }
 
+  /* ---------- job bar ---------- */
+  #jobBar {
+    padding: 8px 14px; border-bottom: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  .jobName {
+    font-size: 15px; font-weight: 600; color: var(--text); cursor: text;
+  }
+  .jobName:hover { text-decoration: underline dotted; }
+  .jobName.placeholder { color: var(--text-faint); font-weight: 500; }
+  .jobAddress {
+    font-size: 12px; color: var(--text-dim); cursor: text;
+  }
+  .jobAddress:hover { text-decoration: underline dotted; }
+  .jobAddress.placeholder { color: var(--text-faint); font-style: italic; }
+  .jobRenameInput { font-size: inherit; font-weight: inherit; font-style: normal; width: 320px; max-width: 60vw; }
+
   /* ---------- work area ---------- */
   #workArea { display: grid; grid-template-columns: 1fr 320px; min-height: 0; overflow: hidden; }
   #canvasWrap {
@@ -298,6 +315,10 @@
         </div>
       </div>
     </div>
+    <div id="jobBar">
+      <div id="jobNameDisplay" class="jobName" title="click to edit"></div>
+      <div id="jobAddressDisplay" class="jobAddress" title="click to edit"></div>
+    </div>
   </header>
 
   <main id="workArea">
@@ -434,6 +455,13 @@ let currentBytes = null;    // ArrayBuffer of the open PDF (for file store)
 let saveTimer = null;       // debounce handle
 let storageBlocked = false; // set on a write failure — blocks further edits
 
+// ---- job identity (name/address) — best-effort extraction, manual override wins ----
+let jobName = null, jobAddress = null;              // null = never set
+let jobNameSource = null, jobAddressSource = null;  // 'metadata' | 'heuristic' | 'manual' | null
+let jobExtracted = false;   // true once an extraction attempt has run (even if it found nothing) — never re-scan a reopened project
+const jobNameOrFallback = () => (jobName && jobName.trim()) || 'Unknown Job';
+const jobAddressOrFallback = () => (jobAddress && jobAddress.trim()) || '(no address)';
+
 const pxPerFoot = () => (72 / curFpi()) * s;
 const say = t => { status.textContent = t; status.title = t; };
 
@@ -543,6 +571,136 @@ async function sheetTitleFor(n) {
   }
   sheetTitleCache.set(n, title);
   return title;
+}
+
+// ---- job name + address extraction (metadata, else title-block heuristic) ----
+
+/// Street-number + suffix + ", City, ST" — matches title-block addresses
+/// like "29111 STEPHENSON HWY., MADISON HEIGHTS, MI".
+const ADDRESS_RE = /\d{2,6}[^\n,]{3,60}(?:HWY|HIGHWAY|ST|STREET|AVE|AVENUE|RD|ROAD|DR|DRIVE|BLVD|BOULEVARD|LN|LANE|CT|COURT|WAY|PKWY|PARKWAY)\.?,?\s*[A-Za-z .]+,\s*[A-Z]{2}\b/i;
+const looksLikeAddress = s => ADDRESS_RE.test(s);
+const JOB_LABEL_NOISE = /^(ISSUE|OWNER|SCOPE OF WORK|DESIGN PROFESSIONALS?|SHEET|DATE|REVISION|PROJECT NO\.?|SITE LOCATION MAP|SCALE)\b/i;
+
+/// pdf.js splits a real title-block phrase ("VARIETY FOOD SERVICE") across
+/// several text runs — merge items sharing a y-line (rounded, small
+/// tolerance for sub-pixel baseline jitter) and order them by x so the
+/// heuristics below see whole phrases, not fragments.
+function mergeTextLines(items) {
+  const buckets = new Map(); // rounded-y -> items[]
+  for (const it of items) {
+    const y = Math.round(it.transform[5] / 2) * 2;
+    if (!buckets.has(y)) buckets.set(y, []);
+    buckets.get(y).push(it);
+  }
+  return [...buckets.entries()].map(([y, its]) => {
+    its.sort((a, b) => a.transform[4] - b.transform[4]);
+    const size = Math.max(...its.map(it => Math.hypot(it.transform[2], it.transform[3])));
+    return { y, size, text: its.map(it => it.str).join(' ').replace(/\s+/g, ' ').trim() };
+  }).filter(l => l.text);
+}
+
+/// Job-name/address guess from page 1's text layer: an address-shaped line
+/// anywhere on the sheet, and the largest-font line in the upper 60% that
+/// isn't the address and isn't a title-block label. Best-effort only — the
+/// job bar's manual override is the correction path when this misses.
+async function scanTitleBlockForJob() {
+  const page = await pdfDoc.getPage(1);
+  const vp = page.getViewport({ scale: 1 });
+  const tc = await page.getTextContent();
+  const lines = mergeTextLines(tc.items);
+  const addressLine = lines.find(l => looksLikeAddress(l.text));
+  let nameCandidate = null, nameSize = 0;
+  for (const l of lines) {
+    if (l === addressLine) continue;
+    if (l.y <= vp.height * 0.4) continue; // pdf.js y grows upward from the bottom
+    if (l.text.length <= 4 || JOB_LABEL_NOISE.test(l.text)) continue;
+    if (l.size > nameSize) { nameCandidate = l.text; nameSize = l.size; }
+  }
+  return { name: nameCandidate, address: addressLine ? addressLine.text : null };
+}
+
+/// Best-effort job identity for the job bar: PDF metadata first (Title/
+/// Subject), else the title-block heuristic above. Runs once per project
+/// (guarded by `jobExtracted`, persisted) — a document with nothing
+/// derivable is remembered as "tried," not re-scanned on every reopen.
+/// Manual edits are never overwritten: each field only fills if still null.
+async function extractJobInfo() {
+  try {
+    const meta = await pdfDoc.getMetadata();
+    const title = (meta?.info?.Title || '').trim();
+    const subject = (meta?.info?.Subject || '').trim();
+    // Reject generic CAD-export placeholders ("Untitled", "Sheet", the
+    // filename itself, or anything too short to be a real project name) —
+    // the title-block heuristic below is far more reliable than metadata
+    // on real drawing sets, where Title is often left at its template value.
+    if (!jobName && title && title.length > 6 && title !== currentName && !JOB_LABEL_NOISE.test(title)) {
+      jobName = title; jobNameSource = 'metadata';
+    }
+    if (!jobAddress && subject && looksLikeAddress(subject)) {
+      jobAddress = subject; jobAddressSource = 'metadata';
+    }
+  } catch { /* metadata unavailable */ }
+  if (!jobName || !jobAddress) {
+    try {
+      const guess = await scanTitleBlockForJob();
+      if (!jobName && guess.name) { jobName = guess.name; jobNameSource = 'heuristic'; }
+      if (!jobAddress && guess.address) { jobAddress = guess.address; jobAddressSource = 'heuristic'; }
+    } catch { /* best-effort only; no text layer is not an error */ }
+  }
+  jobExtracted = true;
+  updateJobBar();
+  markDirty();
+}
+
+/// Sync the job bar's two lines to current state, showing a dimmed
+/// placeholder ("Unknown Job" / "(no address)") rather than blank text.
+function updateJobBar() {
+  const nameEl = $('jobNameDisplay'), addrEl = $('jobAddressDisplay');
+  const hasName = !!(jobName && jobName.trim());
+  nameEl.textContent = jobNameOrFallback();
+  nameEl.classList.toggle('placeholder', !hasName);
+  const hasAddr = !!(jobAddress && jobAddress.trim());
+  addrEl.textContent = jobAddressOrFallback();
+  addrEl.classList.toggle('placeholder', !hasAddr);
+}
+
+/// Click-to-edit for the job bar — same shape as beginRename()/
+/// beginRenameCategory(): swap the span for an input, Enter/blur commits,
+/// Esc reverts, keydown is stopped so Enter/Backspace never reach the
+/// canvas tool handling. Unlike measurement rows (rebuilt wholesale by
+/// renderMeasList()), #jobNameDisplay/#jobAddressDisplay are static
+/// elements, so commit restores a same-id element rather than relying on
+/// a full list re-render; the click handler lives on #jobBar via
+/// delegation so the restored element doesn't need its listener reattached.
+function beginRenameJob(field, span) {
+  const id = span.id;
+  const current = field === 'name' ? jobName : jobAddress;
+  const input = document.createElement('input');
+  input.className = 'jobRenameInput'; input.value = current ?? '';
+  let done = false;
+  const commit = save => {
+    if (done) return; done = true;
+    if (save) {
+      const v = input.value.trim();
+      if (field === 'name') { jobName = v || null; jobNameSource = 'manual'; }
+      else { jobAddress = v || null; jobAddressSource = 'manual'; }
+      markDirty();
+    }
+    const restored = document.createElement('div');
+    restored.id = id;
+    restored.className = field === 'name' ? 'jobName' : 'jobAddress';
+    restored.title = 'click to edit';
+    input.replaceWith(restored);
+    updateJobBar();
+  };
+  input.addEventListener('keydown', ev => {
+    ev.stopPropagation();
+    if (ev.key === 'Enter') commit(true);
+    else if (ev.key === 'Escape') commit(false);
+  });
+  input.addEventListener('blur', () => commit(true));
+  span.replaceWith(input);
+  input.focus(); input.select();
 }
 
 async function renderPage() {
@@ -1052,6 +1210,7 @@ function reindexAfterRestore() {
 function exportJson() {
   return JSON.stringify({
     version: 1, sha: currentSha, name: currentName,
+    jobName, jobAddress, jobNameSource, jobAddressSource,
     pageScales: scalesToStored(),
     measurements: measurements.map(toStored),
     minWidthOverride,
@@ -1062,9 +1221,13 @@ function importJson(str) {
   scalesFromStored(data.pageScales ?? []);
   measurements = (data.measurements ?? []).map(fromStored);
   minWidthOverride = data.minWidthOverride ?? null;
+  jobName = data.jobName ?? null; jobAddress = data.jobAddress ?? null;
+  jobNameSource = data.jobNameSource ?? null; jobAddressSource = data.jobAddressSource ?? null;
+  jobExtracted = true; // an imported backup is never re-scanned for job info
   reindexAfterRestore();
   refreshScaleUI();
   renderMeasList();
+  updateJobBar();
   render();
   markDirty();
 }
@@ -1072,6 +1235,7 @@ function importJson(str) {
 function projectRecord() {
   return {
     sha: currentSha, name: currentName,
+    jobName, jobAddress, jobNameSource, jobAddressSource, jobExtracted,
     pageScales: scalesToStored(),
     measurements: measurements.map(toStored),
     minWidthOverride, updatedAt: Date.now(),
@@ -1354,11 +1518,20 @@ function csvCell(v) {
 
 /// CSV of every measurement across all pages, with §A2 provenance: an
 /// estimator must see which numbers a human drew (manual/snap) vs the
-/// engine detected (floodfill), and under which page scale.
+/// engine detected (floodfill), and under which page scale. Leads with
+/// job_name/job_address rows — top-level and immediately visible on open,
+/// not buried in a nested column — so the file is self-identifying even
+/// outside the app.
+// TODO(pdf-export): when a PDF export path exists, its header must also
+// carry jobNameOrFallback()/jobAddressOrFallback() — don't let it slip.
 function buildCsv() {
+  const rows = [
+    ['job_name', csvCell(jobNameOrFallback())].join(','),
+    ['job_address', csvCell(jobAddressOrFallback())].join(','),
+  ];
   const header = ['page', 'name', 'kind', 'quantity', 'unit',
                   'origin', 'page_scale_fpi', 'scale_source'];
-  const rows = [header.join(',')];
+  rows.push(header.join(','));
   for (const m of measurements) {
     const fpiOf = scaleOf(m.page);          // blank for a count on an unscaled page
     rows.push([
@@ -1666,6 +1839,7 @@ async function loadPdf(data, name) {
   outlineTitles = null; sheetTitleCache.clear();
   cancelTransients(null);
   minWidthOverride = null;
+  jobName = null; jobAddress = null; jobNameSource = null; jobAddressSource = null; jobExtracted = false;
   $('fileNameDisplay').textContent = name;
   $('fileNameDisplay').title = name;
 
@@ -1676,6 +1850,9 @@ async function loadPdf(data, name) {
     scalesFromStored(proj.pageScales);
     measurements = proj.measurements.map(fromStored);
     minWidthOverride = proj.minWidthOverride ?? null;
+    jobName = proj.jobName ?? null; jobAddress = proj.jobAddress ?? null;
+    jobNameSource = proj.jobNameSource ?? null; jobAddressSource = proj.jobAddressSource ?? null;
+    jobExtracted = proj.jobExtracted === true;
     reindexAfterRestore();
     setSaveState(`Saved ${new Date(proj.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
   } else {
@@ -1684,6 +1861,7 @@ async function loadPdf(data, name) {
     measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
     setSaveState('—'); // no project until the first mutation
   }
+  updateJobBar();
 
   const base = (await pdfDoc.getPage(1)).getViewport({ scale: 1 });
   pageDims = { w: base.width, h: base.height };
@@ -1692,6 +1870,10 @@ async function loadPdf(data, name) {
   refreshScaleUI();
   renderMeasList();
   await renderPage();
+  // A never-attempted project (brand new, or saved before this feature
+  // existed) gets one extraction pass; jobExtracted persists so a reopen
+  // never re-scans (extractJobInfo() itself calls markDirty()).
+  if (!jobExtracted) await extractJobInfo();
   const restored = proj ? ` — restored ${measurements.length} measurement(s)` : '';
   say(`${name}: ${pdfDoc.numPages} page(s)${restored}. Pick a preset scale or calibrate on a known dimension.`);
 }
@@ -1760,6 +1942,10 @@ $('maskRaster').addEventListener('change', render);
 $('maskVector').addEventListener('change', render);
 $('hideHatch').addEventListener('change', render);
 $('allPages').addEventListener('change', renderMeasList);
+$('jobBar').addEventListener('click', ev => {
+  if (ev.target.id === 'jobNameDisplay') beginRenameJob('name', ev.target);
+  else if (ev.target.id === 'jobAddressDisplay') beginRenameJob('address', ev.target);
+});
 $('projectsBtn').addEventListener('click', () => {
   const panel = $('projectPanel');
   panel.hidden = !panel.hidden;
@@ -1837,6 +2023,9 @@ window.__harness = {
   importJson: str => importJson(str),
   simulateStorageError: () => onStorageError(new Error('simulated quota exceeded')),
   storageBlocked: () => storageBlocked,
+  jobInfo: () => ({ jobName, jobAddress, jobNameSource, jobAddressSource, jobExtracted }),
+  extractJobInfo: () => extractJobInfo(),
+  scanTitleBlockForJob: () => scanTitleBlockForJob(),
 };
 
 // ---- boot ----
@@ -1848,6 +2037,7 @@ for (const p of JSON.parse(scale_presets_json())) {
   $('preset').appendChild(o);
 }
 await renderPage();
+updateJobBar();
 say('wasm loaded — click inside a room, or load a PDF.');
 
 // Deep-link/self-test affordance (also drives headless smoke tests):
