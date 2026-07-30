@@ -258,7 +258,46 @@
   }
   #storageModal h2 { color: var(--danger); margin: 0 0 8px; font-size: 1rem; }
   #storageModal .actions { margin-top: 14px; display: flex; gap: 10px; }
+
+  /* ---------- print / PDF export ---------- */
+  #printHeader { display: none; }
+  @media print {
+    @page { margin: 12mm; }
+
+    /* The interactive shell is a fixed-viewport SPA layout (100vh +
+       overflow:hidden regions) — print needs normal document flow instead,
+       or anything taller than one screen gets clipped rather than flowing
+       onto additional pages. */
+    html, body { height: auto; overflow: visible; background: #fff; }
+    #appShell { display: block; height: auto; }
+    #ribbon, #statusBar, #welcomeScreen, #engineDrawer, #projectPanel, #storageModal {
+      display: none !important;
+    }
+    #workArea { display: block; height: auto; }
+    #canvasWrap {
+      position: static; overflow: visible; height: auto; background: #fff;
+      padding: 0; display: block;
+    }
+    canvas#plan { border: none; margin: 0 0 16px; max-width: 100%; height: auto; }
+    #measPanel { border: none; overflow: visible; height: auto; background: #fff; }
+    #measPanelHead, .rightBits, .iconToggle { display: none; }
+    .measGroupHead { background: #f0f0f0; color: #000; }
+    .measRow, .measGroupName, .measGroupTotal, .measVal, .origin { color: #000; }
+    .measRow { border-bottom: 1px solid #ccc; }
+
+    #printHeader {
+      display: block; margin-bottom: 14px; padding-bottom: 10px;
+      border-bottom: 2px solid #000; color: #000;
+    }
+    #printHeader .printJobName { font-size: 18px; font-weight: 700; }
+    #printHeader .printJobAddress { font-size: 12px; color: #333; }
+    #printHeader .printMeta { font-size: 11px; color: #333; margin-top: 4px; }
+  }
 </style>
+<!-- @page has no class/selector scoping, so landscape orientation is
+     toggled by writing this tag's content in/out at print time rather
+     than via a CSS class (see exportPdf() in the module script). -->
+<style id="printOrientation"></style>
 </head>
 <body>
 <div id="appShell">
@@ -281,6 +320,7 @@
       <div id="quickActions">
         <button id="exportCsv" title="download all measurements as CSV">Export CSV</button>
         <button id="exportJson" title="download a JSON backup of this project">Export JSON</button>
+        <button id="exportPdfBtn" title="print or save this sheet + takeoff list as a PDF">Print / PDF</button>
         <button id="projectsBtn" title="saved projects">Projects</button>
         <button id="engineSettingsBtn" class="icon-btn" title="Engine settings" aria-label="Engine settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.56V21a2 2 0 0 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1H3a2 2 0 0 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.56V3a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 1 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.56 1H21a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"/></svg>
@@ -320,6 +360,10 @@
       <div id="jobAddressDisplay" class="jobAddress" title="click to edit"></div>
     </div>
   </header>
+
+  <!-- Print-only header: screen-hidden, populated by exportPdf() right
+       before window.print(); see the @media print block for layout. -->
+  <div id="printHeader"></div>
 
   <main id="workArea">
     <div id="canvasWrap">
@@ -1548,6 +1592,30 @@ function buildCsv() {
   return rows.join('\n') + '\n';
 }
 
+/// Print/PDF export: populate the print-only header (job/address/page/
+/// date — textContent, not innerHTML, so free-text job info can't inject
+/// markup) and hand off to the browser's print dialog (see the @media
+/// print block for layout). No canvas rasterization needed — the browser
+/// already prints whatever's currently painted on the plan canvas, and
+/// the measurement panel is already real DOM/text.
+function exportPdf() {
+  const header = $('printHeader');
+  header.textContent = '';
+  const name = document.createElement('div');
+  name.className = 'printJobName'; name.textContent = jobNameOrFallback();
+  const addr = document.createElement('div');
+  addr.className = 'printJobAddress'; addr.textContent = jobAddressOrFallback();
+  const meta = document.createElement('div');
+  meta.className = 'printMeta';
+  meta.textContent = `${$('pageLabel').textContent} · ${new Date().toLocaleDateString()}`;
+  header.append(name, addr, meta);
+  // @page has no class/selector scoping — toggle a whole print-only
+  // stylesheet's content rather than a body class.
+  $('printOrientation').textContent =
+    canvas.width > canvas.height ? '@page { size: landscape; }' : '';
+  window.print();
+}
+
 // ---- tool interaction ----
 function setTool(next) {
   tool = next;
@@ -1977,6 +2045,7 @@ $('exportJson').addEventListener('click', () => {
   URL.revokeObjectURL(url);
   say('exported JSON project backup');
 });
+$('exportPdfBtn').addEventListener('click', () => exportPdf());
 $('importJson').addEventListener('change', async ev => {
   const f = ev.target.files[0];
   if (!f) return;
