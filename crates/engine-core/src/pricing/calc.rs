@@ -28,8 +28,8 @@
 //! whole area may legitimately come out negative.
 
 use super::{
-    AddOn, AddOnEffect, LaborRates, Product, ProductClass, ProductOp, ProductUnit, RateBasis,
-    RateCard, WageSource,
+    AddOn, AddOnEffect, Product, ProductClass, ProductOp, ProductUnit, RateBasis, RateCard,
+    WageSource,
 };
 use std::collections::BTreeMap;
 
@@ -127,6 +127,58 @@ pub struct JobInput {
     pub margin: f64,
     #[cfg_attr(feature = "serde", serde(default))]
     pub wage_source: WageSource,
+}
+
+/// Job-level facts every area must be priced against, bound together so they
+/// cannot drift apart.
+///
+/// `wage_source` used to be a loose argument on [`price_area`]. That is the
+/// dangerous kind of API: a live-updating panel calls `price_area` on every
+/// keystroke, and passing the wrong source produces no error and no warning —
+/// just a quote low by the whole Davis-Bacon delta. Binding the card and the
+/// wage together, and RESOLVING the wage once at construction, makes pricing
+/// an area against the wrong basis structurally impossible rather than merely
+/// discouraged.
+///
+/// Constructing this is also the single place an unavailable wage schedule is
+/// caught: [`PricingContext::new`] fails once, up front, instead of every area
+/// failing separately.
+#[derive(Debug, Clone, Copy)]
+pub struct PricingContext<'a> {
+    card: &'a RateCard,
+    wage_source: WageSource,
+    wage_per_hour: f64,
+}
+
+impl<'a> PricingContext<'a> {
+    /// Bind a card to a wage basis, resolving the hourly wage now.
+    ///
+    /// Errors if the basis has no rates loaded — Davis-Bacon before the
+    /// prevailing schedule is entered. It does NOT fall back to the standard
+    /// wage: a prevailing-wage job priced at 27.50 underbids by roughly half
+    /// and looks entirely legitimate.
+    pub fn new(card: &'a RateCard, wage_source: WageSource) -> Result<Self, PricingError> {
+        let wage_per_hour = card
+            .labor
+            .wage_for(wage_source)
+            .ok_or(PricingError::WageUnavailable(wage_source))?;
+        Ok(Self {
+            card,
+            wage_source,
+            wage_per_hour,
+        })
+    }
+
+    pub fn card(&self) -> &'a RateCard {
+        self.card
+    }
+    pub fn wage_source(&self) -> WageSource {
+        self.wage_source
+    }
+    /// The resolved hourly wage, already chosen by basis.
+    pub fn wage_per_hour(&self) -> f64 {
+        self.wage_per_hour
+    }
 }
 
 // ---------- outputs ----------
@@ -428,12 +480,10 @@ fn line(
 
 // ---------- the buildup ----------
 
-/// Price one area against a card.
-pub fn price_area(
-    card: &RateCard,
-    area: &AreaInput,
-    wage_source: WageSource,
-) -> Result<AreaQuote, PricingError> {
+/// Price one area. The wage basis comes from the context and cannot be
+/// mismatched at the call site.
+pub fn price_area(ctx: &PricingContext<'_>, area: &AreaInput) -> Result<AreaQuote, PricingError> {
+    let card = ctx.card;
     if !area.area_sf.is_finite() || area.area_sf < 0.0 {
         return Err(PricingError::InvalidArea {
             area: area.name.clone(),
@@ -501,8 +551,7 @@ pub fn price_area(
         .sum();
 
     let man_hours = labor_in.man_hours();
-    let wage = wage_for(&card.labor, wage_source)?;
-    let labor = wage * man_hours * (1.0 + card.labor.payroll_tax_rate)
+    let labor = ctx.wage_per_hour * man_hours * (1.0 + card.labor.payroll_tax_rate)
         + card.labor.insurance_benefits_per_hour * man_hours;
     let overhead = card.labor.overhead_per_man_hour * man_hours;
 
@@ -539,13 +588,6 @@ pub fn price_area(
     })
 }
 
-/// Wage for a source, erroring rather than falling back to the standard rate.
-fn wage_for(labor: &LaborRates, source: WageSource) -> Result<f64, PricingError> {
-    labor
-        .wage_for(source)
-        .ok_or(PricingError::WageUnavailable(source))
-}
-
 /// Price a whole job: every area, plus job-level costs, then margin.
 ///
 /// Recomputes from scratch every call — there is no cached state, so a changed
@@ -555,10 +597,13 @@ pub fn price_job(card: &RateCard, job: &JobInput) -> Result<JobQuote, PricingErr
     if !job.margin.is_finite() || job.margin >= 1.0 {
         return Err(PricingError::InvalidMargin(job.margin));
     }
+    // One context for the whole job: every area is priced against the same
+    // wage basis by construction, and an unavailable schedule fails here once.
+    let ctx = PricingContext::new(card, job.wage_source)?;
     let areas = job
         .areas
         .iter()
-        .map(|a| price_area(card, a, job.wage_source))
+        .map(|a| price_area(&ctx, a))
         .collect::<Result<Vec<_>, _>>()?;
 
     let area_cost: f64 = areas.iter().map(|a| a.cost).sum();

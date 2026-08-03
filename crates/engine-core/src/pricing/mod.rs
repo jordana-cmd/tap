@@ -39,7 +39,7 @@ pub mod calc;
 pub use calc::{
     consumable_rate_per_sf, material_rate_per_sf, price_area, price_from_cost, price_job,
     rate_summary, AreaInput, AreaQuote, JobCosts, JobInput, JobQuote, LaborInput, LineSource,
-    PricingError, QuoteLine, MARGIN_FLOOR,
+    PricingContext, PricingError, QuoteLine, MARGIN_FLOOR,
 };
 
 use std::collections::BTreeMap;

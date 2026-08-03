@@ -23,8 +23,8 @@
 
 use engine_core::pricing::{
     consumable_rate_per_sf, from_json, material_rate_per_sf, price_area, price_from_cost,
-    price_job, AreaInput, JobCosts, JobInput, LaborInput, LineSource, PricingError, RateCard,
-    WageSource, MARGIN_FLOOR,
+    price_job, AreaInput, JobCosts, JobInput, LaborInput, LineSource, PricingContext, PricingError,
+    RateCard, WageSource, MARGIN_FLOOR,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -250,6 +250,12 @@ fn area_of(system: &str, sf: f64, crew: f64, hours: f64) -> AreaInput {
     }
 }
 
+/// Standard-wage context for the shipped card. Binding the wage to the
+/// context is what makes a mismatched basis unrepresentable at a call site.
+fn std_ctx(c: &RateCard) -> PricingContext<'_> {
+    PricingContext::new(c, WageSource::Standard).expect("standard wage always resolves")
+}
+
 fn job_with(areas: Vec<AreaInput>, margin: f64) -> JobInput {
     JobInput {
         areas,
@@ -269,7 +275,7 @@ fn suppressed_line_stays_visible_at_zero_with_its_factor() {
     let c = card();
     let mut a = area_of("polish", 3000.0, 3.0, 9.0);
     a.quantity_overrides.insert("mender_part_a".into(), 0.0);
-    let q = price_area(&c, &a, WageSource::Standard).unwrap();
+    let q = price_area(&std_ctx(&c), &a).unwrap();
 
     let line = q
         .lines
@@ -288,17 +294,12 @@ fn suppressed_line_stays_visible_at_zero_with_its_factor() {
 fn partial_factor_is_the_general_case_delete_is_just_zero() {
     // "Half the normal mender" on a slab needing light crack repair.
     let c = card();
-    let full = price_area(
-        &c,
-        &area_of("polish", 3000.0, 3.0, 9.0),
-        WageSource::Standard,
-    )
-    .unwrap();
+    let full = price_area(&std_ctx(&c), &area_of("polish", 3000.0, 3.0, 9.0)).unwrap();
     let mut half_in = area_of("polish", 3000.0, 3.0, 9.0);
     half_in
         .quantity_overrides
         .insert("mender_part_a".into(), 0.5);
-    let half = price_area(&c, &half_in, WageSource::Standard).unwrap();
+    let half = price_area(&std_ctx(&c), &half_in).unwrap();
 
     let line = half
         .lines
@@ -326,14 +327,9 @@ fn suppression_does_not_touch_the_rate_card() {
     let c = card();
     let mut a = area_of("polish", 1000.0, 2.0, 4.0);
     a.quantity_overrides.insert("mender_part_a".into(), 0.0);
-    let _ = price_area(&c, &a, WageSource::Standard).unwrap();
+    let _ = price_area(&std_ctx(&c), &a).unwrap();
 
-    let clean = price_area(
-        &c,
-        &area_of("polish", 1000.0, 2.0, 4.0),
-        WageSource::Standard,
-    )
-    .unwrap();
+    let clean = price_area(&std_ctx(&c), &area_of("polish", 1000.0, 2.0, 4.0)).unwrap();
     let line = clean
         .lines
         .iter()
@@ -361,7 +357,7 @@ fn suppressing_an_add_on_contributed_product_zeroes_only_that_line() {
     a.add_on_keys = vec!["double_broadcast".into()];
     a.quantity_overrides
         .insert("quartz_double_broadcast".into(), 0.0);
-    let q = price_area(&c, &a, WageSource::Standard).unwrap();
+    let q = price_area(&std_ctx(&c), &a).unwrap();
 
     let quartz = q
         .lines
@@ -386,7 +382,7 @@ fn a_negative_override_factor_is_rejected() {
     let mut a = area_of("epoxy", 1000.0, 2.0, 8.0);
     a.quantity_overrides.insert("clear_epoxy".into(), -1.0);
     assert!(matches!(
-        price_area(&c, &a, WageSource::Standard),
+        price_area(&std_ctx(&c), &a),
         Err(PricingError::InvalidOverride { .. })
     ));
 }
@@ -398,7 +394,7 @@ fn double_broadcast_replaces_both_flake_rows_and_adds_quartz() {
     let c = card();
     let mut a = area_of("polyurea", 1000.0, 4.0, 10.0);
     a.add_on_keys = vec!["double_broadcast".into()];
-    let q = price_area(&c, &a, WageSource::Standard).unwrap();
+    let q = price_area(&std_ctx(&c), &a).unwrap();
     let ids: Vec<&str> = q.lines.iter().map(|l| l.product_id.as_str()).collect();
 
     assert!(ids.contains(&"flake_thrown_double_broadcasted"));
@@ -415,12 +411,7 @@ fn reclaim_credit_lines_are_negative_but_net_flake_is_positive() {
     // rate flips it and silently deflates every polyurea quote. Monotonicity
     // in area would be false by construction here.
     let c = card();
-    let q = price_area(
-        &c,
-        &area_of("polyurea", 1000.0, 4.0, 10.0),
-        WageSource::Standard,
-    )
-    .unwrap();
+    let q = price_area(&std_ctx(&c), &area_of("polyurea", 1000.0, 4.0, 10.0)).unwrap();
     let thrown = q
         .lines
         .iter()
@@ -446,12 +437,12 @@ fn a_manual_cost_add_on_requires_an_amount() {
     a.add_on_keys = vec!["crack_stitching".into()];
     // No amount supplied -> error, never a silent $0.
     assert!(matches!(
-        price_area(&c, &a, WageSource::Standard),
+        price_area(&std_ctx(&c), &a),
         Err(PricingError::MissingManualCost { .. })
     ));
 
     a.manual_costs.insert("crack_stitching".into(), 675.0);
-    let q = price_area(&c, &a, WageSource::Standard).unwrap();
+    let q = price_area(&std_ctx(&c), &a).unwrap();
     cents(q.manual_costs, 675.0, "manual cost");
     assert!(q.cost > 675.0);
 }
@@ -462,7 +453,7 @@ fn an_add_on_scoped_to_another_system_is_rejected() {
     let mut a = area_of("epoxy", 1000.0, 2.0, 8.0);
     a.add_on_keys = vec!["double_broadcast".into()]; // polyurea only
     assert!(matches!(
-        price_area(&c, &a, WageSource::Standard),
+        price_area(&std_ctx(&c), &a),
         Err(PricingError::AddOnNotApplicable { .. })
     ));
 }
@@ -473,7 +464,7 @@ fn universal_add_ons_attach_to_any_system() {
     for system in ["seal", "polish", "epoxy", "polyurea"] {
         let mut a = area_of(system, 1000.0, 2.0, 8.0);
         a.add_on_keys = vec!["h2_out".into(), "fast_cure".into()];
-        let q = price_area(&c, &a, WageSource::Standard).unwrap();
+        let q = price_area(&std_ctx(&c), &a).unwrap();
         assert!(q.lines.iter().any(|l| l.product_id == "h2_out"), "{system}");
         assert!(q
             .lines
@@ -486,13 +477,13 @@ fn universal_add_ons_attach_to_any_system() {
 fn unknown_system_and_add_on_are_named_in_the_error() {
     let c = card();
     assert!(matches!(
-        price_area(&c, &area_of("marble", 100.0, 1.0, 1.0), WageSource::Standard),
+        price_area(&std_ctx(&c), &area_of("marble", 100.0, 1.0, 1.0)),
         Err(PricingError::UnknownSystem(s)) if s == "marble"
     ));
     let mut a = area_of("epoxy", 100.0, 1.0, 1.0);
     a.add_on_keys = vec!["glitter".into()];
     assert!(matches!(
-        price_area(&c, &a, WageSource::Standard),
+        price_area(&std_ctx(&c), &a),
         Err(PricingError::UnknownAddOn(s)) if s == "glitter"
     ));
 }
@@ -506,7 +497,7 @@ fn an_area_with_no_hours_errors_rather_than_pricing_materials_only() {
     let c = card();
     let mut a = area_of("epoxy", 2000.0, 0.0, 0.0);
     a.labor = None;
-    match price_area(&c, &a, WageSource::Standard) {
+    match price_area(&std_ctx(&c), &a) {
         Err(PricingError::MissingLabor { area }) => assert_eq!(area, a.name),
         other => panic!("expected MissingLabor, got {other:?}"),
     }
@@ -523,18 +514,8 @@ fn crew_times_hours_is_the_only_labor_driver() {
     // 4 crew x 10 h and 2 crew x 20 h cost identically; crew affects
     // scheduling, not dollars.
     let c = card();
-    let wide = price_area(
-        &c,
-        &area_of("epoxy", 2000.0, 4.0, 10.0),
-        WageSource::Standard,
-    )
-    .unwrap();
-    let deep = price_area(
-        &c,
-        &area_of("epoxy", 2000.0, 2.0, 20.0),
-        WageSource::Standard,
-    )
-    .unwrap();
+    let wide = price_area(&std_ctx(&c), &area_of("epoxy", 2000.0, 4.0, 10.0)).unwrap();
+    let deep = price_area(&std_ctx(&c), &area_of("epoxy", 2000.0, 2.0, 20.0)).unwrap();
     cents(wide.labor, deep.labor, "labor");
     cents(wide.overhead, deep.overhead, "overhead");
     cents(wide.cost, deep.cost, "area cost");
@@ -544,7 +525,7 @@ fn crew_times_hours_is_the_only_labor_driver() {
 #[test]
 fn payroll_tax_applies_to_wages_and_overhead_is_per_man_hour() {
     let c = card();
-    let q = price_area(&c, &area_of("epoxy", 100.0, 3.0, 8.0), WageSource::Standard).unwrap();
+    let q = price_area(&std_ctx(&c), &area_of("epoxy", 100.0, 3.0, 8.0)).unwrap();
     let mh = 24.0;
     cents(q.labor, 27.50 * mh * 1.0765, "wage + 7.65% employer FICA");
     cents(q.overhead, 52.99 * mh, "overhead per man-hour");
@@ -553,16 +534,56 @@ fn payroll_tax_applies_to_wages_and_overhead_is_per_man_hour() {
 #[test]
 fn davis_bacon_without_rates_errors_instead_of_using_the_standard_wage() {
     // Underbidding a prevailing-wage job by roughly half looks entirely
-    // legitimate, which is why this must not fall back.
+    // legitimate, which is why this must not fall back. The CONTEXT now
+    // catches it once, up front, instead of every area failing separately —
+    // and there is no way to build an area-pricing call that dodges it.
     let c = card();
     assert!(matches!(
-        price_area(
-            &c,
-            &area_of("epoxy", 1000.0, 2.0, 8.0),
-            WageSource::DavisBacon
-        ),
+        PricingContext::new(&c, WageSource::DavisBacon),
+        Err(PricingError::WageUnavailable(WageSource::DavisBacon))
+    ));
+    // And it propagates through a whole job.
+    let mut job = job_with(vec![area_of("epoxy", 1000.0, 2.0, 8.0)], 0.35);
+    job.wage_source = WageSource::DavisBacon;
+    assert!(matches!(
+        price_job(&c, &job),
         Err(PricingError::WageUnavailable(_))
     ));
+}
+
+#[test]
+fn a_context_binds_the_wage_so_it_cannot_be_mismatched() {
+    // The whole point of the struct: the resolved wage travels with the card,
+    // so a live-updating panel cannot price one area on the wrong basis.
+    let c = card();
+    let ctx = std_ctx(&c);
+    assert_eq!(ctx.wage_source(), WageSource::Standard);
+    cents(ctx.wage_per_hour(), 27.50, "resolved once at construction");
+
+    let mut db = c.clone();
+    db.labor.davis_bacon = Some(engine_core::pricing::DavisBaconRates {
+        county: "Wayne".into(),
+        classification: "Painter".into(),
+        base_wage_per_hour: 40.0,
+        fringe_per_hour: 18.5,
+    });
+    let prevailing = PricingContext::new(&db, WageSource::DavisBacon).unwrap();
+    cents(prevailing.wage_per_hour(), 58.5, "base + fringe");
+
+    // Same area, same card, different basis -> different labor, and the only
+    // way to express that is to say so when building the context.
+    let a = area_of("epoxy", 1000.0, 2.0, 8.0);
+    let standard = price_area(&std_ctx(&db), &a).unwrap();
+    let db_priced = price_area(&prevailing, &a).unwrap();
+    assert!(
+        db_priced.labor > standard.labor * 2.0,
+        "prevailing wage must move labor materially"
+    );
+    cents(
+        standard.materials,
+        db_priced.materials,
+        "materials unaffected",
+    );
 }
 
 #[test]
@@ -570,11 +591,7 @@ fn negative_or_non_finite_labor_is_rejected() {
     let c = card();
     for (crew, hours) in [(-1.0, 8.0), (2.0, -8.0), (f64::NAN, 8.0)] {
         assert!(matches!(
-            price_area(
-                &c,
-                &area_of("epoxy", 100.0, crew, hours),
-                WageSource::Standard
-            ),
+            price_area(&std_ctx(&c), &area_of("epoxy", 100.0, crew, hours)),
             Err(PricingError::InvalidLabor { .. })
         ));
     }
@@ -585,7 +602,7 @@ fn negative_or_non_finite_labor_is_rejected() {
 #[test]
 fn seal_applies_reduced_multipliers_and_drops_the_zeroed_ones() {
     let c = card();
-    let q = price_area(&c, &area_of("seal", 5000.0, 2.0, 6.0), WageSource::Standard).unwrap();
+    let q = price_area(&std_ctx(&c), &area_of("seal", 5000.0, 2.0, 6.0)).unwrap();
     let cons: Vec<&str> = q
         .lines
         .iter()
@@ -612,12 +629,7 @@ fn seal_applies_reduced_multipliers_and_drops_the_zeroed_ones() {
 #[test]
 fn commercial_systems_run_consumables_at_full_rate() {
     let c = card();
-    let q = price_area(
-        &c,
-        &area_of("epoxy", 5000.0, 2.0, 6.0),
-        WageSource::Standard,
-    )
-    .unwrap();
+    let q = price_area(&std_ctx(&c), &area_of("epoxy", 5000.0, 2.0, 6.0)).unwrap();
     let brushes = q.lines.iter().find(|l| l.product_id == "brushes").unwrap();
     cents(brushes.quantity, 0.0064 * 5000.0, "full rate");
     assert_eq!(
@@ -749,7 +761,7 @@ fn material_rate_times_area_equals_the_material_subtotal() {
     // is worthless.
     let c = card();
     for system in ["seal", "polish", "epoxy", "polyurea"] {
-        let q = price_area(&c, &area_of(system, 1234.0, 2.0, 6.0), WageSource::Standard).unwrap();
+        let q = price_area(&std_ctx(&c), &area_of(system, 1234.0, 2.0, 6.0)).unwrap();
         cents(
             q.materials,
             material_rate_per_sf(&c, system).unwrap() * 1234.0,
@@ -774,7 +786,7 @@ fn subtotals_equal_the_sum_of_their_lines() {
     let mut a = area_of("polyurea", 3210.0, 4.0, 9.0);
     a.add_on_keys = vec!["double_broadcast".into(), "h2_out".into()];
     a.quantity_overrides.insert("sand".into(), 0.0);
-    let q = price_area(&c, &a, WageSource::Standard).unwrap();
+    let q = price_area(&std_ctx(&c), &a).unwrap();
 
     let mats: f64 = q
         .lines
@@ -800,12 +812,7 @@ fn subtotals_equal_the_sum_of_their_lines() {
 #[test]
 fn every_line_carries_what_the_ui_needs_to_render_it() {
     let c = card();
-    let q = price_area(
-        &c,
-        &area_of("epoxy", 1000.0, 2.0, 8.0),
-        WageSource::Standard,
-    )
-    .unwrap();
+    let q = price_area(&std_ctx(&c), &area_of("epoxy", 1000.0, 2.0, 8.0)).unwrap();
     assert!(!q.lines.is_empty());
     for l in &q.lines {
         assert!(!l.product_id.is_empty());
