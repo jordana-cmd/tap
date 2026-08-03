@@ -43,6 +43,7 @@ const state = page => page.evaluate(() => ({
   meas: window.__harness.measurements().map(m => ({
     name: m.name, kind: m.kind, value: m.value, origin: m.origin,
     page: m.page, color: m.color, verts: m.geometry.length / 2,
+    systemType: m.systemType,
   })),
   draftVerts: (d => (d ? d.verts.length : null))(window.__harness.draft()),
   chain: !!window.__harness.chainPreview(),
@@ -472,7 +473,7 @@ await run('CSV export: rows with §A2 provenance for area + line + count', async
   assert.match(lines[0], /^job_name,/, 'job_name row leads the file');
   assert.match(lines[1], /^job_address,/, 'job_address row follows');
   assert.equal(lines[2],
-    'page,name,kind,quantity,unit,origin,page_scale_fpi,scale_source', 'header');
+    'page,name,kind,quantity,unit,origin,page_scale_fpi,scale_source,system_type', 'header');
   assert.equal(lines.length, 6, '2 job rows + header + 3 data rows');
   const cols = lines.slice(3).map(l => l.split(','));
   const area = cols.find(c => c[2] === 'area');
@@ -482,6 +483,109 @@ await run('CSV export: rows with §A2 provenance for area + line + count', async
   assert.equal(area[4], 'SF'); assert.equal(area[6], '7.2000'); assert.equal(area[7], 'param');
   assert.equal(line[4], 'LF'); assert.equal(line[5], 'manual');
   assert.equal(count[3], '3.00'); assert.equal(count[4], 'EA'); assert.equal(count[6], '7.2000');
+  // system_type is appended last and blank until assigned — existing column
+  // positions above are unchanged by its addition.
+  assert.equal(area[8], '', 'unassigned area exports a blank system_type');
+  assert.equal(line[8], '', 'a linear measurement takes no system');
+});
+
+// ---- flooring-system assignment (area measurements) ----
+
+const drawArea = async page => {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+};
+const pickSystem = (page, key) => page.select('.measRow .measSystem', key);
+
+await run('area system: dropdown offers exactly the four systems + Unassigned', async page => {
+  await drawArea(page);
+  const opts = await page.$$eval('.measRow .measSystem option',
+    os => os.map(o => ({ value: o.value, label: o.textContent })));
+  assert.deepEqual(opts, [
+    { value: '', label: 'Unassigned' },
+    { value: 'polish', label: 'Polish' },
+    { value: 'seal', label: 'Seal' },
+    { value: 'epoxy', label: 'Epoxy' },
+    { value: 'polyurea', label: 'Polyurea' },
+  ], 'catalog rendered verbatim, Unassigned first');
+  // Default is null — never back-filled with a real system.
+  assert.equal((await state(page)).meas[0].systemType, null, 'defaults to Unassigned');
+  assert.ok(await page.$eval('.measRow .measSystem', el => el.classList.contains('unassigned')),
+    'unassigned is visually marked');
+});
+
+await run('area system: only AREA rows get a picker', async page => {
+  await drawArea(page);
+  await setTool(page, 'line');
+  for (const [x, y] of [[600, 300], [700, 300]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await setTool(page, 'count');
+  await clickBase(page, 600, 400);
+  await page.keyboard.press('Enter');
+
+  const perRow = await page.$$eval('.measRow', rows => rows.map(r => ({
+    text: r.textContent, hasPicker: !!r.querySelector('.measSystem'),
+  })));
+  assert.equal(perRow.length, 3, 'three measurements listed');
+  assert.equal(perRow.filter(r => r.hasPicker).length, 1, 'exactly one picker');
+  assert.ok(perRow.find(r => /^Area 1/.test(r.text)).hasPicker, 'the area row has it');
+});
+
+await run('area system: selection persists through reload and reaches CSV', async page => {
+  await drawArea(page);
+  await pickSystem(page, 'epoxy');
+  assert.equal((await state(page)).meas[0].systemType, 'epoxy', 'state updated on change');
+
+  const csv = await page.evaluate(() => window.__harness.buildCsv());
+  const areaRow = csv.trim().split('\n').slice(3).find(l => l.split(',')[2] === 'area');
+  assert.equal(areaRow.split(',')[8], 'epoxy', 'machine key, not the display label');
+
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.reload();
+  await waitReady(page);
+  assert.equal((await state(page)).meas[0].systemType, 'epoxy', 'survives IndexedDB round-trip');
+  assert.equal(await page.$eval('.measRow .measSystem', el => el.value), 'epoxy',
+    'and the control reflects it after restore');
+});
+
+await run('area system: round-trips through JSON export/import', async page => {
+  await drawArea(page);
+  await pickSystem(page, 'polyurea');
+  const json = await page.evaluate(() => window.__harness.exportJson());
+  assert.match(json, /"systemType": "polyurea"/, 'present in the JSON backup');
+
+  await page.evaluate(() => window.__harness.deleteProject(window.__harness.currentSha()));
+  await page.reload();
+  await waitReady(page);
+  await page.evaluate(j => window.__harness.importJson(j), json);
+  assert.equal((await state(page)).meas[0].systemType, 'polyurea', 'restored from backup');
+});
+
+await run('area system: legacy records with no systemType load as Unassigned', async page => {
+  // A backup written BEFORE this field existed: same shape, key absent.
+  await drawArea(page);
+  const legacy = await page.evaluate(() => {
+    const doc = JSON.parse(window.__harness.exportJson());
+    for (const m of doc.measurements) delete m.systemType;
+    return JSON.stringify(doc);
+  });
+  assert.ok(!legacy.includes('systemType'), 'fixture really has no systemType');
+
+  await page.evaluate(j => window.__harness.importJson(j), legacy);
+  assert.equal((await state(page)).meas[0].systemType, null,
+    'absent key restores as null, not a guessed system');
+  assert.ok(await page.$eval('.measRow .measSystem', el => el.classList.contains('unassigned')),
+    'and renders as Unassigned');
+});
+
+await run('area system: reassigning back to Unassigned stores null, not ""', async page => {
+  await drawArea(page);
+  await pickSystem(page, 'seal');
+  assert.equal((await state(page)).meas[0].systemType, 'seal');
+  await pickSystem(page, '');
+  assert.equal((await state(page)).meas[0].systemType, null, 'empty option clears to null');
 });
 
 await run('CSV quotes free-text names containing commas', async page => {
@@ -624,6 +728,22 @@ await run('quote payload: identifies the project, job, and category groups', asy
   assert.equal(cats.Count.totals.EA, 3, 'Count group totals EA');
   assert.equal(cats.Area.totals.LF, undefined, 'totals never cross units');
   assert.deepEqual(cats.Count.itemIds, p.items.filter(i => i.kind === 'count').map(i => i.id));
+});
+
+await run('quote payload: area system carries key + resolved label', async page => {
+  await drawArea(page);
+  await pickSystem(page, 'polish');
+  await setTool(page, 'line');
+  for (const [x, y] of [[600, 300], [700, 300]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+
+  await gotoQuote(page);
+  const p = await page.evaluate(() => window.__harness.lastQuotePayload());
+  const area = p.items.find(i => i.kind === 'area');
+  const line = p.items.find(i => i.kind === 'linear');
+  assert.deepEqual(area.system, { key: 'polish', label: 'Polish' },
+    'machine key for pricing, label resolved at build time');
+  assert.equal(line.system, null, 'a linear measurement carries no system');
 });
 
 await run('quote payload: rebuilt on each visit, never stale', async page => {

@@ -251,6 +251,16 @@
   .measRow:hover .iconToggle { display: inline-flex; }
   .measRow .origin { color: var(--text-faint); font-size: 10.5px; }
   .measRow .measColor { width: 20px; height: 18px; padding: 0; border: none; border-radius: 4px; cursor: pointer; background: none; }
+  /* Deliberately NOT in the hover-reveal set above: this holds estimating
+     data, so it stays visible. Unassigned is dimmed and italic — unpriced
+     work should look unpriced at a glance. */
+  .measRow .measSystem {
+    flex: 0 0 auto; max-width: 104px; padding: 1px 4px; font-size: 11px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text); cursor: pointer;
+  }
+  .measRow .measSystem.unassigned { color: var(--text-faint); font-style: italic; }
+  .measRow .measSystem:hover { border-color: #333c54; }
   .renameInput { flex: 1 1 100%; font-size: 12px; }
   .iconToggle {
     border: none; background: none; padding: 2px; width: 22px; height: 22px;
@@ -1276,6 +1286,12 @@ function addMeasurement(kind, family, value, valueText, origin, geometry) {
     visible: true,
     snapEnabled: true,
     value, valueText, origin,
+    // Flooring system assignment (FLOOR_SYSTEMS key). null = Unassigned, on
+    // EVERY kind — the field is unconditional so serialization stays simple
+    // and linear systems (cove base) can use it later; only area rows expose
+    // a control today. Never defaulted to a real system: a wrong price is
+    // worse than a visibly missing one.
+    systemType: null,
     page: currentPage(), // authoritative at commit time (§A2)
     color: '#1e3a8a',    // user-recolourable (measurement editing)
     geometry: Float64Array.from(geometry),
@@ -1336,6 +1352,7 @@ function toStored(m) {
     confirmedBy: null, parentId: null, deleted: null, // §A2 optionals, unused here
     color: m.color, category: m.category,
     visible: m.visible !== false, snapEnabled: m.snapEnabled !== false,
+    systemType: m.systemType ?? null,
   };
 }
 function fromStored(r) {
@@ -1345,6 +1362,9 @@ function fromStored(r) {
     category: r.category ?? r.kind,
     visible: r.visible !== false,
     snapEnabled: r.snapEnabled !== false,
+    // Records saved before systemType existed restore as Unassigned rather
+    // than being back-filled with a guess.
+    systemType: r.systemType ?? null,
     value: 0, valueText: '', // recomputed below
     geometry: Float64Array.from(r.geometry),
   };
@@ -1524,6 +1544,28 @@ function refreshScaleUI() {
 
 const UNIT = { linear: 'LF', area: 'SF', count: 'EA' };
 
+/// The flooring systems an area measurement can be assigned to.
+///
+/// `key` is the STABLE MACHINE VALUE — it is what gets stored, exported, and
+/// what pricing will key off. `label` is display text only and can be renamed
+/// freely without touching a single saved record. This is the same id/name
+/// split engine-core's `assembly::Assembly` already uses, and the final spec's
+/// "items[] with assembly refs" (§ platform sync) points the same way.
+///
+/// Keys are deliberately NOT assembly ids yet: one system will likely map to
+/// several assemblies (epoxy at different mil thicknesses), so the
+/// systemKey → assemblyId mapping stays a separate, explicit step.
+const FLOOR_SYSTEMS = [
+  { key: 'polish',   label: 'Polish'   },
+  { key: 'seal',     label: 'Seal'     },
+  { key: 'epoxy',    label: 'Epoxy'    },
+  { key: 'polyurea', label: 'Polyurea' },
+];
+/// Display label for a stored system key; null if the key is absent or has
+/// been retired from the catalog (the stored value is still preserved —
+/// see buildMeasRow's unknown-key option).
+const systemLabel = key => FLOOR_SYSTEMS.find(sy => sy.key === key)?.label ?? null;
+
 /// Sum quantities within a category group for its header, split by unit
 /// (a mixed-kind group shows one total per unit rather than a meaningless
 /// cross-unit sum).
@@ -1600,6 +1642,40 @@ function buildMeasRow(m) {
   const value = document.createElement('span');
   value.className = 'measVal';
   value.textContent = ` — ${m.valueText}`;
+  // Flooring-system picker — area rows only (these four systems are
+  // area-priced). Unlike the hover-reveal row chrome this stays visible: it
+  // carries estimating data, and an unassigned area must be obvious at a
+  // glance rather than something you have to hover to discover.
+  let system = null;
+  if (m.kind === 'area') {
+    system = document.createElement('select');
+    system.className = 'measSystem';
+    system.title = 'flooring system';
+    const none = document.createElement('option');
+    none.value = ''; none.textContent = 'Unassigned';
+    system.appendChild(none);
+    for (const sy of FLOOR_SYSTEMS) {
+      const o = document.createElement('option');
+      o.value = sy.key; o.textContent = sy.label;
+      system.appendChild(o);
+    }
+    // A key that is no longer in the catalog keeps its slot rather than
+    // silently snapping the row back to Unassigned and losing the value.
+    if (m.systemType && !systemLabel(m.systemType)) {
+      const unknown = document.createElement('option');
+      unknown.value = m.systemType;
+      unknown.textContent = `${m.systemType} (unknown)`;
+      system.appendChild(unknown);
+    }
+    system.value = m.systemType ?? '';
+    system.classList.toggle('unassigned', !m.systemType);
+    system.addEventListener('click', ev => ev.stopPropagation());
+    system.addEventListener('change', () => {
+      m.systemType = system.value || null;   // '' → null, never a real system
+      renderMeasList();
+      markDirty();
+    });
+  }
   const origin = document.createElement('span');
   origin.className = 'origin';
   origin.textContent = `${m.origin} · ${m.page === 0 ? 'syn' : `p${m.page}`}`;
@@ -1641,7 +1717,7 @@ function buildMeasRow(m) {
   });
   row.addEventListener('mouseenter', () => { hoverMeas = m.id; render(); });
   row.addEventListener('mouseleave', () => { hoverMeas = null; render(); });
-  row.append(name, value, origin, colour, eye, snap, del);
+  row.append(name, value, ...(system ? [system] : []), origin, colour, eye, snap, del);
   return row;
 }
 
@@ -1714,8 +1790,12 @@ function buildCsv() {
     ['job_name', csvCell(jobNameOrFallback())].join(','),
     ['job_address', csvCell(jobAddressOrFallback())].join(','),
   ];
+  // system_type is APPENDED, not inserted: existing column positions stay
+  // put for anything already consuming this file. It carries the machine key
+  // (like kind/origin, not the display label); blank = unassigned, or a kind
+  // that takes no system.
   const header = ['page', 'name', 'kind', 'quantity', 'unit',
-                  'origin', 'page_scale_fpi', 'scale_source'];
+                  'origin', 'page_scale_fpi', 'scale_source', 'system_type'];
   rows.push(header.join(','));
   for (const m of measurements) {
     const fpiOf = scaleOf(m.page);          // blank for a count on an unscaled page
@@ -1728,6 +1808,7 @@ function buildCsv() {
       m.origin,
       fpiOf == null ? '' : fpiOf.toFixed(4),
       csvCell(scaleSourceOf(m.page) ?? ''),
+      csvCell(m.systemType ?? ''),
     ].join(','));
   }
   return rows.join('\n') + '\n';
@@ -1776,6 +1857,11 @@ function buildQuotePayload() {
       category: m.category ?? m.kind, kind: m.kind,
       unit: UNIT[m.kind] ?? '',
       quantity,
+      // Both halves: `key` is what pricing keys off, `label` is resolved at
+      // build time so it can never go stale against a renamed catalog entry.
+      system: m.systemType
+        ? { key: m.systemType, label: systemLabel(m.systemType) ?? m.systemType }
+        : null,
       origin: m.origin,
       scale: f == null ? null : { feet_per_paper_inch: f, source: scaleSourceOf(m.page) },
     };
