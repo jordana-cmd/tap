@@ -166,6 +166,21 @@
     padding: 8px 18px; font-size: 13px; font-weight: 600; margin-top: 4px;
   }
   .welcomeCta:hover { background: #a7323c; }
+  /* Drag-over affordance. outline (not border) so the dashed rule doesn't
+     shift the centered content by its own width when it appears. */
+  #welcomeScreen.dragActive {
+    outline: 2px dashed var(--accent); outline-offset: -14px;
+    /* --accent-soft is translucent, so it's layered OVER the base opaque
+       gradient rather than replacing it — otherwise the canvas behind the
+       overlay shows through mid-drag. */
+    background:
+      radial-gradient(circle at 50% 35%, var(--accent-soft), transparent 70%),
+      radial-gradient(circle at 50% 35%, var(--surface-3), var(--bg) 70%);
+  }
+  .welcomeDropHint { display: none; color: var(--accent-text); font-size: 12.5px; font-weight: 600; }
+  #welcomeScreen.dragActive .welcomeDropHint { display: block; }
+  /* The hint replaces the tagline mid-drag rather than stacking with it. */
+  #welcomeScreen.dragActive .welcomeTagline { display: none; }
 
   #measPanel {
     background: var(--surface); border-left: 1px solid var(--border);
@@ -444,7 +459,8 @@
       <div id="welcomeScreen">
         <div class="welcomeLogo"><img src="./assets/motor-city-logo.webp" alt="Motor City Floors and Coatings"></div>
         <div class="welcomeTitle">Takeoff Workspace</div>
-        <div class="welcomeTagline">Load a plan PDF to calibrate scale and start measuring.</div>
+        <div class="welcomeTagline">Load a plan PDF to calibrate scale and start measuring — or drag one here.</div>
+        <div class="welcomeDropHint">Drop the PDF to load it</div>
         <button class="welcomeCta" id="welcomeChooseFile">Choose a PDF to begin</button>
       </div>
     </div>
@@ -2376,6 +2392,72 @@ $('file').addEventListener('change', async ev => {
   const f = ev.target.files[0];
   if (!f) return;
   await loadPdf(await f.arrayBuffer(), f.name);
+});
+
+// ---- drag-and-drop plan loading (welcome screen only) ----
+// Some OSes/browsers report an empty `type` for dragged files, so the
+// extension is checked as a fallback rather than trusting the MIME alone.
+const isPdfFile = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
+
+// Scoped to the welcome screen, which loadPdf() hides for good on the first
+// successful load — so these only ever fire while no plan is open, with no
+// extra state checks needed.
+const welcome = $('welcomeScreen');
+let dragDepth = 0; // dragenter/leave fire per nested child; count, don't toggle
+const setDragActive = on => welcome.classList.toggle('dragActive', on);
+/// dragenter/dragleave only balance out if every enter gets a matching
+/// leave — dragging back out of the window, or dropping somewhere else on
+/// the page, breaks that pairing and would strand the highlight on. Any
+/// drag ending anywhere forces the count back to zero.
+const resetDragState = () => { dragDepth = 0; setDragActive(false); };
+
+// Global guard: a file dropped ANYWHERE in the window would otherwise make
+// the BROWSER navigate to it, replacing the running app and discarding any
+// in-progress draft. Swallow every stray drop; when a plan is already open
+// (welcome screen gone, so its own handler below can't fire) explain how to
+// switch plans instead of failing silently.
+window.addEventListener('dragover', ev => ev.preventDefault());
+window.addEventListener('drop', ev => {
+  ev.preventDefault();
+  resetDragState();
+  if (pdfDoc && ev.dataTransfer?.files?.length) {
+    say('a plan is already open — use Choose File to switch plans');
+  }
+});
+window.addEventListener('dragend', resetDragState);
+welcome.addEventListener('dragenter', ev => {
+  ev.preventDefault();
+  dragDepth += 1;
+  setDragActive(true);
+});
+welcome.addEventListener('dragover', ev => {
+  ev.preventDefault();
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+});
+welcome.addEventListener('dragleave', ev => {
+  ev.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) setDragActive(false);
+});
+welcome.addEventListener('drop', async ev => {
+  ev.preventDefault();
+  ev.stopPropagation(); // the window guard must not also claim this drop
+  resetDragState();
+  const files = [...(ev.dataTransfer?.files ?? [])];
+  if (!files.length) return;
+  const f = files[0];
+  if (!isPdfFile(f)) {
+    // pdf.js throws an opaque error on non-PDF bytes — reject clearly here.
+    say(`"${f.name}" is not a PDF — drop a plan PDF instead.`);
+    return;
+  }
+  const extra = files.length > 1 ? ` (${files.length} files dropped — loading the first)` : '';
+  say(`loading ${f.name}${extra}…`);
+  try {
+    await loadPdf(await f.arrayBuffer(), f.name);
+  } catch (e) {
+    say(`could not open "${f.name}": ${e?.message ?? e}`);
+  }
 });
 /// Cancel everything transient (drafts, previews, calibration clicks,
 /// hover, list hover, debounce) — page switches, file loads, and tool
