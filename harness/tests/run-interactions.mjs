@@ -800,6 +800,39 @@ await run('quote view: renders job, one row per item, and per-unit totals', asyn
   assert.ok(view.emptyHidden, 'empty state hidden when items exist');
 });
 
+await run('quote view: System column distinguishes assigned / unassigned / N-A', async page => {
+  await drawArea(page);
+  await pickSystem(page, 'seal');
+  // A second, deliberately unassigned area, plus a line that takes no system.
+  await setTool(page, 'area');
+  for (const [x, y] of [[600, 250], [660, 250], [660, 290]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await setTool(page, 'line');
+  for (const [x, y] of [[600, 300], [700, 300]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+
+  await gotoQuote(page);
+  const view = await page.evaluate(() => ({
+    headers: [...document.querySelectorAll('#quoteTable thead th')].map(t => t.textContent),
+    rows: [...document.querySelectorAll('#quoteTable tbody tr')].map(r => ({
+      name: r.children[0].textContent,
+      system: r.children[2].textContent,
+      cls: r.children[2].className,
+    })),
+  }));
+  assert.deepEqual(view.headers,
+    ['Item', 'Category', 'System', 'Kind', 'Page', 'Quantity', 'Origin'], 'System column present');
+
+  const assigned = view.rows.find(r => r.name === 'Area 1');
+  const unassigned = view.rows.find(r => r.name === 'Area 2');
+  const linear = view.rows.find(r => r.name === 'Line 1');
+  assert.equal(assigned.system, 'Seal', 'assigned area shows its display label');
+  assert.equal(unassigned.system, 'Unassigned', 'unpriced area is called out');
+  assert.equal(unassigned.cls, 'qUnassigned', 'and is visually flagged');
+  assert.equal(linear.system, '—', 'a linear measurement takes no system');
+  assert.equal(linear.cls, 'qNA', 'rendered as N/A, not as unassigned work');
+});
+
 await run('quote view: empty takeoff shows an empty state, not a bare table', async page => {
   await gotoQuote(page);
   const view = await page.evaluate(() => ({

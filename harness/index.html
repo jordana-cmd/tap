@@ -306,6 +306,10 @@
   #quoteTable .qNum { text-align: right; font-variant-numeric: tabular-nums; }
   #quoteTable .qSub { color: var(--text-faint); font-size: 11px; }
   #quoteTable .qOrigin { color: var(--text-faint); font-size: 10.5px; }
+  /* Same dimmed-italic treatment the takeoff row picker uses, so an
+     unpriced area reads identically on both screens. */
+  #quoteTable .qUnassigned { color: var(--text-faint); font-style: italic; }
+  #quoteTable .qNA { color: var(--text-faint); }
   #quoteEmpty { color: var(--text-dim); font-style: italic; padding: 18px 2px; }
   #quoteNote { color: var(--text-faint); font-size: 11px; margin-top: 16px; max-width: 640px; line-height: 1.6; }
 
@@ -1904,7 +1908,7 @@ function primaryQuantity(it) {
 }
 
 const UNIT_LABEL = { SF: 'total area', LF: 'total linear', EA: 'total count' };
-const QUOTE_COLS = ['Item', 'Category', 'Kind', 'Page', 'Quantity', 'Origin'];
+const QUOTE_COLS = ['Item', 'Category', 'System', 'Kind', 'Page', 'Quantity', 'Origin'];
 
 function td(text, cls) {
   const el = document.createElement('td');
@@ -1980,7 +1984,21 @@ function renderQuoteView(payload) {
       sub.textContent = `${it.quantity.perimeter_lf.toFixed(1)} LF perimeter`;
       qty.appendChild(sub);
     }
-    tr.append(td(it.name), td(it.category, 'qCat'), td(it.kind), td(String(it.page)));
+    // Three distinct states, not two: an area with no system is UNASSIGNED
+    // (actionable — someone has to price it), while a line or count simply
+    // takes no system at all. Collapsing those into one blank cell would
+    // hide the work that still needs a decision.
+    const sys = document.createElement('td');
+    if (it.system) {
+      sys.textContent = it.system.label;
+    } else if (it.kind === 'area') {
+      sys.className = 'qUnassigned';
+      sys.textContent = 'Unassigned';
+    } else {
+      sys.className = 'qNA';
+      sys.textContent = '—';
+    }
+    tr.append(td(it.name), td(it.category, 'qCat'), sys, td(it.kind), td(String(it.page)));
     tr.appendChild(qty);
     tr.appendChild(td(it.origin ?? '', 'qOrigin'));
     tbody.appendChild(tr);
