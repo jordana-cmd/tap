@@ -34,6 +34,14 @@
 //!    [`SystemRecipe::confirmed`]` == false` so the uncertainty is visible to
 //!    code, not just to a reader of a comment.
 
+pub mod calc;
+
+pub use calc::{
+    consumable_rate_per_sf, material_rate_per_sf, price_area, price_from_cost, price_job,
+    rate_summary, AreaInput, AreaQuote, JobCosts, JobInput, JobQuote, LaborInput, LineSource,
+    PricingError, QuoteLine, MARGIN_FLOOR,
+};
+
 use std::collections::BTreeMap;
 
 #[cfg(feature = "serde")]
@@ -118,18 +126,15 @@ pub struct SystemRecipe {
     pub name: String,
     /// Direct products only. Consumables are governed by the multipliers.
     pub product_ids: Vec<String>,
-    /// Multiplier for any consumable NOT named in
-    /// [`SystemRecipe::consumable_multipliers`].
-    pub default_consumable_multiplier: f64,
-    /// Per-consumable overrides. `0.0` means the system does not use it at
-    /// all — the sealer template omits several the commercial one includes,
-    /// and applying consumables at full rate to a seal job overcharges it.
+    /// Multiplier per consumable — EXHAUSTIVE. Every consumable in the
+    /// catalog must have an entry for every system, enforced by [`validate`],
+    /// so an incomplete card fails to LOAD rather than silently mispricing.
     ///
-    /// NOTE: a consumable added to the catalog later inherits
-    /// `default_consumable_multiplier`. For a system whose overrides are
-    /// mostly reductions that default is optimistic, so growing the catalog
-    /// means revisiting these.
-    #[cfg_attr(feature = "serde", serde(default))]
+    /// There is deliberately no default. A default of `1.0` silently
+    /// OVERCHARGES sealer jobs and `0.0` silently UNDERCHARGES them; neither
+    /// is safe, and a test only fires in CI while the person hand-editing
+    /// this JSON to add a product is exactly the person not running it.
+    /// `0.0` means the system does not use that consumable at all.
     pub consumable_multipliers: BTreeMap<String, f64>,
     /// `false` until the recipe is signed off. Membership was inferred by
     /// comparing four same-square-footage sheets; a consumer that quotes from
@@ -275,16 +280,14 @@ impl RateCard {
             .iter()
             .filter(|p| p.class == ProductClass::Consumable)
     }
-    /// Multiplier this system applies to a consumable (override, else the
-    /// system default).
+    /// Multiplier this system applies to a consumable. `None` only if the
+    /// system or the entry is missing — [`validate`] guarantees the entry
+    /// exists for every consumable on a card that loaded.
     pub fn consumable_multiplier(&self, system_key: &str, consumable_id: &str) -> Option<f64> {
-        let s = self.system(system_key)?;
-        Some(
-            s.consumable_multipliers
-                .get(consumable_id)
-                .copied()
-                .unwrap_or(s.default_consumable_multiplier),
-        )
+        self.system(system_key)?
+            .consumable_multipliers
+            .get(consumable_id)
+            .copied()
     }
 }
 
@@ -305,6 +308,11 @@ pub enum RateCardError {
     ConsumableInSystem { system: String, product: String },
     #[error("system `{system}` sets a multiplier for `{product}`, which is not a consumable")]
     MultiplierNotConsumable { system: String, product: String },
+    #[error(
+        "system `{system}` has no consumable multiplier for `{consumable}` — every \
+         consumable needs an explicit entry on every system, there is no default"
+    )]
+    MissingConsumableMultiplier { system: String, consumable: String },
     #[error("add-on `{add_on}` references unknown product `{product}`")]
     UnknownProductInAddOn { add_on: String, product: String },
     #[error("add-on `{add_on}` applies to unknown system `{system}`")]
@@ -405,11 +413,16 @@ pub fn validate(card: &RateCard) -> Result<(), Vec<RateCardError>> {
 
     // ---- system membership resolves, and to the right class ----
     for s in &card.systems {
-        non_negative(
-            &format!("system `{}`.default_consumable_multiplier", s.key),
-            s.default_consumable_multiplier,
-            &mut errs,
-        );
+        // Exhaustive: a consumable with no entry is a load-time failure, not
+        // a silently-defaulted line on someone's invoice.
+        for cons in card.consumables() {
+            if !s.consumable_multipliers.contains_key(&cons.id) {
+                errs.push(RateCardError::MissingConsumableMultiplier {
+                    system: s.key.clone(),
+                    consumable: cons.id.clone(),
+                });
+            }
+        }
         for pid in &s.product_ids {
             match card.product(pid) {
                 None => errs.push(RateCardError::UnknownProductInSystem {

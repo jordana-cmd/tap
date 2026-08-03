@@ -9,7 +9,7 @@
     "QUARTZ: 1.0 lb/SF x $1.00/lb = $1.00/SF, the largest single material line on any double-broadcast job. Confirmed correct, not a typo.",
     "SYSTEM RECIPES ARE UNCONFIRMED: membership was inferred by comparing four same-square-footage quote sheets. Every system carries confirmed:false until signed off.",
     "CONSUMABLES are applied to every job but SCALED PER SYSTEM via systems[].consumable_multipliers. A multiplier of 0 means the system does not use that consumable at all. Seal reduces or omits most of them; applying them at full rate overcharges every sealer job.",
-    "A CONSUMABLE ADDED LATER inherits each system's default_consumable_multiplier (1.0). For seal, whose overrides are mostly reductions, that default is optimistic -- revisit seal's overrides whenever the consumable list grows.",
+    "CONSUMABLE MULTIPLIERS ARE EXHAUSTIVE: every system lists every consumable and there is NO default. validate() rejects a card with any system x consumable pair missing, so adding a product here without deciding its multiplier for all four systems fails to LOAD rather than silently mispricing. A default of 1.0 would silently overcharge sealer jobs and 0.0 would silently undercharge them; neither is safe, and a CI test does not help the person hand-editing this file. 1.0 = full rate, 0.0 = the system does not use it.",
     "OMITTED PENDING CLARIFICATION: 'Whips' (source rate 5e-08/SF would need 20M SF to consume one unit).",
     "RATES ARE EDITED HERE, NOT IN RUST. Changing a price requires no rebuild of engine-core or engine-web."
   ],
@@ -59,7 +59,6 @@
       "name": "Seal",
       "confirmed": false,
       "product_ids": ["cure_and_seal_first", "cure_and_seal_second", "polyurea_caulk"],
-      "default_consumable_multiplier": 1.0,
       "consumable_multipliers": {
         "cups_10_quart":      0.0,
         "cups_5_quart":       0.3333333333333333,
@@ -82,8 +81,19 @@
         "simihard_polishing", "cure_and_seal_first", "cure_and_seal_second",
         "polyurea_caulk", "mender_part_a", "mender_part_b"
       ],
-      "default_consumable_multiplier": 1.0,
-      "consumable_multipliers": {}
+      "consumable_multipliers": {
+        "cups_10_quart":      1.0,
+        "cups_5_quart":       1.0,
+        "cups_2_5_quart":     1.0,
+        "cups_quart":         1.0,
+        "brushes":            1.0,
+        "roller_covers":      1.0,
+        "trowles":            1.0,
+        "mini_roller_covers": 1.0,
+        "rags":               1.0,
+        "gloves":             1.0,
+        "trash_bags":         1.0
+      }
     },
     {
       "key": "epoxy",
@@ -93,8 +103,19 @@
         "haze_gray_epoxy", "clear_epoxy", "high_wear_urethane", "polyurea_caulk",
         "sand", "shark_grip", "mender_part_a", "mender_part_b"
       ],
-      "default_consumable_multiplier": 1.0,
-      "consumable_multipliers": {}
+      "consumable_multipliers": {
+        "cups_10_quart":      1.0,
+        "cups_5_quart":       1.0,
+        "cups_2_5_quart":     1.0,
+        "cups_quart":         1.0,
+        "brushes":            1.0,
+        "roller_covers":      1.0,
+        "trowles":            1.0,
+        "mini_roller_covers": 1.0,
+        "rags":               1.0,
+        "gloves":             1.0,
+        "trash_bags":         1.0
+      }
     },
     {
       "key": "polyurea",
@@ -107,8 +128,19 @@
         "second_top_coat_part_a", "second_top_coat_part_b",
         "sand", "shark_grip", "mender_part_a", "mender_part_b"
       ],
-      "default_consumable_multiplier": 1.0,
-      "consumable_multipliers": {}
+      "consumable_multipliers": {
+        "cups_10_quart":      1.0,
+        "cups_5_quart":       1.0,
+        "cups_2_5_quart":     1.0,
+        "cups_quart":         1.0,
+        "brushes":            1.0,
+        "roller_covers":      1.0,
+        "trowles":            1.0,
+        "mini_roller_covers": 1.0,
+        "rags":               1.0,
+        "gloves":             1.0,
+        "trash_bags":         1.0
+      }
     }
   ],
 

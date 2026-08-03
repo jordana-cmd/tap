@@ -1,0 +1,554 @@
+{
+  "name": "epoxy-2000sf",
+  "note": "Plain epoxy, no add-ons. Baseline buildup.",
+  "provenance": "Expected values computed by an INDEPENDENT Python implementation of the model (tests/fixtures/README.md), not by running the Rust engine.",
+  "rate_card": {
+    "version": "commercial-v1",
+    "effective_date": "2026-08-03",
+    "source": "Robs Pricing model / 'Pricing Model 6.0 Commercial Qu' (unit costs); Cheat Sheet (rates)",
+    "products": [
+      {
+        "id": "mender_part_a",
+        "name": "Mender-Part A",
+        "class": "direct",
+        "unit": "litre",
+        "unit_cost": 10.17,
+        "rate": 0.004,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "mender_part_b",
+        "name": "Mender-Part B",
+        "class": "direct",
+        "unit": "litre",
+        "unit_cost": 10.17,
+        "rate": 0.004,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "sand",
+        "name": "Sand",
+        "class": "direct",
+        "unit": "cup",
+        "unit_cost": 0.05,
+        "rate": 0.003,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "shark_grip",
+        "name": "Shark Grip",
+        "class": "direct",
+        "unit": "cap",
+        "unit_cost": 0.05,
+        "rate": 0.08,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "polyurea_base_paint_a",
+        "name": "Polyurea Base Paint-A",
+        "class": "direct",
+        "unit": "litre",
+        "unit_cost": 10.22,
+        "rate": 0.01,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "polyurea_base_paint_b",
+        "name": "Polyurea Base Paint-B",
+        "class": "direct",
+        "unit": "litre",
+        "unit_cost": 10.22,
+        "rate": 0.005,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "flake_thrown",
+        "name": "Flake Thrown",
+        "class": "direct",
+        "unit": "box",
+        "unit_cost": 74.0,
+        "rate": 0.0075,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "flake_recovered",
+        "name": "Flake Recovered",
+        "class": "direct",
+        "unit": "box",
+        "unit_cost": -74.0,
+        "rate": 0.00425,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "flake_thrown_double_broadcasted",
+        "name": "Flake Thrown-Double Broadcasted",
+        "class": "direct",
+        "unit": "box",
+        "unit_cost": 74.0,
+        "rate": 0.01,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "flake_recovered_double_broadcasted",
+        "name": "Flake Recovered-Double Broadcasted",
+        "class": "direct",
+        "unit": "box",
+        "unit_cost": -74.0,
+        "rate": 0.005,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "polyaspartic_clear_a",
+        "name": "Polyaspartic Clear A",
+        "class": "direct",
+        "unit": "litre",
+        "unit_cost": 15.85,
+        "rate": 0.02,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "polyaspartic_clear_b",
+        "name": "Polyaspartic Clear B",
+        "class": "direct",
+        "unit": "litre",
+        "unit_cost": 15.85,
+        "rate": 0.02,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "second_top_coat_part_a",
+        "name": "2nd Top Coat-Part A",
+        "class": "direct",
+        "unit": "litre",
+        "unit_cost": 15.85,
+        "rate": 0.022,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "second_top_coat_part_b",
+        "name": "2nd Top Coat-Part B",
+        "class": "direct",
+        "unit": "litre",
+        "unit_cost": 15.85,
+        "rate": 0.022,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "h2_out",
+        "name": "H2 Out",
+        "class": "direct",
+        "unit": "litre",
+        "unit_cost": 19.82,
+        "rate": 0.003,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "haze_gray_epoxy",
+        "name": "Haze Gray Epoxy",
+        "class": "direct",
+        "unit": "gallon",
+        "unit_cost": 44.0,
+        "rate": 0.004,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "clear_epoxy",
+        "name": "Clear Epoxy",
+        "class": "direct",
+        "unit": "gallon",
+        "unit_cost": 42.4,
+        "rate": 0.004,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "fast_cure_activator",
+        "name": "Fast Cure Activator",
+        "class": "direct",
+        "unit": "gallon",
+        "unit_cost": 30.0,
+        "rate": 0.004,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "high_wear_urethane",
+        "name": "High Wear Urethane",
+        "class": "direct",
+        "unit": "gallon",
+        "unit_cost": 159.6,
+        "rate": 0.004,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "simihard_polishing",
+        "name": "Simihard (Polishing)",
+        "class": "direct",
+        "unit": "gallon",
+        "unit_cost": 29.88,
+        "rate": 0.001,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "cure_and_seal_first",
+        "name": "Cure and Seal - First Coat",
+        "class": "direct",
+        "unit": "gallon",
+        "unit_cost": 27.02,
+        "rate": 0.001,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "cure_and_seal_second",
+        "name": "Cure and Seal - Second Coat",
+        "class": "direct",
+        "unit": "gallon",
+        "unit_cost": 27.02,
+        "rate": 0.0008,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "polyurea_caulk",
+        "name": "Polyurea Caulk",
+        "class": "direct",
+        "unit": "tube",
+        "unit_cost": 55.0,
+        "rate": 0.0002,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "quartz_double_broadcast",
+        "name": "Quartz (Double Broadcast)",
+        "class": "direct",
+        "unit": "pound",
+        "unit_cost": 1.0,
+        "rate": 1.0,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "cups_10_quart",
+        "name": "10 Quart Cups",
+        "class": "consumable",
+        "unit": "each",
+        "unit_cost": 4.95,
+        "rate": 0.003,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "cups_5_quart",
+        "name": "5 Quart Cups",
+        "class": "consumable",
+        "unit": "each",
+        "unit_cost": 4.7,
+        "rate": 0.003,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "cups_2_5_quart",
+        "name": "2-1/2 Quart Cups",
+        "class": "consumable",
+        "unit": "each",
+        "unit_cost": 2.27,
+        "rate": 0.006,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "cups_quart",
+        "name": "Quart Cups",
+        "class": "consumable",
+        "unit": "each",
+        "unit_cost": 0.5,
+        "rate": 0.01,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "brushes",
+        "name": "Brushes",
+        "class": "consumable",
+        "unit": "each",
+        "unit_cost": 0.69,
+        "rate": 0.0064,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "roller_covers",
+        "name": "Roller Covers",
+        "class": "consumable",
+        "unit": "each",
+        "unit_cost": 8.4,
+        "rate": 0.003,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "trowles",
+        "name": "Trowles",
+        "class": "consumable",
+        "unit": "each",
+        "unit_cost": 32.99,
+        "rate": 0.002,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "mini_roller_covers",
+        "name": "Mini roller covers",
+        "class": "consumable",
+        "unit": "each",
+        "unit_cost": 4.33,
+        "rate": 0.002,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "rags",
+        "name": "Rags",
+        "class": "consumable",
+        "unit": "each",
+        "unit_cost": 13.82,
+        "rate": 0.001,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "gloves",
+        "name": "Gloves",
+        "class": "consumable",
+        "unit": "each",
+        "unit_cost": 0.178,
+        "rate": 0.0192,
+        "rate_basis": "area_sf"
+      },
+      {
+        "id": "trash_bags",
+        "name": "Trash Bags",
+        "class": "consumable",
+        "unit": "each",
+        "unit_cost": 0.78,
+        "rate": 0.006,
+        "rate_basis": "area_sf"
+      }
+    ],
+    "systems": [
+      {
+        "key": "seal",
+        "name": "Seal",
+        "confirmed": false,
+        "product_ids": [
+          "cure_and_seal_first",
+          "cure_and_seal_second",
+          "polyurea_caulk"
+        ],
+        "consumable_multipliers": {
+          "cups_10_quart": 0.0,
+          "cups_5_quart": 0.3333333333333333,
+          "cups_2_5_quart": 0.2,
+          "cups_quart": 0.0,
+          "brushes": 0.25,
+          "roller_covers": 0.3333333333333333,
+          "trowles": 0.0,
+          "mini_roller_covers": 0.0,
+          "rags": 0.125,
+          "gloves": 0.3333333333333333,
+          "trash_bags": 0.125
+        }
+      },
+      {
+        "key": "polish",
+        "name": "Polish",
+        "confirmed": false,
+        "product_ids": [
+          "simihard_polishing",
+          "cure_and_seal_first",
+          "cure_and_seal_second",
+          "polyurea_caulk",
+          "mender_part_a",
+          "mender_part_b"
+        ],
+        "consumable_multipliers": {
+          "cups_10_quart": 1.0,
+          "cups_5_quart": 1.0,
+          "cups_2_5_quart": 1.0,
+          "cups_quart": 1.0,
+          "brushes": 1.0,
+          "roller_covers": 1.0,
+          "trowles": 1.0,
+          "mini_roller_covers": 1.0,
+          "rags": 1.0,
+          "gloves": 1.0,
+          "trash_bags": 1.0
+        }
+      },
+      {
+        "key": "epoxy",
+        "name": "Epoxy",
+        "confirmed": false,
+        "product_ids": [
+          "haze_gray_epoxy",
+          "clear_epoxy",
+          "high_wear_urethane",
+          "polyurea_caulk",
+          "sand",
+          "shark_grip",
+          "mender_part_a",
+          "mender_part_b"
+        ],
+        "consumable_multipliers": {
+          "cups_10_quart": 1.0,
+          "cups_5_quart": 1.0,
+          "cups_2_5_quart": 1.0,
+          "cups_quart": 1.0,
+          "brushes": 1.0,
+          "roller_covers": 1.0,
+          "trowles": 1.0,
+          "mini_roller_covers": 1.0,
+          "rags": 1.0,
+          "gloves": 1.0,
+          "trash_bags": 1.0
+        }
+      },
+      {
+        "key": "polyurea",
+        "name": "Polyurea",
+        "confirmed": false,
+        "product_ids": [
+          "polyurea_base_paint_a",
+          "polyurea_base_paint_b",
+          "flake_thrown",
+          "flake_recovered",
+          "polyaspartic_clear_a",
+          "polyaspartic_clear_b",
+          "second_top_coat_part_a",
+          "second_top_coat_part_b",
+          "sand",
+          "shark_grip",
+          "mender_part_a",
+          "mender_part_b"
+        ],
+        "consumable_multipliers": {
+          "cups_10_quart": 1.0,
+          "cups_5_quart": 1.0,
+          "cups_2_5_quart": 1.0,
+          "cups_quart": 1.0,
+          "brushes": 1.0,
+          "roller_covers": 1.0,
+          "trowles": 1.0,
+          "mini_roller_covers": 1.0,
+          "rags": 1.0,
+          "gloves": 1.0,
+          "trash_bags": 1.0
+        }
+      }
+    ],
+    "add_ons": [
+      {
+        "key": "double_broadcast",
+        "name": "Double Broadcast",
+        "applies_to": [
+          "polyurea"
+        ],
+        "priority": 100,
+        "effect": {
+          "kind": "products",
+          "ops": [
+            {
+              "op": "replace",
+              "product_id": "flake_thrown",
+              "with": "flake_thrown_double_broadcasted"
+            },
+            {
+              "op": "replace",
+              "product_id": "flake_recovered",
+              "with": "flake_recovered_double_broadcasted"
+            },
+            {
+              "op": "add",
+              "product_id": "quartz_double_broadcast"
+            }
+          ]
+        }
+      },
+      {
+        "key": "h2_out",
+        "name": "H2 Out",
+        "applies_to": [],
+        "priority": 10,
+        "effect": {
+          "kind": "products",
+          "ops": [
+            {
+              "op": "add",
+              "product_id": "h2_out"
+            }
+          ]
+        }
+      },
+      {
+        "key": "fast_cure",
+        "name": "Fast Cure Activator",
+        "applies_to": [],
+        "priority": 10,
+        "effect": {
+          "kind": "products",
+          "ops": [
+            {
+              "op": "add",
+              "product_id": "fast_cure_activator"
+            }
+          ]
+        }
+      },
+      {
+        "key": "crack_stitching",
+        "name": "Crack Stitching",
+        "applies_to": [],
+        "priority": 20,
+        "effect": {
+          "kind": "manual_cost",
+          "prompt": "Crack stitching cost"
+        }
+      }
+    ],
+    "labor": {
+      "standard_wage_per_hour": 27.5,
+      "payroll_tax_rate": 0.0765,
+      "insurance_benefits_per_hour": 0.0,
+      "overhead_per_man_hour": 52.99,
+      "davis_bacon": null
+    }
+  },
+  "job": {
+    "margin": 0.35,
+    "wage_source": "standard",
+    "job_costs": {},
+    "areas": [
+      {
+        "id": 1,
+        "name": "Area 1",
+        "perimeter_lf": null,
+        "add_on_keys": [],
+        "quantity_overrides": {},
+        "manual_costs": {},
+        "area_sf": 2000,
+        "system_key": "epoxy",
+        "labor": {
+          "crew": 3,
+          "hours": 8
+        }
+      }
+    ]
+  },
+  "expected": {
+    "areas": [
+      {
+        "materials": 2161.02,
+        "consumables": 347.4872,
+        "labor": 710.49,
+        "overhead": 1271.76,
+        "manual_costs": 0,
+        "man_hours": 24,
+        "cost": 4490.7572
+      }
+    ],
+    "area_cost": 4490.7572,
+    "cost": 4490.7572,
+    "price": 6908.85723076923,
+    "profit": 2418.10003076923,
+    "margin": 0.35,
+    "below_margin_floor": false
+  }
+}

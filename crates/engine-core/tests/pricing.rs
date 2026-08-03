@@ -3,9 +3,10 @@
 //! price: they load `data/rate-cards/commercial-v1.json` exactly as the host
 //! will and assert every structural property the cost engine will rely on.
 //!
-//! No cost arithmetic is asserted here — there is no cost engine yet. What IS
-//! asserted is the arithmetic-adjacent property that catches the realistic
-//! failure mode for reclaim credits: net flake cost must stay positive.
+//! No cost arithmetic is asserted here — that lives in `pricing_calc.rs`.
+//! What IS asserted is the arithmetic-adjacent property that catches the
+//! realistic failure mode for reclaim credits: net flake cost must stay
+//! positive.
 
 #![cfg(feature = "serde")]
 
@@ -188,19 +189,44 @@ fn seal_reduces_or_omits_consumables() {
 }
 
 #[test]
-fn every_consumable_has_a_seal_multiplier() {
-    // Seal's overrides must cover the whole consumable list. A consumable
-    // added later would silently inherit seal's 1.0 default and overcharge
-    // sealer jobs -- this test fails the moment that happens.
+fn every_system_covers_every_consumable() {
+    // Belt and braces: validate() already refuses to LOAD a card with any
+    // system x consumable pair missing (there is no default to fall back on),
+    // but this states the rule where a reader will see it.
     let c = card();
-    let seal = c.system("seal").unwrap();
-    for cons in c.consumables() {
-        assert!(
-            seal.consumable_multipliers.contains_key(&cons.id),
-            "seal has no explicit multiplier for `{}` -- it would inherit 1.0",
-            cons.id
-        );
+    for s in &c.systems {
+        for cons in c.consumables() {
+            assert!(
+                s.consumable_multipliers.contains_key(&cons.id),
+                "system `{}` has no multiplier for `{}`",
+                s.key,
+                cons.id
+            );
+        }
     }
+    assert_eq!(
+        c.systems
+            .iter()
+            .map(|s| s.consumable_multipliers.len())
+            .sum::<usize>(),
+        44,
+        "4 systems x 11 consumables, all explicit"
+    );
+}
+
+#[test]
+fn rejects_a_card_with_a_missing_consumable_multiplier() {
+    // The load-time guard that replaced the default. The person hand-editing
+    // the JSON to add a product is exactly the person not running cargo test,
+    // so this has to fail the LOAD, not just a test.
+    let mut c = minimal();
+    c.products.push(product("wipes", ProductClass::Consumable));
+    assert!(
+        errs(&c).contains(&RateCardError::MissingConsumableMultiplier {
+            system: "s".into(),
+            consumable: "wipes".into(),
+        })
+    );
 }
 
 // ---------- add-on shapes ----------
@@ -306,7 +332,6 @@ fn minimal() -> RateCard {
             key: "s".into(),
             name: "S".into(),
             product_ids: vec!["a".into()],
-            default_consumable_multiplier: 1.0,
             consumable_multipliers: BTreeMap::new(),
             confirmed: false,
         }],
@@ -474,7 +499,6 @@ fn allows_conflicting_replaces_on_disjoint_systems() {
         key: "t".into(),
         name: "T".into(),
         product_ids: vec![],
-        default_consumable_multiplier: 1.0,
         consumable_multipliers: BTreeMap::new(),
         confirmed: false,
     });
@@ -503,9 +527,14 @@ fn rejects_orphan_direct_product() {
 
 #[test]
 fn consumables_are_never_orphans() {
-    // They are reached via multipliers, not membership.
+    // They are reached via multipliers, not membership. The multiplier is
+    // supplied here so this isolates the orphan rule rather than tripping the
+    // exhaustiveness rule.
     let mut c = minimal();
     c.products.push(product("wipes", ProductClass::Consumable));
+    c.systems[0]
+        .consumable_multipliers
+        .insert("wipes".into(), 1.0);
     validate(&c).expect("an unreferenced consumable is not an orphan");
 }
 
@@ -525,12 +554,6 @@ fn rejects_non_finite_and_negative_values() {
 
     let mut c = minimal();
     c.labor.overhead_per_man_hour = -1.0;
-    assert!(errs(&c)
-        .iter()
-        .any(|e| matches!(e, RateCardError::Negative { .. })));
-
-    let mut c = minimal();
-    c.systems[0].default_consumable_multiplier = -1.0;
     assert!(errs(&c)
         .iter()
         .any(|e| matches!(e, RateCardError::Negative { .. })));
@@ -572,7 +595,7 @@ fn rejects_structurally_invalid_json() {
       "version": "v", "effective_date": "2026-01-01", "source": "t",
       "products": [],
       "systems": [{ "key": "s", "name": "S", "product_ids": ["ghost"],
-                    "default_consumable_multiplier": 1.0, "confirmed": false }],
+                    "consumable_multipliers": {}, "confirmed": false }],
       "labor": { "standard_wage_per_hour": 27.5, "payroll_tax_rate": 0.0765,
                  "insurance_benefits_per_hour": 0.0, "overhead_per_man_hour": 52.99 }
     }"#;
