@@ -31,6 +31,10 @@ pub(crate) enum WebError {
     Scale(ScaleError),
     /// Segment buffer is not [x1,y1,x2,y2,width] × n.
     BadSegments { len: usize },
+    /// A host-supplied rate card failed to parse or validate. Carries EVERY
+    /// defect, newline-joined — fixing a hand-edited data file one error per
+    /// reload is miserable.
+    RateCard(String),
 }
 
 impl WebError {
@@ -57,6 +61,7 @@ impl WebError {
                 }
             },
             WebError::BadSegments { .. } => "BAD_SEGMENTS",
+            WebError::RateCard(_) => "INVALID_RATE_CARD",
         }
     }
 
@@ -68,6 +73,7 @@ impl WebError {
             WebError::BadSegments { len } => {
                 format!("segment buffer length {len} is not a multiple of 5")
             }
+            WebError::RateCard(detail) => detail.clone(),
         }
     }
 }
@@ -867,5 +873,33 @@ mod tests {
         assert!(g.snap_json(500.0, 500.0, 5.0).is_none());
         let empty = PageGeom::from_flat(&[]).unwrap();
         assert!(empty.snap_json(90.0, 90.0, 5.0).is_none());
+    }
+}
+
+// ---------- pricing rate card (host-supplied, never compiled in) ----------
+
+/// Validate a rate card the HOST fetched, returning its version on success.
+///
+/// Deliberately NOT a `rate_card_json()` that returns a baked-in card: rates
+/// live in a JSON data file precisely so that raising a material price needs
+/// no `wasm-pack` rebuild and redeploy. The host fetches
+/// `data/rate-cards/*.json`; this is the boundary check that runs before
+/// anything prices against it.
+///
+/// A card that merely PARSES is not enough — one naming a nonexistent product
+/// would fail later, deep in a cost calculation, with no useful context.
+/// Structural validation happens here, and every defect is reported at once.
+#[wasm_bindgen]
+pub fn validate_rate_card_json(json: &str) -> Result<String, JsValue> {
+    match engine_core::pricing::from_json(json) {
+        Ok(card) => Ok(card.version),
+        Err(errs) => {
+            let detail = errs
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(to_js(WebError::RateCard(detail)))
+        }
     }
 }

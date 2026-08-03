@@ -2,9 +2,11 @@
 # Usage:  powershell -ExecutionPolicy Bypass -File harness\serve.ps1
 # Routes: /*        → harness/
 #         /plans/*  → fixtures/plans/   (confidential fixtures; localhost only)
+#         /data/*   → data/              (rate cards; host-loaded, never compiled in)
 param([int]$Port = 8787)
 $root = $PSScriptRoot
 $plans = [IO.Path]::GetFullPath((Join-Path $root "..\fixtures\plans"))
+$data = [IO.Path]::GetFullPath((Join-Path $root "..\data"))
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add("http://localhost:$Port/")
 $listener.Start()
@@ -23,6 +25,9 @@ while ($listener.IsListening) {
     if ($path.StartsWith('plans/')) {
       $base = $plans
       $file = Join-Path $plans $path.Substring(6)
+    } elseif ($path.StartsWith('data/')) {
+      $base = $data
+      $file = Join-Path $data $path.Substring(5)
     } else {
       $base = $root
       $file = Join-Path $root $path

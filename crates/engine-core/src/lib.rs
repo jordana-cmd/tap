@@ -12,6 +12,7 @@ pub mod assembly;
 pub mod detect;
 pub mod error;
 pub mod geom;
+pub mod pricing;
 pub mod scale;
 pub mod snap;
 pub mod traits;
