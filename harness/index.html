@@ -108,6 +108,20 @@
   #ribbonRow2 { justify-content: space-between; }
   #viewControls { display: flex; align-items: center; gap: 16px; color: var(--text-dim); font-size: 12.5px; }
   #viewControls .pageNav, #viewControls .zoomGroup { display: flex; align-items: center; gap: 6px; }
+  /* The sheet name is unbounded (outline/bookmark titles have no length cap
+     — sheetTitleFor's title-block FALLBACK caps at 48 chars, the outline
+     path does not), so an auto-width label re-flows the whole row on every
+     page flip: the ▶ arrow and all the zoom controls slid ~350px between a
+     short and a long name, and the label wrapped to as many as 5 lines,
+     stealing 64px of canvas height. Clamping the box makes the arrows a
+     fixed target to re-click during rapid flipping. Truncation is visual
+     only — textContent keeps the FULL string (exportPdf() and
+     buildTakeoffPdfBytes() put it in PDF headers) and the title attribute
+     carries it on hover. */
+  #pageLabel {
+    flex: 0 0 auto; width: clamp(140px, 20vw, 320px);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   #tabContentWrap { display: flex; align-items: center; }
   .tabPanel { display: none; align-items: center; gap: 12px; }
   .tabPanel.active { display: flex; }
@@ -662,6 +676,16 @@ function fitWidthScale() {
 const zoomLabel = () =>
   { $('zoomLabel').textContent = pageDims ? `${Math.round((s / fitS) * 100)}%` : '–'; };
 
+/// Page label + its hover tooltip, together. The label box is width-clamped
+/// with an ellipsis (see #pageLabel), so `title` is the only way to read a
+/// truncated sheet name — and textContent must stay the FULL string, which
+/// exportPdf()/buildTakeoffPdfBytes() lift into PDF headers.
+function setPageLabel(text) {
+  const el = $('pageLabel');
+  el.textContent = text;
+  el.title = text;
+}
+
 /// Re-render the page at scale `next`, keeping the base-unit point
 /// `anchor` ({x,y}, or null = viewport center) at the same screen spot.
 async function setZoom(next, anchor) {
@@ -876,10 +900,10 @@ async function renderPage() {
     canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
     await page.render({ canvasContext: ctx, viewport: vp }).promise;
     if (gen !== renderGen) return;
-    $('pageLabel').textContent = `${pageNum} / ${pdfDoc.numPages}`;
+    setPageLabel(`${pageNum} / ${pdfDoc.numPages}`);
     sheetTitleFor(pageNum).then(title => {
       if (gen !== renderGen || !title) return;
-      $('pageLabel').textContent = `${pageNum} / ${pdfDoc.numPages} — ${title}`;
+      setPageLabel(`${pageNum} / ${pdfDoc.numPages} — ${title}`);
     });
     zoomLabel();
     await cacheClean();

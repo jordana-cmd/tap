@@ -303,6 +303,62 @@ await run('page switch cancels an in-progress draft', async page => {
   assert.equal(st.meas.length, 0, 'nothing committed by the switch');
 });
 
+// The sheet name in #pageLabel is unbounded (outline titles have no length
+// cap), and an auto-width label used to re-flow the row on every page flip —
+// the ▶ arrow and the whole zoom group slid ~350px between a short and a long
+// name, so rapid page-flipping meant re-aiming after every click.
+const LONG_SHEET = '2 / 22 — 32_LS1_LIFE SAFETY PLAN & DETAILS(Version=2)(Version=1)';
+const navGeometry = page => page.evaluate(() => {
+  const left = id => Math.round(document.querySelector(id).getBoundingClientRect().left);
+  const lb = document.querySelector('#pageLabel');
+  return {
+    prev: left('#prev'), next: left('#next'),
+    zoomOut: left('#zoomOut'), zoomFit: left('#zoomFit'), zoomIn: left('#zoomIn'),
+    labelH: Math.round(lb.getBoundingClientRect().height),
+    labelW: Math.round(lb.getBoundingClientRect().width),
+    text: lb.textContent, title: lb.title,
+    truncated: lb.scrollWidth > lb.clientWidth,
+  };
+});
+const setLabel = (page, t) => page.evaluate(v => {
+  const el = document.querySelector('#pageLabel');
+  el.textContent = v; el.title = v;
+}, t);
+
+await run('page nav: arrows hold position regardless of sheet-name length', async page => {
+  await setLabel(page, '2 / 22');
+  const short = await navGeometry(page);
+  await setLabel(page, LONG_SHEET);
+  const long = await navGeometry(page);
+
+  assert.equal(long.prev, short.prev, 'prev arrow moved');
+  assert.equal(long.next, short.next, `next arrow moved ${long.next - short.next}px`);
+  assert.equal(long.zoomOut, short.zoomOut, `zoom controls moved ${long.zoomOut - short.zoomOut}px`);
+  assert.equal(long.zoomFit, short.zoomFit);
+  assert.equal(long.zoomIn, short.zoomIn);
+  assert.equal(long.labelW, short.labelW, 'label box width is content-independent');
+  assert.equal(long.labelH, short.labelH, 'long name must not wrap to a second line');
+  assert.ok(long.truncated, 'the long name is actually being ellipsized');
+  assert.ok(!short.truncated, 'a short name is not');
+});
+
+await run('page nav: full sheet name survives truncation (PDF header + tooltip)', async page => {
+  // Truncation is presentational ONLY: exportPdf()/buildTakeoffPdfBytes()
+  // lift pageLabel.textContent into PDF headers, and gotoPage() matches on it.
+  await setLabel(page, LONG_SHEET);
+  const g = await navGeometry(page);
+  assert.equal(g.text, LONG_SHEET, 'textContent must keep the full string');
+  assert.equal(g.title, LONG_SHEET, 'title carries the full name for hover');
+
+  // And a REAL page flip must set both, not just textContent.
+  await page.reload();
+  await waitReady(page);
+  await gotoPage(page, +1);
+  const real = await navGeometry(page);
+  assert.match(real.text, /^2 \/ /, 'label reflects the new page');
+  assert.equal(real.title, real.text, 'title mirrors the label after a real flip');
+});
+
 await run('scale is per page (guard + independent values)', async page => {
   // Deep-link fpi seeds page 1 only. Page 2 must guard.
   await setTool(page, 'area');
