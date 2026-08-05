@@ -61,6 +61,6 @@ engine deliberately does not.
 |---|---|
 | `epoxy-2000sf` | Baseline buildup, hand-verified |
 | `polyurea-double-broadcast-1000sf` | Add-on REPLACE + ADD; negative unit costs (flake reclaim) |
-| `seal-5000sf-reduced-consumables` | Per-system consumable multipliers; four consumables at 0.0 drop out |
+| `seal-5000sf-reduced-consumables` | Per-system consumable multipliers; four consumables at 0.0 cost nothing |
 | `polish-suppressed-mender-3000sf` | Per-job line suppression (factor 0.0) |
 | `multi-area-job-costs-sub-floor` | Three areas/systems, job-level costs, manual-cost add-on, sub-floor margin flag |

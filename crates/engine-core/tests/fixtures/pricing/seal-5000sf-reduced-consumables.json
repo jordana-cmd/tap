@@ -1,6 +1,6 @@
 {
   "name": "seal-5000sf-reduced-consumables",
-  "note": "Seal applies the sealer template's consumable divisors; four consumables are 0 and drop out entirely.",
+  "note": "Seal applies the sealer template's consumable divisors; four consumables are 0x and contribute nothing (they are still reported as $0.00 lines, which is why the totals below are unaffected).",
   "provenance": "Expected values computed by an INDEPENDENT Python implementation of the model (tests/fixtures/README.md), not by running the Rust engine.",
   "rate_card": {
     "version": "commercial-v1",

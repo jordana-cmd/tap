@@ -202,6 +202,11 @@ pub struct QuoteLine {
     pub product_name: String,
     pub unit: ProductUnit,
     pub source: LineSource,
+    /// The system's consumable multiplier already folded into `base_quantity`
+    /// (1.0 for everything that is not a consumable). Reported so the UI can
+    /// say "seal runs brushes at 0.25×" instead of showing an unexplained
+    /// quantity, and so a 0.0 line is legible as "this system does not use it".
+    pub multiplier: f64,
     /// Quantity BEFORE any override factor — what the recipe would have used.
     pub base_quantity: f64,
     /// The override factor actually applied (1.0 when untouched).
@@ -450,6 +455,7 @@ fn line(
     area: &AreaInput,
     product: &Product,
     source: LineSource,
+    multiplier: f64,
     base_quantity: f64,
 ) -> Result<QuoteLine, PricingError> {
     let factor = match area.quantity_overrides.get(&product.id) {
@@ -469,6 +475,7 @@ fn line(
         product_name: product.name.clone(),
         unit: product.unit,
         source,
+        multiplier,
         base_quantity,
         factor,
         quantity,
@@ -516,13 +523,15 @@ pub fn price_area(ctx: &PricingContext<'_>, area: &AreaInput) -> Result<AreaQuot
     // Direct products (recipe + add-ons).
     for (product, source) in resolve_products(card, area)? {
         let base = product.rate * driver(area, product)?;
-        lines.push(line(area, product, source, base)?);
+        lines.push(line(area, product, source, 1.0, base)?);
     }
 
     // Consumables, scaled by this system's multiplier. A multiplier of 0.0
-    // means the system does not use it -- omitted entirely rather than shown
-    // as a suppressed line, because that is a catalog fact, not a user
-    // decision about THIS job.
+    // means the system does not use it -- still REPORTED, at $0.00 with the
+    // multiplier attached, for the same reason a suppressed line is: an
+    // omitted row is indistinguishable from one nobody considered, and
+    // "seal doesn't use trowels" was inferred from a template sheet rather
+    // than established as a law. The UI hides them behind a toggle.
     for cons in card.consumables() {
         let mult = system
             .consumable_multipliers
@@ -532,11 +541,14 @@ pub fn price_area(ctx: &PricingContext<'_>, area: &AreaInput) -> Result<AreaQuot
                 system: system.key.clone(),
                 consumable: cons.id.clone(),
             })?;
-        if mult == 0.0 && !area.quantity_overrides.contains_key(&cons.id) {
-            continue;
-        }
-        let base = cons.rate * driver(area, cons)? * mult;
-        lines.push(line(area, cons, LineSource::Consumable, base)?);
+        // No driver lookup at 0.0: a system that does not use a product must
+        // not fail the area for want of a measurement it will never multiply.
+        let base = if mult == 0.0 {
+            0.0
+        } else {
+            cons.rate * driver(area, cons)? * mult
+        };
+        lines.push(line(area, cons, LineSource::Consumable, mult, base)?);
     }
 
     let materials: f64 = lines

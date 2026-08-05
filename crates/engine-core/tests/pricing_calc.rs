@@ -600,30 +600,41 @@ fn negative_or_non_finite_labor_is_rejected() {
 // ---------- consumables ----------
 
 #[test]
-fn seal_applies_reduced_multipliers_and_drops_the_zeroed_ones() {
+fn seal_applies_reduced_multipliers_and_reports_the_zeroed_ones_at_nothing() {
     let c = card();
     let q = price_area(&std_ctx(&c), &area_of("seal", 5000.0, 2.0, 6.0)).unwrap();
-    let cons: Vec<&str> = q
-        .lines
-        .iter()
-        .filter(|l| l.source == LineSource::Consumable)
-        .map(|l| l.product_id.as_str())
-        .collect();
-    // Four are 0.0 for seal and are not part of the system at all.
-    for absent in [
-        "cups_10_quart",
-        "cups_quart",
-        "trowles",
-        "mini_roller_covers",
-    ] {
+    // All 11 are reported. The four seal does not use come back at zero
+    // rather than missing: an omitted row is indistinguishable from one
+    // nobody considered, and they cost nothing either way.
+    assert_eq!(
+        q.lines
+            .iter()
+            .filter(|l| l.source == LineSource::Consumable)
+            .count(),
+        11,
+        "every consumable is reported"
+    );
+    for unused in ["cups_10_quart", "cups_quart", "trowles", "mini_roller_covers"] {
+        let l = q.lines.iter().find(|l| l.product_id == unused).unwrap();
+        cents(l.multiplier, 0.0, unused);
+        cents(l.quantity, 0.0, unused);
+        cents(l.extended_cost, 0.0, unused);
         assert!(
-            !cons.contains(&absent),
-            "{absent} should not appear on a seal job"
+            !l.suppressed,
+            "{unused} is unused by the system, not suppressed by the estimator"
         );
     }
-    // Brushes run at 1/4.
+    // Brushes run at 1/4, and say so.
     let brushes = q.lines.iter().find(|l| l.product_id == "brushes").unwrap();
+    cents(brushes.multiplier, 0.25, "brushes multiplier");
     cents(brushes.quantity, 0.0064 * 5000.0 * 0.25, "brushes at 1/4");
+    // A recipe line carries no multiplier of its own.
+    let recipe = q
+        .lines
+        .iter()
+        .find(|l| l.source == LineSource::Recipe)
+        .unwrap();
+    cents(recipe.multiplier, 1.0, "recipe lines are unscaled");
 }
 
 #[test]
