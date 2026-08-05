@@ -1,5 +1,7 @@
-// Dependency-free static server for the interaction suite: serves harness/
-// plus the generated synthetic test PDF at /test/walls.pdf. Ephemeral port.
+// Dependency-free static server for the interaction suite: serves harness/,
+// the rate cards at /data/ (as serve.ps1 does — the quote screen fetches its
+// card at runtime and prices nothing without it), plus the generated synthetic
+// test PDF at /test/walls.pdf. Ephemeral port.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { makeWallsPdf, makeOtherPdf } from './make-fixture.mjs';
 
 const HARNESS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const DATA_DIR = path.resolve(HARNESS_DIR, '..', 'data');
 const MIME = {
   '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
   '.wasm': 'application/wasm', '.css': 'text/css', '.json': 'application/json',
@@ -28,9 +31,12 @@ export function startServer() {
       res.end(other);
       return;
     }
-    const rel = urlPath === '/' ? 'index.html' : urlPath.slice(1);
-    const file = path.join(HARNESS_DIR, rel);
-    if (file.startsWith(HARNESS_DIR) && fs.existsSync(file) && fs.statSync(file).isFile()) {
+    const fromData = urlPath.startsWith('/data/');
+    const base = fromData ? DATA_DIR : HARNESS_DIR;
+    const rel = urlPath === '/' ? 'index.html'
+      : fromData ? urlPath.slice('/data/'.length) : urlPath.slice(1);
+    const file = path.join(base, rel);
+    if (file.startsWith(base) && fs.existsSync(file) && fs.statSync(file).isFile()) {
       res.writeHead(200, {
         'Content-Type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
         'Cache-Control': 'no-store',

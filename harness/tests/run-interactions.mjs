@@ -600,6 +600,34 @@ await run('CSV quotes free-text names containing commas', async page => {
   assert.match(csv, /"Doors, exterior"/, 'comma-bearing name is CSV-quoted');
 });
 
+// ---- quote screen helpers ----
+// The screen renders engine output and computes nothing itself, so the cases
+// below compare the DOM against `__harness.quote()` rather than against a
+// number typed into this file: a hardcoded expectation here would only
+// re-implement the cost buildup a third time.
+
+const areaBlocks = page => page.$$eval('.qArea', bs => bs.length);
+
+/// Type into a quote control. Every keystroke re-prices and rebuilds the view,
+/// restoring focus by data-qkey — so REAL typing (not a scripted value set) is
+/// also what proves a control survives its own re-render mid-entry.
+async function typeQuote(page, selector, text) {
+  await page.click(selector, { clickCount: 3 });
+  await page.keyboard.type(text, { delay: 20 });
+}
+
+/// The smallest input the engine will price: one 100 SF area on a system,
+/// with a crew and hours (it refuses to guess labor rather than quoting a
+/// materials-only number that reads as legitimate).
+async function priceOneArea(page, system) {
+  await drawArea(page);
+  await pickSystem(page, system);
+  await gotoQuote(page);
+  await typeQuote(page, '.qArea input[data-qkey^="crew-"]', '2');
+  await typeQuote(page, '.qArea input[data-qkey^="hours-"]', '8');
+  await page.waitForFunction(() => window.__harness.quote() !== null, { timeout: 5_000 });
+}
+
 // ---- quote handoff cases ----
 
 /// One area (100 SF / 40 LF perimeter), one line (15 LF), one count (3 EA)
@@ -750,99 +778,258 @@ await run('quote payload: rebuilt on each visit, never stale', async page => {
   await drawQuoteFixture(page);
   await gotoQuote(page);
   assert.equal((await page.evaluate(() => window.__harness.lastQuotePayload())).items.length, 3);
+  assert.equal(await areaBlocks(page), 1, 'one priceable area so far');
 
+  // A SECOND AREA, so both layers have to notice: the payload and the priced
+  // view. Only areas are priced, so a new count would not prove the latter.
   await gotoTakeoff(page);
-  await setTool(page, 'count');
-  await clickBase(page, 620, 450);
+  await setTool(page, 'area');
+  for (const [x, y] of [[600, 450], [660, 450], [660, 500], [600, 500]]) await clickBase(page, x, y);
   await page.keyboard.press('Enter');
 
   await gotoQuote(page);
   const p = await page.evaluate(() => window.__harness.lastQuotePayload());
   assert.equal(p.items.length, 4, 'the new measurement is in the second payload');
-  const rows = await page.$$eval('#quoteTable tbody tr', rs => rs.length);
-  assert.equal(rows, 4, 'and the rendered table matches');
+  assert.equal(await areaBlocks(page), 2, 'and the priced view shows it too');
 });
 
-await run('quote view: renders job, one row per item, and per-unit totals', async page => {
-  await drawQuoteFixture(page);
-  await gotoQuote(page);
-  // Assert the DOM renders what the payload actually says, rather than
-  // hardcoded figures — this is the contract that matters (the numbers
-  // themselves are pinned by the payload cases above).
-  const { view, p } = await page.evaluate(() => ({
-    p: window.__harness.lastQuotePayload(),
-    view: {
-      job: document.querySelector('#quoteJobName').textContent,
-      provenance: document.querySelector('#quoteProvenance').textContent,
-      totals: [...document.querySelectorAll('.quoteTotal .qtVal')].map(e => e.textContent),
-      rows: [...document.querySelectorAll('#quoteTable tbody tr')].map(r => r.textContent),
-      emptyHidden: document.querySelector('#quoteEmpty').hidden,
-    },
-  }));
-  const area = p.items.find(i => i.kind === 'area');
-  const line = p.items.find(i => i.kind === 'linear');
-  const count = p.items.find(i => i.kind === 'count');
-
-  assert.ok(view.job.length, 'job name rendered');
-  assert.match(view.provenance, /Received from takeoff/);
-  assert.equal(view.rows.length, 3, 'one row per item');
-  assert.ok(view.rows.some(r =>
-    r.includes(`${area.quantity.area_sf.toFixed(1)} SF`) &&
-    r.includes(`${area.quantity.perimeter_lf.toFixed(1)} LF perimeter`)),
-    'area row shows its SF with the perimeter beneath');
-  assert.ok(view.rows.some(r => r.includes(`${line.quantity.length_lf.toFixed(1)} LF`)), 'line row');
-  assert.ok(view.rows.some(r => r.includes(`${count.quantity.count_ea} EA`)), 'count row');
-  assert.deepEqual(view.totals.sort(), [
-    `${area.quantity.area_sf.toFixed(1)} SF`,
-    `${line.quantity.length_lf.toFixed(1)} LF`,
-    `${count.quantity.count_ea.toFixed(1)} EA`,
-  ].sort(), 'one total card per unit, matching the payload');
-  assert.ok(view.emptyHidden, 'empty state hidden when items exist');
+await run('quote view: every figure on screen is the engine\'s, to the cent', async page => {
+  await priceOneArea(page, 'epoxy');
+  const seen = await page.evaluate(() => {
+    const q = window.__harness.quote();
+    const a = q.areas[0];
+    const usd = v => v.toLocaleString('en-US',
+      { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return {
+      engine: {
+        profit: usd(q.profit), price: usd(q.price), cost: usd(q.cost),
+        margin: `${(q.margin * 100).toFixed(1)}%`,
+        areaCost: usd(a.cost), materials: usd(a.materials), consumables: usd(a.consumables),
+        labor: usd(a.labor), overhead: usd(a.overhead), lines: a.lines.length,
+      },
+      dom: {
+        profit: document.querySelector('#qhProfitVal').textContent,
+        price: document.querySelector('#qhPriceVal').textContent,
+        cost: document.querySelector('#qhCostVal').textContent,
+        margin: document.querySelector('#qhMarginVal').textContent,
+        areaCost: document.querySelector('.qArea .qAreaCost').textContent,
+        subtotals: [...document.querySelectorAll('.qArea .qSubtotals div')].map(d => d.textContent),
+        rows: document.querySelectorAll('.qArea table.qLines tbody tr').length,
+        jobPrice: document.querySelector('#qjPrice').textContent,
+        jobCost: document.querySelector('#qjCost').textContent,
+        jobProfit: document.querySelector('#qjProfit').textContent,
+      },
+    };
+  });
+  const { engine, dom } = seen;
+  assert.equal(dom.profit, engine.profit, 'headline profit');
+  assert.equal(dom.margin, engine.margin, 'headline margin');
+  assert.equal(dom.price, engine.price, 'headline price');
+  assert.equal(dom.cost, engine.cost, 'headline cost');
+  assert.equal(dom.areaCost, engine.areaCost, 'per-area cost on the header');
+  assert.deepEqual(
+    [dom.jobCost, dom.jobPrice, dom.jobProfit],
+    [engine.cost, engine.price, engine.profit],
+    'job-level totals repeat the same figures, not a second computation',
+  );
+  for (const [label, want] of [['Material', engine.materials], ['Consumables', engine.consumables],
+    ['Labor', engine.labor], ['Overhead', engine.overhead]]) {
+    assert.ok(dom.subtotals.some(s => s.startsWith(label) && s.endsWith(want)),
+      `${label} subtotal ${want} — got ${JSON.stringify(dom.subtotals)}`);
+  }
+  // Epoxy runs every consumable at full rate, so nothing is hidden and the
+  // table is exactly as long as the engine's line list.
+  assert.equal(dom.rows, engine.lines, 'one row per engine line');
 });
 
-await run('quote view: System column distinguishes assigned / unassigned / N-A', async page => {
+await run('quote view: an area the engine will not price says why, and shows no number', async page => {
   await drawArea(page);
-  await pickSystem(page, 'seal');
-  // A second, deliberately unassigned area, plus a line that takes no system.
+  await pickSystem(page, 'epoxy');   // system but no crew/hours
+  await gotoQuote(page);
+  const st = await page.evaluate(() => ({
+    quote: window.__harness.quote(),
+    err: window.__harness.quoteError(),
+    alerts: [...document.querySelectorAll('#quoteAlerts .qAlert')].map(a => a.textContent),
+    headlineHidden: document.querySelector('#quoteHeadline').hidden,
+    blocks: document.querySelectorAll('.qArea').length,
+    body: document.querySelector('.qArea .qAreaBody').textContent,
+  }));
+  assert.equal(st.quote, null, 'no quote at all, rather than a partial one');
+  assert.match(st.err, /crew\/hours/, 'the engine names the missing input');
+  assert.ok(st.alerts.some(a => a.includes('cannot be priced')), 'and the screen repeats it');
+  assert.equal(st.headlineHidden, true, 'no profit headline beside an unpriceable job');
+  assert.equal(st.blocks, 1, 'the area is still listed');
+  assert.match(st.body, /Not priced/, 'and says so in place of a price');
+});
+
+await run('quote view: an unassigned area is listed and named, never dropped', async page => {
+  await drawArea(page);                       // Area 1 — left unassigned
   await setTool(page, 'area');
-  for (const [x, y] of [[600, 250], [660, 250], [660, 290]]) await clickBase(page, x, y);
+  for (const [x, y] of [[600, 250], [660, 250], [660, 290], [600, 290]]) await clickBase(page, x, y);
   await page.keyboard.press('Enter');
-  await setTool(page, 'line');
-  for (const [x, y] of [[600, 300], [700, 300]]) await clickBase(page, x, y);
-  await page.keyboard.press('Enter');
+  const names = await page.$$eval('.measRow .measName', ns => ns.map(n => n.textContent));
+  const pickers = await page.$$('.measRow .measSystem');
+  await pickers[names.findIndex(n => n.includes('Area 2'))].select('epoxy');
 
   await gotoQuote(page);
-  const view = await page.evaluate(() => ({
-    headers: [...document.querySelectorAll('#quoteTable thead th')].map(t => t.textContent),
-    rows: [...document.querySelectorAll('#quoteTable tbody tr')].map(r => ({
-      name: r.children[0].textContent,
-      system: r.children[2].textContent,
-      cls: r.children[2].className,
+  const st = await page.evaluate(() => ({
+    alerts: [...document.querySelectorAll('#quoteAlerts .qAlert')].map(a => a.textContent),
+    blocks: [...document.querySelectorAll('.qArea')].map(b => ({
+      meta: b.querySelector('.qAreaMeta').textContent,
+      cost: b.querySelector('.qAreaCost').textContent,
+      body: b.querySelector('.qAreaBody') ? b.querySelector('.qAreaBody').textContent : '',
     })),
   }));
-  assert.deepEqual(view.headers,
-    ['Item', 'Category', 'System', 'Kind', 'Page', 'Quantity', 'Origin'], 'System column present');
+  assert.ok(st.alerts.some(a => /no system assigned/.test(a) && /Area 1/.test(a)),
+    'the unassigned area is named in an alert');
+  assert.equal(st.blocks.length, 2, 'both areas listed');
+  const un = st.blocks.find(b => b.meta.startsWith('Unassigned'));
+  assert.ok(un, 'the unassigned one is labelled as such');
+  assert.equal(un.cost, '—', 'no cost invented for it');
+  assert.match(un.body, /assign a system/, 'and it says what would fix that');
+});
 
-  const assigned = view.rows.find(r => r.name === 'Area 1');
-  const unassigned = view.rows.find(r => r.name === 'Area 2');
-  const linear = view.rows.find(r => r.name === 'Line 1');
-  assert.equal(assigned.system, 'Seal', 'assigned area shows its display label');
-  assert.equal(unassigned.system, 'Unassigned', 'unpriced area is called out');
-  assert.equal(unassigned.cls, 'qUnassigned', 'and is visually flagged');
-  assert.equal(linear.system, '—', 'a linear measurement takes no system');
-  assert.equal(linear.cls, 'qNA', 'rendered as N/A, not as unassigned work');
+await run('quote view: consumables a system never uses hide behind a toggle, at $0.00', async page => {
+  await priceOneArea(page, 'seal');
+  const before = await page.evaluate(() => {
+    const lines = window.__harness.quote().areas[0].lines;
+    return {
+      engineLines: lines.length,
+      unused: lines.filter(l => l.source.kind === 'consumable' && l.multiplier === 0).length,
+      rows: document.querySelectorAll('.qArea table.qLines tbody tr').length,
+      toggle: document.querySelector('.qUnusedToggle').textContent,
+    };
+  });
+  assert.equal(before.unused, 4, 'seal zeroes four of the eleven consumables');
+  assert.equal(before.rows, before.engineLines - 4, 'which are hidden by default');
+  assert.match(before.toggle, /^show 4 items not used/);
+
+  await page.click('.qUnusedToggle');
+  const after = await page.evaluate(() => ({
+    toggle: document.querySelector('.qUnusedToggle').textContent,
+    rows: [...document.querySelectorAll('.qArea table.qLines tbody tr')].map(r => ({
+      cls: r.className,
+      ext: r.children[4].textContent,
+      readOnly: r.querySelector('input.qQty').readOnly,
+      actions: r.children[5].children.length,
+    })),
+  }));
+  assert.equal(after.rows.length, before.engineLines, 'every reported line is now on screen');
+  assert.match(after.toggle, /^hide 4 items/);
+  const unused = after.rows.filter(r => r.cls.includes('unused'));
+  assert.equal(unused.length, 4);
+  for (const r of unused) {
+    assert.equal(r.ext, '$0.00', 'shown at nothing, not hidden');
+    assert.equal(r.readOnly, true, 'not editable — every factor on zero is zero');
+    assert.equal(r.actions, 0, 'and nothing to remove: it is a catalog fact');
+  }
+});
+
+await run('quote view: removing a line keeps it visible at $0.00 with an undo', async page => {
+  await priceOneArea(page, 'epoxy');
+  const first = await page.evaluate(() => {
+    const q = window.__harness.quote();
+    return { id: q.areas[0].lines[0].product_id, cost: q.cost };
+  });
+  await page.click(`table.qLines tbody tr[data-product-id="${first.id}"] .qRowAct`);
+  await page.waitForFunction(
+    id => window.__harness.quote().areas[0].lines.find(l => l.product_id === id).suppressed,
+    { timeout: 5_000 }, first.id);
+
+  const after = await page.evaluate(id => {
+    const row = document.querySelector(`tr[data-product-id="${id}"]`);
+    return {
+      present: !!row,
+      cls: row.className,
+      ext: row.children[4].textContent,
+      act: row.querySelector('.qRowAct').textContent,
+      cost: window.__harness.quote().cost,
+      stored: window.__harness.measurements()[0].quantityOverrides,
+    };
+  }, first.id);
+  assert.ok(after.present, 'the line stays on screen');
+  assert.match(after.cls, /suppressed/, 'struck through rather than deleted');
+  assert.equal(after.ext, '$0.00');
+  assert.equal(after.act, '↺', 'with an undo where the remove was');
+  assert.ok(after.cost < first.cost, 'and the job costs less than it did');
+  assert.equal(after.stored[first.id], 0, 'stored as a per-job factor of 0');
+
+  await page.click(`table.qLines tbody tr[data-product-id="${first.id}"] .qRowAct`);
+  await page.waitForFunction(
+    id => !window.__harness.quote().areas[0].lines.find(l => l.product_id === id).suppressed,
+    { timeout: 5_000 }, first.id);
+  const restored = await page.evaluate(() => ({
+    cost: window.__harness.quote().cost,
+    stored: window.__harness.measurements()[0].quantityOverrides,
+  }));
+  assert.ok(Math.abs(restored.cost - first.cost) < 0.005, 'undo restores the original cost');
+  assert.equal(restored.stored[first.id], undefined, 'and clears the override entirely');
+});
+
+await run('quote view: margin re-prices through the engine and flags the floor', async page => {
+  await priceOneArea(page, 'epoxy');
+  const at35 = await page.evaluate(() => ({
+    price: window.__harness.quote().price,
+    below: window.__harness.quote().below_margin_floor,
+    warnHidden: document.querySelector('#qhFloorWarn').hidden,
+  }));
+  assert.equal(at35.below, false, '35% clears the floor');
+  assert.equal(at35.warnHidden, true, 'nothing to warn about');
+
+  await typeQuote(page, '#qjMarginPct', '10');
+  await page.waitForFunction(() => Math.abs(window.__harness.jobPricing().margin - 0.10) < 1e-9,
+    { timeout: 5_000 });
+  const low = await page.evaluate(() => {
+    const q = window.__harness.quote();
+    return {
+      price: q.price, below: q.below_margin_floor,
+      warnHidden: document.querySelector('#qhFloorWarn').hidden,
+      domMargin: document.querySelector('#qhMarginVal').textContent,
+      flagged: document.querySelector('#qhMarginBox').className.includes('below'),
+    };
+  });
+  assert.ok(low.price < at35.price, 'a thinner margin prices lower');
+  assert.equal(low.below, true, 'the ENGINE owns the 20% floor, not this screen');
+  assert.equal(low.warnHidden, false, 'and the screen surfaces its flag');
+  assert.ok(low.flagged, 'margin figure marked');
+  assert.equal(low.domMargin, '10.0%');
+});
+
+await run('quote view: crew and hours survive the re-render they trigger', async page => {
+  // Each keystroke re-prices and rebuilds the whole view; without focus
+  // restoration by data-qkey the second digit lands somewhere else entirely.
+  await drawArea(page);
+  await pickSystem(page, 'epoxy');
+  await gotoQuote(page);
+  await typeQuote(page, '.qArea input[data-qkey^="crew-"]', '3');
+  await typeQuote(page, '.qArea input[data-qkey^="hours-"]', '12');
+  await page.waitForFunction(() => window.__harness.quote() !== null, { timeout: 5_000 });
+  const st = await page.evaluate(() => ({
+    labor: window.__harness.measurements()[0].labor,
+    manHours: window.__harness.quote().areas[0].man_hours,
+    focusKey: document.activeElement.dataset.qkey,
+    hoursVal: document.querySelector('.qArea input[data-qkey^="hours-"]').value,
+  }));
+  assert.deepEqual(st.labor, { crew: 3, hours: 12 }, 'both digits landed in the same field');
+  assert.equal(st.hoursVal, '12');
+  assert.equal(st.manHours, 36, '3 × 12 man-hours reach the engine');
+  assert.match(st.focusKey, /^hours-/, 'focus stayed on the field being typed into');
 });
 
 await run('quote view: empty takeoff shows an empty state, not a bare table', async page => {
   await gotoQuote(page);
   const view = await page.evaluate(() => ({
-    empty: document.querySelector('#quoteEmpty').hidden,
-    wrap: document.querySelector('#quoteTableWrap').hidden,
+    empty: document.querySelector('#quoteEmpty') ? document.querySelector('#quoteEmpty').textContent : null,
+    blocks: document.querySelectorAll('.qArea').length,
+    headlineHidden: document.querySelector('#quoteHeadline').hidden,
+    jobLevelHidden: document.querySelector('#quoteJobLevel').hidden,
     items: window.__harness.lastQuotePayload().items.length,
   }));
   assert.equal(view.items, 0);
-  assert.equal(view.empty, false, 'empty state shown');
-  assert.equal(view.wrap, true, 'table hidden');
+  assert.match(view.empty, /draw an area/, 'empty state explains what to do');
+  assert.equal(view.blocks, 0, 'no area blocks');
+  assert.ok(view.headlineHidden, 'no headline with nothing to price');
+  assert.ok(view.jobLevelHidden, 'and no job-level costs either');
 });
 
 await run('quote: entering the route cancels an in-progress draft', async page => {
@@ -866,8 +1053,7 @@ await run('quote: a deep link onto #/quote boots into it with restored data', as
   const st = await routeState(page);
   assert.equal(st.route, 'quote');
   assert.ok(st.quoteShown && !st.takeoffShown, 'boots directly into the quote view');
-  const rows = await page.$$eval('#quoteTable tbody tr', rs => rs.length);
-  assert.equal(rows, 3, 'restored measurements rendered, not an empty first pass');
+  assert.equal(await areaBlocks(page), 1, 'restored measurements priced, not an empty first pass');
 });
 
 await run('min_width override sticks across pages; reset re-derives', async page => {

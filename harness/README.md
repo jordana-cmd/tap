@@ -31,15 +31,45 @@ attribute on `#appShell`: `#/takeoff` (the canvas + measurement tree, default)
 and `#/quote`. The **Quote this job** button at the foot of the takeoff panel
 navigates; so do the browser's back/forward buttons, because navigation always
 goes through `location.hash` rather than a direct view swap — one code path for
-both. `#/quote` is currently a **placeholder** ("Coming soon"): it renders the
-handed-off quantities read-only and holds no pricing logic yet.
+both. `#/quote` is the **priced quote screen**: profit and margin at the top,
+one expandable block per area (system, crew, hours, add-ons, every line item),
+and job-level costs with the margin that sets the price.
 
 A route rather than a second page, deliberately: same tab, real history, and the
 wasm engine plus live measurement state stay in memory instead of re-booting
 just to render a quote.
 
-`buildQuotePayload()` is the entire interface between the two, and the thing a
-real pricing tool should build on:
+### Every number on it comes from `engine-core`
+
+The screen calls `price_job_json(cardJson, jobJson)` and renders what comes
+back. It does not compute a cost, a price, a margin, a profit, or a subtotal —
+a second implementation of the cost buildup in JavaScript is exactly how the
+two drift apart, and the one in Rust is the one with the tests and the golden
+fixtures behind it. Consequences worth knowing:
+
+- **Re-priced on every change**, from scratch. No cached quote, no recalculate
+  button, so nothing can go stale; there is no invalidation logic to get wrong.
+- **The rate card is host-loaded** from `/data/rate-cards/` at runtime (never
+  compiled into the wasm), validated by the engine rather than by JS — a card
+  that merely parses can still name a product that does not exist. If it fails
+  to load, the screen says so and shows no prices at all: a blank price is
+  recoverable, a confidently wrong one is not.
+- **The engine's refusals are surfaced verbatim**, naming the area with no
+  crew/hours or the add-on that does not apply. An area with no system is
+  listed and called out, never silently dropped from the total.
+- **Lines are never hidden by disappearing.** Removing a line stores a per-job
+  factor of 0 and it stays on screen struck through at $0.00 with an undo;
+  consumables a system runs at 0× come back from the engine as $0.00 lines and
+  sit behind a "show N items not used by this system" toggle, read-only,
+  because that is a catalog fact rather than a decision about this job.
+- `serve.ps1` and the test server both map `/data/` to the repo's `data/`
+  directory; without it the screen loads but prices nothing.
+
+### The handoff payload
+
+`buildQuotePayload()` remains the takeoff → quoting handoff (and the shape an
+external pricing tool would consume; the priced screen above reads the live
+measurements directly):
 
 - `quantity` mirrors `engine-core` `assembly::MeasurementInput` field names
   (`area_sf` / `perimeter_lf` / `length_lf` / `count_ea`), so an item maps onto
@@ -59,8 +89,9 @@ object directly. Moving to `postMessage` or a server fetch later changes the
 caller, not the shape. Bump the `schema` string (`takeoff-quote-payload@1`) if
 the shape changes.
 
-All harness-level: `engine-core` and `engine-web` are untouched by the quoting
-work.
+The payload itself is harness-level. The pricing behind the screen is not:
+`engine-core::pricing` owns the buildup and `engine-web` exposes the single
+`price_job_json` entry point it is reached through.
 
 ## Run
 

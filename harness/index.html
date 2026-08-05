@@ -272,46 +272,128 @@
   .delToggle { color: var(--danger); font-size: 13px; }
   .delToggle:hover { background: rgba(239,68,68,0.15); color: var(--danger); }
 
-  /* ---------- quote view (placeholder; consumes the handoff payload) ---------- */
+  /* ---------- quote screen: header ---------- */
   #quoteView { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding: 28px 32px; }
   #quoteHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
   #quoteTitle { font-size: 20px; font-weight: 600; }
-  #quoteSoon {
-    display: inline-block; margin-left: 10px; padding: 2px 9px; border-radius: 999px;
-    background: var(--accent-soft); border: 1px solid rgba(204,61,73,0.35);
-    color: var(--accent-text); font-size: 10.5px; font-weight: 600;
-    letter-spacing: 0.6px; text-transform: uppercase; vertical-align: 3px;
-  }
   #quoteJobName { font-size: 15px; font-weight: 600; margin-top: 12px; }
   #quoteJobAddress { font-size: 12.5px; color: var(--text-dim); }
   #quoteProvenance { color: var(--text-faint); font-size: 11px; margin-top: 6px; }
-  #quoteBody { margin-top: 22px; max-width: 900px; }
-  #quoteTotals { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-  .quoteTotal {
-    background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 9px 14px; min-width: 104px;
-  }
-  .quoteTotal .qtVal { font-size: 17px; font-weight: 600; }
-  .quoteTotal .qtLabel { color: var(--text-dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; }
-  /* Narrow viewports must scroll the table, never the page. */
-  #quoteTableWrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
-  #quoteTable { border-collapse: collapse; width: 100%; font-size: 12px; }
-  #quoteTable th, #quoteTable td { padding: 7px 12px; text-align: left; white-space: nowrap; }
-  #quoteTable thead th {
-    background: var(--surface-2); color: var(--text-dim); font-size: 10.5px;
-    font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase;
-  }
-  #quoteTable tbody tr { border-top: 1px solid var(--border); }
-  #quoteTable .qCat { color: var(--text-dim); }
-  #quoteTable .qNum { text-align: right; font-variant-numeric: tabular-nums; }
-  #quoteTable .qSub { color: var(--text-faint); font-size: 11px; }
-  #quoteTable .qOrigin { color: var(--text-faint); font-size: 10.5px; }
-  /* Same dimmed-italic treatment the takeoff row picker uses, so an
-     unpriced area reads identically on both screens. */
-  #quoteTable .qUnassigned { color: var(--text-faint); font-style: italic; }
-  #quoteTable .qNA { color: var(--text-faint); }
   #quoteEmpty { color: var(--text-dim); font-style: italic; padding: 18px 2px; }
-  #quoteNote { color: var(--text-faint); font-size: 11px; margin-top: 16px; max-width: 640px; line-height: 1.6; }
+
+  /* ---------- quote screen: prices ---------- */
+  /* Alerts REPLACE the numbers rather than sitting beside them: a rate card
+     that failed to load must not render as a quote full of zeroes. */
+  #quoteAlerts { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+  .qAlert {
+    border-radius: var(--radius); padding: 10px 14px; font-size: 12.5px; line-height: 1.5;
+    border: 1px solid var(--danger); background: rgba(239,68,68,0.12); color: var(--text);
+  }
+  .qAlert.warn { border-color: rgba(204,61,73,0.5); background: var(--accent-soft); color: var(--accent-text); }
+  .qAlert b { display: block; margin-bottom: 2px; }
+
+  /* The headline. Profit and margin are the two numbers Jordan opens this
+     screen for, so they lead at display size; price and cost support them. */
+  #quoteHeadline {
+    display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0 22px;
+  }
+  #quoteHeadline[hidden] { display: none; }
+  .qhFig {
+    flex: 1 1 150px; background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 16px; min-width: 140px;
+  }
+  .qhLabel { color: var(--text-dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.7px; }
+  .qhVal { font-size: 26px; font-weight: 650; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .qhVal.qhMuted { font-size: 18px; font-weight: 600; color: var(--text-dim); }
+  .qhProfit { border-color: rgba(204,61,73,0.35); background: var(--accent-soft); }
+  .qhProfit .qhVal { color: var(--accent-text); }
+  /* Sub-floor WARNS, never blocks -- the quote still prices. */
+  .qhMargin.below { border-color: var(--accent); background: var(--accent-soft); }
+  .qhWarn {
+    margin-top: 5px; font-size: 10.5px; font-weight: 600; color: var(--accent-text);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+
+  /* Per-area blocks */
+  .qArea { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 10px; overflow: hidden; }
+  .qAreaHead {
+    display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+    background: var(--surface-2); cursor: pointer; user-select: none;
+  }
+  .qAreaHead:hover { background: var(--surface-3); }
+  .qAreaHead .chev { color: var(--text-faint); width: 10px; flex: 0 0 auto; }
+  .qAreaName { font-weight: 600; font-size: 13px; }
+  .qAreaMeta { color: var(--text-dim); font-size: 11.5px; }
+  .qAreaCost { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .qAreaBody { padding: 12px 14px 14px; border-top: 1px solid var(--border); }
+  .qAreaControls { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 12px; }
+  .qAreaControls label { color: var(--text-dim); font-size: 11.5px; display: flex; align-items: center; gap: 6px; }
+  .qAreaControls input[type=number] { width: 70px; }
+  .qAddOns { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .qAddOn { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-dim); }
+  .qAddOn input[type=number] { width: 90px; }
+  /* An inferred recipe must be visible on the quote that rests on it. */
+  .qUnconfirmed {
+    display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px;
+    background: var(--accent-soft); border: 1px solid rgba(204,61,73,0.4);
+    color: var(--accent-text); font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+
+  /* Itemization */
+  .qLinesWrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  table.qLines { border-collapse: collapse; width: 100%; font-size: 11.5px; }
+  table.qLines th, table.qLines td { padding: 5px 10px; text-align: left; white-space: nowrap; }
+  table.qLines thead th {
+    background: var(--surface-2); color: var(--text-dim); font-size: 10px;
+    font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;
+  }
+  table.qLines tbody tr { border-top: 1px solid var(--border); }
+  table.qLines .num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.qLines .qSrc { color: var(--text-faint); font-size: 10px; }
+  /* Suppressed lines STAY VISIBLE, struck through, at $0.00 -- a line that
+     vanishes is indistinguishable from one that was never considered. */
+  table.qLines tr.suppressed td { color: var(--text-faint); text-decoration: line-through; }
+  table.qLines tr.suppressed .qRowAct { text-decoration: none; }
+  /* Unused (0x) lines are informational: dimmed, no strike-through -- nobody
+     removed them, the system just never calls for them. */
+  table.qLines tr.unused td { color: var(--text-faint); }
+  table.qLines tr.unused input.qQty { color: var(--text-faint); cursor: default; }
+  .qRowAct {
+    border: none; background: none; color: var(--text-dim); cursor: pointer;
+    padding: 1px 5px; border-radius: 4px; font-size: 12px;
+  }
+  .qRowAct:hover { background: var(--surface-3); color: var(--text); }
+  .qRowAct.undo { color: var(--accent-text); }
+  table.qLines input.qQty {
+    width: 78px; font-size: 11px; padding: 1px 4px; text-align: right;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text);
+  }
+  .qUnusedToggle {
+    margin-top: 8px; font-size: 11px; color: var(--text-dim);
+    background: none; border: none; cursor: pointer; padding: 2px 0; text-decoration: underline dotted;
+  }
+  .qUnusedToggle:hover { color: var(--text); }
+  .qSubtotals { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 10px; font-size: 11.5px; }
+  .qSubtotals div { color: var(--text-dim); }
+  .qSubtotals b { color: var(--text); font-variant-numeric: tabular-nums; margin-left: 6px; }
+
+  /* Job level */
+  #quoteJobLevel {
+    margin-top: 20px; border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px; background: var(--surface-2);
+  }
+  #quoteJobLevel[hidden] { display: none; }
+  .qjTitle { font-weight: 600; font-size: 12.5px; margin-bottom: 10px; }
+  .qjGrid { display: flex; flex-wrap: wrap; gap: 14px; }
+  .qjGrid label { color: var(--text-dim); font-size: 11.5px; display: flex; align-items: center; gap: 6px; }
+  .qjGrid input { width: 90px; }
+  .qjGrid .qjMargin input { width: 70px; }
+  .qjTotals { display: flex; flex-wrap: wrap; gap: 22px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .qjTotals div { font-size: 12px; color: var(--text-dim); }
+  .qjTotals b { display: block; font-size: 17px; color: var(--text); font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .qjTotals .qjProfit b { color: var(--accent-text); }
 
   #projectPanel {
     position: fixed; top: 84px; right: 16px; width: 360px; max-height: 60vh; overflow-y: auto;
@@ -507,27 +589,61 @@
     </aside>
   </main>
 
-  <!-- Quote route (#/quote). Placeholder for the pricing tool: it renders
-       nothing of its own truth, only what buildQuotePayload() hands it. -->
+  <!-- Quote route (#/quote). Every number here comes from engine-core via
+       price_job_json(); this view computes nothing of its own. A second
+       implementation of the cost buildup in JS is how the two drift apart. -->
   <section id="quoteView">
     <div id="quoteHead">
       <div>
-        <div id="quoteTitle">Quoting<span id="quoteSoon">Coming soon</span></div>
+        <div id="quoteTitle">Quote</div>
         <div id="quoteJobName"></div>
         <div id="quoteJobAddress"></div>
         <div id="quoteProvenance"></div>
       </div>
       <button id="quoteBackBtn">← Back to Takeoff</button>
     </div>
-    <div id="quoteBody">
-      <div id="quoteTotals"></div>
-      <div id="quoteTableWrap"><table id="quoteTable"></table></div>
-      <div id="quoteEmpty" hidden></div>
-      <div id="quoteNote">
-        Quantities above are derived from the takeoff at the moment you opened this page
-        (invariant 5 — nothing here is stored). The pricing engine will consume this same
-        payload: each row maps to one <code>MeasurementInput</code> in
-        <code>engine-core</code>'s assembly module.
+
+    <!-- Rate-card / pricing failures. A blank price is recoverable; a
+         confidently wrong one is not, so this replaces the numbers. -->
+    <div id="quoteAlerts"></div>
+
+    <!-- THE HEADLINE: profit in dollars and the margin it is running at. -->
+    <div id="quoteHeadline" hidden>
+      <div class="qhFig qhProfit">
+        <div class="qhLabel">Profit</div>
+        <div class="qhVal" id="qhProfitVal">—</div>
+      </div>
+      <div class="qhFig qhMargin" id="qhMarginBox">
+        <div class="qhLabel">Margin</div>
+        <div class="qhVal" id="qhMarginVal">—</div>
+        <div class="qhWarn" id="qhFloorWarn" hidden>below 20% floor</div>
+      </div>
+      <div class="qhFig">
+        <div class="qhLabel">Price</div>
+        <div class="qhVal qhMuted" id="qhPriceVal">—</div>
+      </div>
+      <div class="qhFig">
+        <div class="qhLabel">Cost</div>
+        <div class="qhVal qhMuted" id="qhCostVal">—</div>
+      </div>
+    </div>
+
+    <div id="quoteAreas"></div>
+
+    <div id="quoteJobLevel" hidden>
+      <div class="qjTitle">Job-level costs</div>
+      <div class="qjGrid">
+        <label>Travel <input id="qjTravel" type="number" min="0" step="25"></label>
+        <label>Permits <input id="qjPermits" type="number" min="0" step="25"></label>
+        <label>Equipment <input id="qjEquipment" type="number" min="0" step="25"></label>
+        <label>Mobilization <input id="qjMobilization" type="number" min="0" step="25"></label>
+        <label class="qjMargin">Margin %
+          <input id="qjMarginPct" type="number" min="0" max="99" step="1"></label>
+      </div>
+      <div class="qjTotals">
+        <div><span>Job cost</span><b id="qjCost">—</b></div>
+        <div><span>Price</span><b id="qjPrice">—</b></div>
+        <div class="qjProfit"><span>Profit</span><b id="qjProfit">—</b></div>
       </div>
     </div>
   </section>
@@ -585,7 +701,7 @@
 
 <script type="module">
 import init, { detect_room, measure_polyline, measure_polygon_area, calibrate_two_point,
-  scale_presets_json, PageGeometry } from './pkg/engine_web.js';
+  scale_presets_json, validate_rate_card_json, price_job_json, PageGeometry } from './pkg/engine_web.js';
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
 import { extractSegments } from './extract.js';
 import * as store from './store.js';
@@ -643,6 +759,22 @@ let currentName = '';       // filename of the open PDF (display only)
 let currentBytes = null;    // ArrayBuffer of the open PDF (for file store)
 let saveTimer = null;       // debounce handle
 let storageBlocked = false; // set on a write failure — blocks further edits
+
+// ---- job-level pricing INPUTS (persisted; outputs stay derived) ----
+const DEFAULT_PRICING = Object.freeze({
+  travel: 0, permits: 0, equipment: 0, mobilization: 0, margin: 0.35,
+});
+let jobPricing = { ...DEFAULT_PRICING };
+
+// ---- rate card (host-loaded from /data/, never compiled into the wasm) ----
+let rateCardText = null;    // raw JSON, handed to the engine verbatim
+let rateCard = null;        // parsed, for catalog lookups the UI needs (names)
+let rateCardError = null;   // load/validation failure message
+let lastQuote = null;       // engine output — DERIVED, never persisted
+let quoteError = null;
+let collapsedAreas = new Set();      // session-only UI state
+let collapseDefaulted = false;       // has the >4-areas default been applied?
+let showUnusedConsumables = false;   // session-only
 
 // ---- job identity (name/address) — best-effort extraction, manual override wins ----
 let jobName = null, jobAddress = null;              // null = never set
@@ -1296,6 +1428,13 @@ function addMeasurement(kind, family, value, valueText, origin, geometry) {
     // a control today. Never defaulted to a real system: a wrong price is
     // worse than a visibly missing one.
     systemType: null,
+    // Pricing INPUTS (same side of the line as jobName -- persisted, never
+    // derived). labor stays null until entered: the engine errors on missing
+    // hours rather than pricing materials-only.
+    labor: null,                 // {crew, hours}
+    quantityOverrides: {},       // productId -> factor; 0 = suppressed
+    addOns: [],                  // add-on keys
+    manualCosts: {},             // addOnKey -> dollars
     page: currentPage(), // authoritative at commit time (§A2)
     color: '#1e3a8a',    // user-recolourable (measurement editing)
     geometry: Float64Array.from(geometry),
@@ -1357,6 +1496,10 @@ function toStored(m) {
     color: m.color, category: m.category,
     visible: m.visible !== false, snapEnabled: m.snapEnabled !== false,
     systemType: m.systemType ?? null,
+    labor: m.labor ?? null,
+    quantityOverrides: m.quantityOverrides ?? {},
+    addOns: m.addOns ?? [],
+    manualCosts: m.manualCosts ?? {},
   };
 }
 function fromStored(r) {
@@ -1367,8 +1510,13 @@ function fromStored(r) {
     visible: r.visible !== false,
     snapEnabled: r.snapEnabled !== false,
     // Records saved before systemType existed restore as Unassigned rather
-    // than being back-filled with a guess.
+    // than being back-filled with a guess. Same for the pricing inputs added
+    // later: a legacy project loads clean with nothing assumed.
     systemType: r.systemType ?? null,
+    labor: r.labor ?? null,
+    quantityOverrides: r.quantityOverrides ?? {},
+    addOns: r.addOns ?? [],
+    manualCosts: r.manualCosts ?? {},
     value: 0, valueText: '', // recomputed below
     geometry: Float64Array.from(r.geometry),
   };
@@ -1422,6 +1570,7 @@ function exportJson() {
     jobName, jobAddress, jobNameSource, jobAddressSource,
     pageScales: scalesToStored(),
     measurements: measurements.map(toStored),
+    pricing: { ...jobPricing },
     minWidthOverride,
   }, null, 2);
 }
@@ -1429,6 +1578,7 @@ function importJson(str) {
   const data = JSON.parse(str);
   scalesFromStored(data.pageScales ?? []);
   measurements = (data.measurements ?? []).map(fromStored);
+  jobPricing = { ...DEFAULT_PRICING, ...(data.pricing ?? {}) };
   minWidthOverride = data.minWidthOverride ?? null;
   jobName = data.jobName ?? null; jobAddress = data.jobAddress ?? null;
   jobNameSource = data.jobNameSource ?? null; jobAddressSource = data.jobAddressSource ?? null;
@@ -1447,6 +1597,7 @@ function projectRecord() {
     jobName, jobAddress, jobNameSource, jobAddressSource, jobExtracted,
     pageScales: scalesToStored(),
     measurements: measurements.map(toStored),
+    pricing: { ...jobPricing },
     minWidthOverride, updatedAt: Date.now(),
   };
 }
@@ -1866,6 +2017,12 @@ function buildQuotePayload() {
       system: m.systemType
         ? { key: m.systemType, label: systemLabel(m.systemType) ?? m.systemType }
         : null,
+      // Pricing INPUTS travel with the payload; the priced OUTPUT never does
+      // (invariant 5 -- it is rebuilt from these on every navigation).
+      labor: m.labor ? { crew: m.labor.crew, hours: m.labor.hours } : null,
+      addOns: [...(m.addOns ?? [])],
+      quantityOverrides: { ...(m.quantityOverrides ?? {}) },
+      manualCosts: { ...(m.manualCosts ?? {}) },
       origin: m.origin,
       scale: f == null ? null : { feet_per_paper_inch: f, source: scaleSourceOf(m.page) },
     };
@@ -1894,6 +2051,9 @@ function buildQuotePayload() {
       nameSource: jobNameSource, addressSource: jobAddressSource,
     },
     pageScales: scalesToStored(),
+    pricing: { ...jobPricing },
+    rateCardVersion: rateCard ? rateCard.version : null,
+    wageSource: 'standard',
     items,
     groups: [...groups.values()],
   };
@@ -1907,103 +2067,571 @@ function primaryQuantity(it) {
   return it.quantity.count_ea;
 }
 
-const UNIT_LABEL = { SF: 'total area', LF: 'total linear', EA: 'total count' };
-const QUOTE_COLS = ['Item', 'Category', 'System', 'Kind', 'Page', 'Quantity', 'Origin'];
+// ---- quote screen ----
+// Every number rendered here comes from engine-core via price_job_json().
+// Nothing on this screen recomputes a cost, a price, a margin, or a profit:
+// a second implementation of the buildup in JS is exactly how the two drift
+// apart, and the one in Rust is the one with 73 pricing tests and five golden
+// fixtures behind it.
 
-function td(text, cls) {
-  const el = document.createElement('td');
-  if (cls) el.className = cls;
-  el.textContent = text;              // free text — never innerHTML
+const money = v =>
+  (Number.isFinite(v) ? v : 0).toLocaleString('en-US', {
+    style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
+/// Quantities are not money — show enough precision to see a 0.0002 rate
+/// without printing sixteen digits.
+const qty = v => {
+  if (!Number.isFinite(v)) return '—';
+  const s = Math.abs(v) >= 100 ? v.toFixed(1) : v.toFixed(4);
+  return s.replace(/\.?0+$/, '') || '0';
+};
+const pct = v => `${(v * 100).toFixed(1)}%`;
+
+/// Fetch and validate the rate card. The values are host-loaded from /data/
+/// precisely so a price change needs no rebuild, which means the load can
+/// fail — and a quote rendered with missing costs is worse than no quote.
+async function loadRateCard() {
+  rateCardError = null;
+  try {
+    const res = await fetch('/data/rate-cards/commercial-v1.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status} fetching the rate card`);
+    const text = await res.text();
+    // Validated by the ENGINE, not by JS: a card that merely parses can still
+    // name a product that does not exist.
+    validate_rate_card_json(text);
+    rateCardText = text;
+    rateCard = JSON.parse(text);
+  } catch (e) {
+    rateCardError = e && e.message ? e.message : String(e);
+    rateCardText = null;
+    rateCard = null;
+  }
+}
+
+/// Area measurements, split into those that can be priced and those that
+/// cannot. An area with no system is LISTED, never silently dropped.
+function quoteAreas() {
+  const areas = measurements.filter(m => m.kind === 'area');
+  return {
+    priced: areas.filter(m => m.systemType),
+    unassigned: areas.filter(m => !m.systemType),
+  };
+}
+
+/// Build the engine's JobInput. Pure translation — no arithmetic beyond the
+/// perimeter, which is geometry, not money.
+function buildJobInput() {
+  const { priced } = quoteAreas();
+  return {
+    areas: priced.map(m => {
+      const f = scaleOf(m.page);
+      const flat = Array.from(m.geometry);
+      return {
+        id: m.id,
+        name: m.name,
+        area_sf: m.value,
+        perimeter_lf: f == null ? null : measure_polyline(flat.concat(flat.slice(0, 2)), f),
+        system_key: m.systemType,
+        add_on_keys: m.addOns ?? [],
+        labor: m.labor ? { crew: m.labor.crew, hours: m.labor.hours } : null,
+        quantity_overrides: m.quantityOverrides ?? {},
+        manual_costs: m.manualCosts ?? {},
+      };
+    }),
+    job_costs: {
+      travel: jobPricing.travel, permits: jobPricing.permits,
+      equipment: jobPricing.equipment, mobilization: jobPricing.mobilization,
+    },
+    margin: jobPricing.margin,
+    wage_source: 'standard',
+  };
+}
+
+/// Re-price from scratch. Called on EVERY change — there is no cached quote
+/// to invalidate and no recalculate button, which is why nothing can go stale.
+function repriceQuote() {
+  lastQuote = null;
+  quoteError = null;
+  if (!rateCardText) return;
+  const job = buildJobInput();
+  if (!job.areas.length) return;
+  try {
+    lastQuote = JSON.parse(price_job_json(rateCardText, JSON.stringify(job)));
+  } catch (e) {
+    // The engine names what went wrong (which area has no hours, which add-on
+    // does not apply). Surface it verbatim rather than guessing.
+    quoteError = (e && e.message) || (e && e.code) || String(e);
+  }
+}
+
+const ADDON_LABEL = { manual_cost: 'amount' };
+
+/// Full rebuild of the quote screen. Focus is restored afterwards so typing
+/// in a number field survives the re-render that every keystroke triggers.
+function renderQuoteView() {
+  const active = document.activeElement;
+  const focusKey = active && active.dataset ? active.dataset.qkey : null;
+
+  $('quoteJobName').textContent = jobNameOrFallback();
+  $('quoteJobAddress').textContent = jobAddressOrFallback();
+  $('quoteProvenance').textContent = [
+    currentName || 'unsaved sheet',
+    $('pageLabel').textContent,
+    new Date().toLocaleDateString(),
+  ].filter(Boolean).join(' · ');
+
+  renderQuoteAlerts();
+  renderQuoteHeadline();
+  renderQuoteAreaList();
+  renderJobLevel();
+
+  if (focusKey) {
+    const el = $('quoteView').querySelector(`[data-qkey="${focusKey}"]`);
+    if (el) {
+      el.focus();
+      try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* number inputs */ }
+    }
+  }
+}
+
+function alertBox(title, body, warn) {
+  const el = document.createElement('div');
+  el.className = warn ? 'qAlert warn' : 'qAlert';
+  const b = document.createElement('b');
+  b.textContent = title;
+  el.appendChild(b);
+  el.appendChild(document.createTextNode(body));
   return el;
 }
 
-/// Render a payload into the placeholder view. Job info and measurement
-/// names are user-authored free text, so everything lands via textContent
-/// for the same reason exportPdf() builds its header that way.
-function renderQuoteView(payload) {
-  $('quoteJobName').textContent = payload.job.name;
-  $('quoteJobAddress').textContent = payload.job.address;
-  $('quoteProvenance').textContent = payload.projectId
-    ? ['Received from takeoff', `project ${payload.projectId.slice(0, 12)}…`,
-       payload.source.fileName].filter(Boolean).join(' · ')
-    : 'Received from takeoff · unsaved sheet (no PDF loaded)';
-
-  const totals = $('quoteTotals');
-  totals.textContent = '';
-  const grand = {};
-  for (const g of payload.groups) {
-    for (const [unit, v] of Object.entries(g.totals)) grand[unit] = (grand[unit] ?? 0) + v;
-  }
-  for (const [unit, v] of Object.entries(grand)) {
-    const card = document.createElement('div');
-    card.className = 'quoteTotal';
-    const val = document.createElement('div');
-    val.className = 'qtVal';
-    val.textContent = `${v.toFixed(1)} ${unit}`;
-    const lab = document.createElement('div');
-    lab.className = 'qtLabel';
-    lab.textContent = UNIT_LABEL[unit] ?? unit;
-    card.append(val, lab);
-    totals.appendChild(card);
-  }
-
-  const table = $('quoteTable');
-  table.textContent = '';
-  const empty = !payload.items.length;
-  $('quoteTableWrap').hidden = empty;
-  $('quoteEmpty').hidden = !empty;
-  if (empty) {
-    $('quoteEmpty').textContent =
-      'No measurements yet — draw a takeoff and the quantities will appear here.';
+function renderQuoteAlerts() {
+  const box = $('quoteAlerts');
+  box.textContent = '';
+  if (rateCardError) {
+    box.appendChild(alertBox(
+      'Rate card failed to load — no prices can be shown',
+      `${rateCardError}. Nothing below is priced; fix the card and reload rather than trusting a zero.`,
+    ));
     return;
   }
+  if (quoteError) {
+    box.appendChild(alertBox('This quote cannot be priced yet', quoteError));
+  }
+  const { unassigned } = quoteAreas();
+  if (unassigned.length) {
+    box.appendChild(alertBox(
+      `${unassigned.length} area(s) have no system assigned`,
+      `${unassigned.map(m => m.name).join(', ')} — not included in this quote. Assign a system on the takeoff or below.`,
+      true,
+    ));
+  }
+  // An inferred recipe must be visible on the quote that rests on it.
+  const unconfirmed = lastQuote ? lastQuote.unconfirmed_systems : [];
+  if (unconfirmed && unconfirmed.length) {
+    box.appendChild(alertBox(
+      'Unconfirmed recipe',
+      `${unconfirmed.join(', ')} — product membership was inferred by comparing quote sheets and has not been signed off against a real job. Treat these figures as provisional.`,
+      true,
+    ));
+  }
+}
 
+function renderQuoteHeadline() {
+  const head = $('quoteHeadline');
+  if (!lastQuote) { head.hidden = true; return; }
+  head.hidden = false;
+  $('qhProfitVal').textContent = money(lastQuote.profit);
+  $('qhMarginVal').textContent = pct(lastQuote.margin);
+  $('qhPriceVal').textContent = money(lastQuote.price);
+  $('qhCostVal').textContent = money(lastQuote.cost);
+  // The engine owns the threshold; this only reads the flag.
+  $('qhMarginBox').classList.toggle('below', !!lastQuote.below_margin_floor);
+  $('qhFloorWarn').hidden = !lastQuote.below_margin_floor;
+}
+
+function numInput(value, key, step, onChange) {
+  const i = document.createElement('input');
+  i.type = 'number';
+  i.step = step;
+  i.value = value;
+  i.dataset.qkey = key;
+  i.addEventListener('input', () => onChange(i.value));
+  return i;
+}
+
+function renderQuoteAreaList() {
+  const wrap = $('quoteAreas');
+  wrap.textContent = '';
+  const { priced, unassigned } = quoteAreas();
+  const all = priced.concat(unassigned);
+  if (!all.length) {
+    const empty = document.createElement('div');
+    empty.id = 'quoteEmpty';
+    empty.textContent = 'No area measurements yet — draw an area on the takeoff to quote it.';
+    wrap.appendChild(empty);
+    return;
+  }
+  // Past about four areas a twelve-area job stops being navigable, so default
+  // to collapsed. Explicit toggles always win afterwards.
+  if (!collapseDefaulted) {
+    collapseDefaulted = true;
+    if (all.length > 4) for (const m of all) collapsedAreas.add(m.id);
+  }
+  const byId = new Map((lastQuote ? lastQuote.areas : []).map(a => [a.area_id, a]));
+  for (const m of all) wrap.appendChild(buildAreaBlock(m, byId.get(m.id)));
+}
+
+function buildAreaBlock(m, aq) {
+  const block = document.createElement('div');
+  block.className = 'qArea';
+  block.dataset.areaId = String(m.id);
+  const collapsed = collapsedAreas.has(m.id);
+
+  const head = document.createElement('div');
+  head.className = 'qAreaHead';
+  const chev = document.createElement('span');
+  chev.className = 'chev';
+  chev.textContent = collapsed ? '▸' : '▾';
+  const name = document.createElement('span');
+  name.className = 'qAreaName';
+  name.textContent = m.name;
+  const meta = document.createElement('span');
+  meta.className = 'qAreaMeta';
+  const sysLabel = m.systemType ? (systemLabel(m.systemType) ?? m.systemType) : 'Unassigned';
+  meta.textContent = `${sysLabel} · ${m.value.toFixed(1)} SF`;
+  head.append(chev, name, meta);
+  if (aq && !aq.system_confirmed) {
+    const flag = document.createElement('span');
+    flag.className = 'qUnconfirmed';
+    flag.textContent = 'unconfirmed recipe';
+    head.appendChild(flag);
+  }
+  const cost = document.createElement('span');
+  cost.className = 'qAreaCost';
+  cost.textContent = aq ? money(aq.cost) : '—';
+  head.appendChild(cost);
+  head.addEventListener('click', () => {
+    if (collapsedAreas.has(m.id)) collapsedAreas.delete(m.id); else collapsedAreas.add(m.id);
+    renderQuoteView();
+  });
+  block.appendChild(head);
+  if (collapsed) return block;
+
+  const body = document.createElement('div');
+  body.className = 'qAreaBody';
+  body.appendChild(buildAreaControls(m));
+  if (aq) {
+    body.appendChild(buildLineTable(m, aq));
+    body.appendChild(buildSubtotals(aq));
+  } else {
+    const why = document.createElement('div');
+    why.className = 'qSubtotals';
+    why.textContent = m.systemType
+      ? 'Not priced — see the message above.'
+      : 'Not priced — assign a system below.';
+    body.appendChild(why);
+  }
+  block.appendChild(body);
+  return block;
+}
+
+function buildAreaControls(m) {
+  const row = document.createElement('div');
+  row.className = 'qAreaControls';
+
+  const sysLab = document.createElement('label');
+  sysLab.appendChild(document.createTextNode('System'));
+  const sel = document.createElement('select');
+  sel.className = 'measSystem';
+  sel.dataset.qkey = `sys-${m.id}`;
+  const none = document.createElement('option');
+  none.value = ''; none.textContent = 'Unassigned';
+  sel.appendChild(none);
+  for (const sy of FLOOR_SYSTEMS) {
+    const o = document.createElement('option');
+    o.value = sy.key; o.textContent = sy.label;
+    sel.appendChild(o);
+  }
+  sel.value = m.systemType ?? '';
+  sel.classList.toggle('unassigned', !m.systemType);
+  sel.addEventListener('change', () => {
+    m.systemType = sel.value || null;
+    markDirty(); repriceQuote(); renderQuoteView(); renderMeasList();
+  });
+  sysLab.appendChild(sel);
+
+  const crewLab = document.createElement('label');
+  crewLab.appendChild(document.createTextNode('Crew'));
+  crewLab.appendChild(numInput(laborField(m, 'crew'), `crew-${m.id}`, '1', v => {
+    setLabor(m, 'crew', v); markDirty(); repriceQuote(); renderQuoteView();
+  }));
+
+  const hoursLab = document.createElement('label');
+  hoursLab.appendChild(document.createTextNode('Hours'));
+  hoursLab.appendChild(numInput(laborField(m, 'hours'), `hours-${m.id}`, '0.5', v => {
+    setLabor(m, 'hours', v); markDirty(); repriceQuote(); renderQuoteView();
+  }));
+
+  row.append(sysLab, crewLab, hoursLab, buildAddOns(m));
+  return row;
+}
+
+/// What to SHOW in a labor field. Crew alone is not labor the engine will
+/// accept, but it is what the estimator just typed, and every keystroke
+/// re-renders this input: reading only committed labor erases the first half
+/// of the pair before the second can be entered.
+const laborField = (m, field) => {
+  const src = m.labor ?? m.laborDraft;
+  return src && src[field] != null ? src[field] : '';
+};
+
+/// Crew and hours are only meaningful together. Clearing either drops back to
+/// null so the engine errors rather than pricing at an implied zero — but the
+/// half-entered pair is kept as a draft, or typing the second value would
+/// discard the first.
+function setLabor(m, field, raw) {
+  const v = raw === '' ? null : Number(raw);
+  const cur = m.labor ?? m.laborDraft ?? { crew: null, hours: null };
+  const next = { ...cur, [field]: v };
+  m.labor = (next.crew == null || next.hours == null || Number.isNaN(next.crew) || Number.isNaN(next.hours))
+    ? null : { crew: next.crew, hours: next.hours };
+  if (!m.labor) m.laborDraft = next; else delete m.laborDraft;
+}
+
+function buildAddOns(m) {
+  const box = document.createElement('span');
+  box.className = 'qAddOns';
+  if (!rateCard) return box;
+  for (const a of rateCard.add_ons) {
+    const applies = !a.applies_to.length || a.applies_to.includes(m.systemType);
+    if (!applies) continue;
+    const wrap = document.createElement('label');
+    wrap.className = 'qAddOn';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = (m.addOns ?? []).includes(a.key);
+    cb.dataset.qkey = `addon-${m.id}-${a.key}`;
+    cb.addEventListener('change', () => {
+      const set = new Set(m.addOns ?? []);
+      if (cb.checked) set.add(a.key); else { set.delete(a.key); delete (m.manualCosts ?? {})[a.key]; }
+      m.addOns = [...set];
+      markDirty(); repriceQuote(); renderQuoteView();
+    });
+    wrap.append(cb, document.createTextNode(a.name));
+    // A manual-cost add-on takes a dollar figure, not a rate. The engine
+    // errors if it is missing rather than treating it as $0.
+    if (a.effect.kind === 'manual_cost' && cb.checked) {
+      const amt = numInput((m.manualCosts ?? {})[a.key] ?? '', `manual-${m.id}-${a.key}`, '25', v => {
+        m.manualCosts = { ...(m.manualCosts ?? {}) };
+        if (v === '') delete m.manualCosts[a.key]; else m.manualCosts[a.key] = Number(v);
+        markDirty(); repriceQuote(); renderQuoteView();
+      });
+      amt.placeholder = ADDON_LABEL.manual_cost;
+      wrap.appendChild(amt);
+    }
+    box.appendChild(wrap);
+  }
+  return box;
+}
+
+const LINE_COLS = ['Product', 'Unit', 'Qty', 'Unit cost', 'Extended', ''];
+
+/// A consumable the system runs at 0× — reported by the engine so it can be
+/// seen, but not a per-job decision: there is nothing to halve or restore.
+const isUnused = l => l.source.kind === 'consumable' && l.multiplier === 0;
+
+function buildLineTable(m, aq) {
+  const wrap = document.createElement('div');
+  wrap.className = 'qLinesWrap';
+  const table = document.createElement('table');
+  table.className = 'qLines';
   const thead = document.createElement('thead');
   const hr = document.createElement('tr');
-  for (const c of QUOTE_COLS) {
+  for (const c of LINE_COLS) {
     const th = document.createElement('th');
     th.textContent = c;
-    if (c === 'Quantity') th.className = 'qNum';
+    if (c === 'Qty' || c === 'Unit cost' || c === 'Extended') th.className = 'num';
     hr.appendChild(th);
   }
   thead.appendChild(hr);
-
   const tbody = document.createElement('tbody');
-  for (const it of payload.items) {
-    const tr = document.createElement('tr');
-    const v = primaryQuantity(it);
-    const qty = document.createElement('td');
-    qty.className = 'qNum';
-    qty.textContent = v == null ? '(no scale)'
-      : it.kind === 'count' ? `${v} ${it.unit}` : `${v.toFixed(1)} ${it.unit}`;
-    // Perimeter rides along under an area's SF — it is a second driving
-    // quantity for the same row, not a row of its own.
-    if (it.quantity.perimeter_lf != null) {
-      const sub = document.createElement('div');
-      sub.className = 'qSub';
-      sub.textContent = `${it.quantity.perimeter_lf.toFixed(1)} LF perimeter`;
-      qty.appendChild(sub);
-    }
-    // Three distinct states, not two: an area with no system is UNASSIGNED
-    // (actionable — someone has to price it), while a line or count simply
-    // takes no system at all. Collapsing those into one blank cell would
-    // hide the work that still needs a decision.
-    const sys = document.createElement('td');
-    if (it.system) {
-      sys.textContent = it.system.label;
-    } else if (it.kind === 'area') {
-      sys.className = 'qUnassigned';
-      sys.textContent = 'Unassigned';
-    } else {
-      sys.className = 'qNA';
-      sys.textContent = '—';
-    }
-    tr.append(td(it.name), td(it.category, 'qCat'), sys, td(it.kind), td(String(it.page)));
-    tr.appendChild(qty);
-    tr.appendChild(td(it.origin ?? '', 'qOrigin'));
-    tbody.appendChild(tr);
-  }
+
+  // A consumable this system does not use (multiplier 0) is hidden by default
+  // but never dropped — one click reveals it. An omitted row is
+  // indistinguishable from a row nobody considered.
+  const unused = aq.lines.filter(isUnused);
+  const shown = aq.lines.filter(l => !isUnused(l));
+  for (const l of shown) tbody.appendChild(buildLineRow(m, l));
+  if (showUnusedConsumables) for (const l of unused) tbody.appendChild(buildLineRow(m, l));
+
   table.append(thead, tbody);
+  wrap.appendChild(table);
+  const outer = document.createElement('div');
+  outer.appendChild(wrap);
+  if (unused.length) {
+    const toggle = document.createElement('button');
+    toggle.className = 'qUnusedToggle';
+    toggle.type = 'button';
+    toggle.dataset.qkey = 'unused-toggle';
+    toggle.textContent = showUnusedConsumables
+      ? `hide ${unused.length} items not used by this system`
+      : `show ${unused.length} items not used by this system`;
+    toggle.addEventListener('click', () => { showUnusedConsumables = !showUnusedConsumables; renderQuoteView(); });
+    outer.appendChild(toggle);
+  }
+  return outer;
+}
+
+function buildLineRow(m, l) {
+  const tr = document.createElement('tr');
+  tr.dataset.productId = l.product_id;
+  if (l.suppressed) tr.classList.add('suppressed');
+  // An unused line is shown, never operated on: the override is a FACTOR on
+  // the recipe quantity, and every factor on zero is still zero. Controls that
+  // silently do nothing are worse than no controls.
+  const inert = isUnused(l);
+  if (inert) tr.classList.add('unused');
+
+  const nameTd = document.createElement('td');
+  nameTd.textContent = l.product_name;
+  if (l.source.kind === 'add_on') {
+    const s = document.createElement('span');
+    s.className = 'qSrc';
+    s.textContent = ` (${l.source.key})`;
+    nameTd.appendChild(s);
+  }
+  const unitTd = document.createElement('td');
+  unitTd.textContent = l.unit;
+
+  // Quantity is directly editable; delete is just the zero case, so "half the
+  // normal mender" needs no separate control.
+  const qtyTd = document.createElement('td');
+  qtyTd.className = 'num';
+  const qi = document.createElement('input');
+  qi.type = 'number';
+  qi.className = 'qQty';
+  qi.min = '0';
+  qi.step = 'any';
+  qi.value = qty(l.quantity);
+  qi.dataset.qkey = `qty-${m.id}-${l.product_id}`;
+  if (inert) {
+    qi.readOnly = true;
+    qi.title = 'this system runs at 0× — change the rate card to use it';
+  } else {
+    qi.title = `default ${qty(l.base_quantity)} — editing sets a per-job factor`;
+    qi.addEventListener('change', () => {
+      const want = Number(qi.value);
+      setOverrideFromQuantity(m, l, want);
+      markDirty(); repriceQuote(); renderQuoteView();
+    });
+  }
+  qtyTd.appendChild(qi);
+
+  const costTd = document.createElement('td');
+  costTd.className = 'num';
+  costTd.textContent = money(l.unit_cost);
+  const extTd = document.createElement('td');
+  extTd.className = 'num';
+  extTd.textContent = money(l.extended_cost);
+
+  const actTd = document.createElement('td');
+  if (inert) {
+    tr.append(nameTd, unitTd, qtyTd, costTd, extTd, actTd);
+    return tr;
+  }
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = l.suppressed ? 'qRowAct undo' : 'qRowAct';
+  btn.textContent = l.suppressed ? '↺' : '✕';
+  btn.title = l.suppressed ? 'restore this line' : 'remove this line from this job only';
+  btn.dataset.qkey = `del-${m.id}-${l.product_id}`;
+  btn.addEventListener('click', () => {
+    m.quantityOverrides = { ...(m.quantityOverrides ?? {}) };
+    if (l.suppressed) delete m.quantityOverrides[l.product_id];
+    else m.quantityOverrides[l.product_id] = 0;
+    markDirty(); repriceQuote(); renderQuoteView();
+  });
+  actTd.appendChild(btn);
+
+  tr.append(nameTd, unitTd, qtyTd, costTd, extTd, actTd);
+  return tr;
+}
+
+/// The engine models overrides as a FACTOR on the recipe quantity, so a typed
+/// quantity becomes want/base. Editing to exactly zero is suppression.
+function setOverrideFromQuantity(m, l, want) {
+  m.quantityOverrides = { ...(m.quantityOverrides ?? {}) };
+  if (!Number.isFinite(want) || want < 0) return;
+  if (l.base_quantity === 0) { delete m.quantityOverrides[l.product_id]; return; }
+  const factor = want / l.base_quantity;
+  if (Math.abs(factor - 1) < 1e-9) delete m.quantityOverrides[l.product_id];
+  else m.quantityOverrides[l.product_id] = factor;
+}
+
+function buildSubtotals(aq) {
+  const row = document.createElement('div');
+  row.className = 'qSubtotals';
+  const add = (label, value) => {
+    const d = document.createElement('div');
+    d.appendChild(document.createTextNode(label));
+    const b = document.createElement('b');
+    b.textContent = money(value);
+    d.appendChild(b);
+    row.appendChild(d);
+  };
+  add('Material', aq.materials);
+  add('Consumables', aq.consumables);
+  add('Labor', aq.labor);
+  add('Overhead', aq.overhead);
+  if (aq.manual_costs) add('Manual', aq.manual_costs);
+  const mh = document.createElement('div');
+  mh.appendChild(document.createTextNode('Man-hours'));
+  const b = document.createElement('b');
+  b.textContent = qty(aq.man_hours);
+  mh.appendChild(b);
+  row.appendChild(mh);
+  return row;
+}
+
+function renderJobLevel() {
+  const box = $('quoteJobLevel');
+  box.hidden = !quoteAreas().priced.length && !lastQuote;
+  const bind = (id, field, step) => {
+    const el = $(id);
+    el.value = jobPricing[field];
+    el.step = step;
+    el.dataset.qkey = id;
+    if (!el.dataset.wired) {
+      el.dataset.wired = '1';
+      el.addEventListener('input', () => {
+        const v = Number(el.value);
+        jobPricing[field] = Number.isFinite(v) ? v : 0;
+        markDirty(); repriceQuote(); renderQuoteView();
+      });
+    }
+  };
+  bind('qjTravel', 'travel', '25');
+  bind('qjPermits', 'permits', '25');
+  bind('qjEquipment', 'equipment', '25');
+  bind('qjMobilization', 'mobilization', '25');
+
+  const mEl = $('qjMarginPct');
+  mEl.value = (jobPricing.margin * 100).toFixed(0);
+  mEl.dataset.qkey = 'qjMarginPct';
+  if (!mEl.dataset.wired) {
+    mEl.dataset.wired = '1';
+    mEl.addEventListener('input', () => {
+      const v = Number(mEl.value);
+      // The engine rejects >= 1.0; keep the input inside that so a stray
+      // keystroke does not blank the whole quote.
+      jobPricing.margin = Number.isFinite(v) ? Math.min(Math.max(v, -99), 99) / 100 : 0;
+      markDirty(); repriceQuote(); renderQuoteView();
+    });
+  }
+
+  $('qjCost').textContent = lastQuote ? money(lastQuote.cost) : '—';
+  $('qjPrice').textContent = lastQuote ? money(lastQuote.price) : '—';
+  $('qjProfit').textContent = lastQuote ? money(lastQuote.profit) : '—';
 }
 
 // ---- routing: hash-based view swap (#/takeoff | #/quote) ----
@@ -2027,7 +2655,13 @@ function applyRoute() {
   if (route === 'quote') {
     cancelTransients('opened quote');
     lastQuotePayload = buildQuotePayload();
-    renderQuoteView(lastQuotePayload);
+    // The card is fetched once per session; pricing is re-run every time.
+    if (!rateCardText && !rateCardError) {
+      loadRateCard().then(() => { repriceQuote(); renderQuoteView(); });
+    } else {
+      repriceQuote();
+    }
+    renderQuoteView();
   }
   $('appShell').dataset.route = route;
 }
@@ -2040,7 +2674,8 @@ function applyRoute() {
 function refreshQuoteIfActive() {
   if (routeFromHash() !== 'quote') return;
   lastQuotePayload = buildQuotePayload();
-  renderQuoteView(lastQuotePayload);
+  repriceQuote();
+  renderQuoteView();
 }
 
 /// Print/PDF export: populate the print-only header (job/address/page/
@@ -2623,6 +3258,9 @@ async function loadPdf(data, name) {
   if (proj) {
     scalesFromStored(proj.pageScales);
     measurements = proj.measurements.map(fromStored);
+    // Legacy projects predate the pricing block; defaults, nothing assumed.
+    jobPricing = { ...DEFAULT_PRICING, ...(proj.pricing ?? {}) };
+    collapsedAreas = new Set(); collapseDefaulted = false;
     minWidthOverride = proj.minWidthOverride ?? null;
     jobName = proj.jobName ?? null; jobAddress = proj.jobAddress ?? null;
     jobNameSource = proj.jobNameSource ?? null; jobAddressSource = proj.jobAddressSource ?? null;
@@ -2632,6 +3270,8 @@ async function loadPdf(data, name) {
   } else {
     pageScales.clear(); pageScales.set(0, { fpi: 4.0, source: 'synthetic' });
     measurements = []; nextMeasId = 1;
+    jobPricing = { ...DEFAULT_PRICING };
+    collapsedAreas = new Set(); collapseDefaulted = false;
     measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
     setSaveState('—'); // no project until the first mutation
   }
@@ -2807,6 +3447,12 @@ window.__harness = {
   storageBlocked: () => storageBlocked,
   jobInfo: () => ({ jobName, jobAddress, jobNameSource, jobAddressSource, jobExtracted }),
   buildQuotePayload: () => buildQuotePayload(),
+  quote: () => lastQuote,
+  quoteError: () => quoteError,
+  rateCardError: () => rateCardError,
+  jobPricing: () => jobPricing,
+  loadRateCard: () => loadRateCard(),
+  repriceQuote: () => { repriceQuote(); renderQuoteView(); },
   lastQuotePayload: () => lastQuotePayload,
   route: () => routeFromHash(),
   extractJobInfo: () => extractJobInfo(),
