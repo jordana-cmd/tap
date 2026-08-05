@@ -30,11 +30,15 @@ pub(crate) enum WebError {
     Raster(RasterError),
     Scale(ScaleError),
     /// Segment buffer is not [x1,y1,x2,y2,width] × n.
-    BadSegments { len: usize },
+    BadSegments {
+        len: usize,
+    },
     /// A host-supplied rate card failed to parse or validate. Carries EVERY
     /// defect, newline-joined — fixing a hand-edited data file one error per
     /// reload is miserable.
     RateCard(String),
+    /// A job input failed to parse, or pricing it failed.
+    Pricing(String),
 }
 
 impl WebError {
@@ -62,6 +66,7 @@ impl WebError {
             },
             WebError::BadSegments { .. } => "BAD_SEGMENTS",
             WebError::RateCard(_) => "INVALID_RATE_CARD",
+            WebError::Pricing(_) => "PRICING_FAILED",
         }
     }
 
@@ -74,6 +79,7 @@ impl WebError {
                 format!("segment buffer length {len} is not a multiple of 5")
             }
             WebError::RateCard(detail) => detail.clone(),
+            WebError::Pricing(detail) => detail.clone(),
         }
     }
 }
@@ -241,7 +247,12 @@ impl PageGeom {
     fn histogram_json(&self) -> String {
         let entries: Vec<String> = engine_core::width_histogram(self.index.segments())
             .iter()
-            .map(|b| format!("{{\"width_pts\":{},\"segments\":{}}}", b.width_pts, b.segments))
+            .map(|b| {
+                format!(
+                    "{{\"width_pts\":{},\"segments\":{}}}",
+                    b.width_pts, b.segments
+                )
+            })
             .collect();
         format!("[{}]", entries.join(","))
     }
@@ -363,13 +374,7 @@ fn calibrate(x1: f64, y1: f64, x2: f64, y2: f64, known_feet: f64) -> Result<f64,
 fn presets_json() -> String {
     let entries: Vec<String> = engine_core::SCALE_PRESETS
         .iter()
-        .map(|p| {
-            format!(
-                "{{\"label\":{:?},\"fpi\":{}}}",
-                p.label,
-                p.fpi
-            )
-        })
+        .map(|p| format!("{{\"label\":{:?},\"fpi\":{}}}", p.label, p.fpi))
         .collect();
     format!("[{}]", entries.join(","))
 }
@@ -902,4 +907,21 @@ pub fn validate_rate_card_json(json: &str) -> Result<String, JsValue> {
             Err(to_js(WebError::RateCard(detail)))
         }
     }
+}
+
+/// Price a job: rate card JSON + job input JSON in, quote JSON out.
+///
+/// The host holds the rate card (fetched from `/data/`, never compiled in) and
+/// the job inputs; everything numeric happens here. The UI renders the returned
+/// quote and computes nothing of its own — a second implementation of the cost
+/// buildup in JavaScript is exactly how the two drift apart.
+///
+/// Errors cross as `{ code, message }` like every other boundary failure, with
+/// a message naming what went wrong (a missing crew/hours, an add-on that does
+/// not apply, a margin at or above 1.0) so the screen can say it plainly rather
+/// than rendering a confidently wrong zero.
+#[wasm_bindgen]
+pub fn price_job_json(card_json: &str, job_json: &str) -> Result<String, JsValue> {
+    engine_core::pricing::price_job_json(card_json, job_json)
+        .map_err(|e| to_js(WebError::Pricing(e.to_string())))
 }

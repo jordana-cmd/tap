@@ -185,11 +185,13 @@ impl<'a> PricingContext<'a> {
 
 /// Where a line came from, so the UI can group and explain it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "kind", rename_all = "snake_case"))]
 pub enum LineSource {
     /// Named by the system recipe.
     Recipe,
     /// Contributed (or substituted in) by an add-on.
-    AddOn(String),
+    AddOn { key: String },
     /// A consumable, scaled by the system's multiplier.
     Consumable,
 }
@@ -197,6 +199,7 @@ pub enum LineSource {
 /// One itemized line. Carries everything the UI or a PDF needs, so neither
 /// recomputes anything.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct QuoteLine {
     pub product_id: String,
     pub product_name: String,
@@ -224,6 +227,7 @@ pub struct QuoteLine {
 
 /// One area's full breakdown.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct AreaQuote {
     pub area_id: u64,
     pub name: String,
@@ -246,6 +250,7 @@ pub struct AreaQuote {
 
 /// The whole job, priced.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct JobQuote {
     pub areas: Vec<AreaQuote>,
     /// Σ area costs.
@@ -395,14 +400,24 @@ fn resolve_products<'a>(
             match op {
                 ProductOp::Add { product_id } => {
                     if !set.iter().any(|(id, _)| id == product_id) {
-                        set.push((product_id.clone(), LineSource::AddOn(add_on.key.clone())));
+                        set.push((
+                            product_id.clone(),
+                            LineSource::AddOn {
+                                key: add_on.key.clone(),
+                            },
+                        ));
                     }
                 }
                 ProductOp::Remove { product_id } => set.retain(|(id, _)| id != product_id),
                 ProductOp::Replace { product_id, with } => {
                     match set.iter().position(|(id, _)| id == product_id) {
                         Some(i) => {
-                            set[i] = (with.clone(), LineSource::AddOn(add_on.key.clone()));
+                            set[i] = (
+                                with.clone(),
+                                LineSource::AddOn {
+                                    key: add_on.key.clone(),
+                                },
+                            );
                         }
                         // Already replaced by an add-on declaring the same
                         // swap — agreement, not a failure.
@@ -693,4 +708,36 @@ pub fn rate_summary(card: &RateCard, system_key: &str) -> Result<(f64, f64), Pri
 /// lines without reaching for [`ProductClass`].
 pub fn is_consumable(p: &Product) -> bool {
     p.class == ProductClass::Consumable
+}
+
+// ---------- JSON boundary (the host prices through this) ----------
+
+/// Everything that can go wrong pricing from JSON, kept separate so the host
+/// can tell a bad rate card from a bad job from a pricing failure.
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum PricingJsonError {
+    #[error("rate card: {}", .0.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))]
+    Card(Vec<super::RateCardError>),
+    #[error("job input is not valid JSON: {0}")]
+    Job(String),
+    #[error("{0}")]
+    Pricing(#[from] PricingError),
+}
+
+/// Price a job from JSON and return the quote as JSON.
+///
+/// The single entry point the harness uses. Stateless on purpose: the card is
+/// re-parsed per call so there is no cached rate card to go stale against the
+/// data file, and "recompute on every change" needs no invalidation logic.
+///
+/// The result serializes but deliberately does NOT deserialize — a quote may
+/// be emitted for display and never read back as truth (invariant 5).
+#[cfg(feature = "serde")]
+pub fn price_job_json(card_json: &str, job_json: &str) -> Result<String, PricingJsonError> {
+    let card = super::from_json(card_json).map_err(PricingJsonError::Card)?;
+    let job: JobInput =
+        serde_json::from_str(job_json).map_err(|e| PricingJsonError::Job(e.to_string()))?;
+    let quote = price_job(&card, &job)?;
+    serde_json::to_string(&quote).map_err(|e| PricingJsonError::Job(e.to_string()))
 }

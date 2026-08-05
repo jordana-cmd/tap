@@ -42,6 +42,9 @@ pub use calc::{
     PricingContext, PricingError, QuoteLine, MARGIN_FLOOR,
 };
 
+#[cfg(feature = "serde")]
+pub use calc::{price_job_json, PricingJsonError};
+
 use std::collections::BTreeMap;
 
 #[cfg(feature = "serde")]

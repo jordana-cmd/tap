@@ -366,7 +366,12 @@ fn suppressing_an_add_on_contributed_product_zeroes_only_that_line() {
         .expect("still reported");
     assert!(quartz.suppressed);
     cents(quartz.extended_cost, 0.0, "quartz suppressed");
-    assert_eq!(quartz.source, LineSource::AddOn("double_broadcast".into()));
+    assert_eq!(
+        quartz.source,
+        LineSource::AddOn {
+            key: "double_broadcast".into()
+        }
+    );
 
     // The replacements are untouched.
     assert!(q
