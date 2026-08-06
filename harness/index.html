@@ -314,6 +314,69 @@
     text-transform: uppercase; letter-spacing: 0.5px;
   }
 
+  /* ---------- bid items: the grouping layer above areas ---------- */
+  #quoteGroupBar {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 14px 0 4px;
+  }
+  #quoteGroupBar[hidden] { display: none; }
+  #quoteGroupBtn { font-size: 11.5px; padding: 4px 10px; }
+  #quoteGroupBtn:disabled { opacity: 0.45; cursor: default; }
+  .qGroupHint { color: var(--text-faint); font-size: 11px; }
+  /* A refused grouping explains itself where the attempt was made. */
+  .qGroupError {
+    flex-basis: 100%; color: var(--accent-text); font-size: 11.5px; line-height: 1.5;
+    background: var(--accent-soft); border: 1px solid rgba(204,61,73,0.35);
+    border-radius: var(--radius-sm); padding: 7px 10px; max-width: 680px;
+  }
+  .qBidItem { margin-bottom: 14px; border: 1px solid var(--border); border-radius: var(--radius); }
+  /* An alternate is visibly set apart: it is not part of what was bid. */
+  .qBidItem.alternate { border-style: dashed; opacity: 0.92; }
+  .qBidHead {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+    background: var(--surface-2); border-bottom: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0; flex-wrap: wrap;
+  }
+  .qBidName {
+    font-weight: 600; font-size: 13px; min-width: 180px; flex: 1 1 180px;
+    background: transparent; border: 1px solid transparent; border-radius: 5px;
+    padding: 3px 6px; color: var(--text);
+  }
+  .qBidName:hover { border-color: var(--border); }
+  .qBidName:focus { background: var(--surface); border-color: var(--accent); outline: none; }
+  .qBidMeta { color: var(--text-dim); font-size: 11.5px; }
+  .qAltToggle { display: inline-flex; align-items: center; gap: 5px; color: var(--text-dim); font-size: 11.5px; }
+  .qUngroup {
+    border: none; background: none; color: var(--text-dim); cursor: pointer;
+    font-size: 11px; text-decoration: underline dotted; padding: 2px 4px;
+  }
+  .qUngroup:hover { color: var(--text); }
+  .qBidSum { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .qBidBody { padding: 10px 12px 4px; }
+  .qBidBody .qArea:last-child { margin-bottom: 8px; }
+  /* Priced correctly, but one scope narrative cannot describe two grits. */
+  .qMixedGrit {
+    font-size: 10.5px; color: var(--text-dim); background: var(--surface-3);
+    border-radius: 999px; padding: 2px 8px;
+  }
+  .qhScope {
+    align-self: flex-end; color: var(--text-faint); font-size: 10.5px;
+    text-transform: uppercase; letter-spacing: 0.6px; padding-bottom: 4px;
+  }
+  .qhScope[hidden] { display: none; }
+  #quoteAlternates { margin-top: 6px; }
+  #quoteAlternates[hidden] { display: none; }
+  .qAltTitle {
+    font-size: 11px; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 0.6px; margin-bottom: 6px;
+  }
+  .qAltRow, .qAltTotal {
+    display: flex; justify-content: space-between; gap: 16px; font-size: 12px;
+    padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    margin-bottom: 6px; background: var(--surface-2);
+  }
+  .qAltRow b, .qAltTotal b { font-variant-numeric: tabular-nums; }
+  .qAltTotal { background: none; border-style: dashed; color: var(--text-dim); }
+
   /* Per-area blocks */
   .qArea { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 10px; overflow: hidden; }
   .qAreaHead {
@@ -622,6 +685,8 @@
          confidently wrong one is not, so this replaces the numbers. -->
     <div id="quoteAlerts"></div>
 
+    <!-- Grouping toolbar for the bid item list below. -->
+    <div id="quoteGroupBar" hidden></div>
 
     <!-- THE HEADLINE: profit in dollars and the margin it is running at. -->
     <div id="quoteHeadline" hidden>
@@ -642,9 +707,23 @@
         <div class="qhLabel">Cost</div>
         <div class="qhVal qhMuted" id="qhCostVal">—</div>
       </div>
+      <!-- Which figure this IS. Present only when there are alternates: with
+           none, base bid is the whole job and the label would be noise. -->
+      <div class="qhScope" id="qhScope" hidden>base bid</div>
     </div>
 
     <div id="quoteAreas"></div>
+
+    <!-- Alternates are listed with their own totals and NEVER summed into the
+         headline above: "add double broadcast: +$X" is an offer, not part of
+         what was bid. -->
+    <div id="quoteAlternates" hidden>
+      <div class="qAltTitle">Alternates — not included in the base bid</div>
+      <div id="quoteAltList"></div>
+      <div class="qAltTotal">
+        <span>If all alternates are accepted</span><b id="qAltAll">—</b>
+      </div>
+    </div>
 
     <div id="quoteJobLevel" hidden>
       <div class="qjTitle">Job-level costs</div>
@@ -796,6 +875,13 @@ let quoteError = null;
 let collapsedAreas = new Set();      // session-only UI state
 let collapseDefaulted = false;       // has the >4-areas default been applied?
 let showUnusedConsumables = false;   // session-only
+// Bid items: the grouping layer between takeoff areas and the proposal.
+// INPUTS, persisted with the project alongside crew/hours — prices stay
+// derived. Each is { id, name, areaIds: [], alternate }.
+let bidItems = [];
+let nextBidId = 1;
+let selectedItems = new Set();       // session-only: ids ticked for grouping
+let groupError = null;               // last refused grouping, shown then cleared
 
 // ---- job identity (name/address) — best-effort extraction, manual override wins ----
 let jobName = null, jobAddress = null;              // null = never set
@@ -1595,6 +1681,7 @@ function exportJson() {
     pageScales: scalesToStored(),
     measurements: measurements.map(toStored),
     pricing: { ...jobPricing },
+    bidItems: bidItems.map(toStoredBidItem),
     minWidthOverride,
   }, null, 2);
 }
@@ -1603,6 +1690,7 @@ function importJson(str) {
   scalesFromStored(data.pageScales ?? []);
   measurements = (data.measurements ?? []).map(fromStored);
   jobPricing = { ...DEFAULT_PRICING, ...(data.pricing ?? {}) };
+  loadBidItems(data.bidItems);
   minWidthOverride = data.minWidthOverride ?? null;
   jobName = data.jobName ?? null; jobAddress = data.jobAddress ?? null;
   jobNameSource = data.jobNameSource ?? null; jobAddressSource = data.jobAddressSource ?? null;
@@ -1622,6 +1710,7 @@ function projectRecord() {
     pageScales: scalesToStored(),
     measurements: measurements.map(toStored),
     pricing: { ...jobPricing },
+    bidItems: bidItems.map(toStoredBidItem),
     minWidthOverride, updatedAt: Date.now(),
   };
 }
@@ -1892,6 +1981,9 @@ function buildMeasRow(m) {
   del.addEventListener('click', () => {
     measurements = measurements.filter(x => x.id !== m.id);
     if (hoverMeas === m.id) hoverMeas = null;
+    // Never leave a bid item pointing at an area that is gone, or an item
+    // with nothing under it.
+    normalizeBidItems();
     renderMeasList(); render(); markDirty();
   });
   row.addEventListener('mouseenter', () => { hoverMeas = m.id; render(); });
@@ -2142,6 +2234,113 @@ function quoteAreas() {
   };
 }
 
+// ---- bid items ----
+//
+// An area is a takeoff unit; a bid item is a line on the proposal. The two are
+// not the same shape — a bathroom on page 7 and a corridor on page 22 may be
+// one "Restrooms" line at one price — so grouping lives here, above pricing,
+// and never changes how an area is priced.
+
+/// Re-establish the two invariants after ANY change to the measurement set:
+/// every area is in exactly one bid item, and no item references an area that
+/// is gone. Idempotent, so it is safe to call defensively.
+///
+/// This is also the whole of the legacy migration: a project saved before bid
+/// items existed loads with none, and every area is handed its own, named from
+/// the area. There is no migration branch because there is nothing to migrate.
+function normalizeBidItems() {
+  const areas = measurements.filter(m => m.kind === 'area');
+  const live = new Set(areas.map(m => m.id));
+  // A deleted area leaves a dangling id; drop it, and drop any item that is
+  // left with nothing. An item is a name for some work — with no work under
+  // it, it is not an empty item, it is not an item.
+  for (const it of bidItems) it.areaIds = it.areaIds.filter(id => live.has(id));
+  bidItems = bidItems.filter(it => it.areaIds.length > 0);
+
+  const claimed = new Set(bidItems.flatMap(it => it.areaIds));
+  for (const m of areas) {
+    if (claimed.has(m.id)) continue;
+    bidItems.push({ id: nextBidId++, name: m.name, areaIds: [m.id], alternate: false });
+  }
+  for (const id of [...selectedItems]) {
+    if (!bidItems.some(it => it.id === id)) selectedItems.delete(id);
+  }
+}
+
+/// Stored shape — inputs only, no price. Mirrors `engine-core`'s `BidItem`
+/// field-for-field so the persisted record and the engine's input are the
+/// same object under two naming conventions.
+const toStoredBidItem = it => ({
+  id: it.id, name: it.name, areaIds: [...it.areaIds], alternate: it.alternate === true,
+});
+
+/// Restore grouping. A project saved before bid items existed has none, and
+/// `normalizeBidItems` then hands every area its own — so a legacy project
+/// loads to exactly the quote it had, with no migration step.
+function loadBidItems(stored) {
+  bidItems = (stored ?? []).map(r => ({
+    id: r.id,
+    name: r.name ?? '',
+    areaIds: [...(r.areaIds ?? [])],
+    alternate: r.alternate === true,
+  }));
+  nextBidId = bidItems.reduce((mx, it) => Math.max(mx, it.id), 0) + 1;
+  selectedItems = new Set();
+  groupError = null;
+  normalizeBidItems();
+}
+
+const bidItemOf = areaId => bidItems.find(it => it.areaIds.includes(areaId)) ?? null;
+const areaById = id => measurements.find(m => m.id === id) ?? null;
+
+/// Bid items in presentation order: base bid first, then alternates. An
+/// alternate is an offer rather than part of what was bid, so it never sits
+/// among the work being quoted.
+function orderedBidItems() {
+  return [...bidItems.filter(i => !i.alternate), ...bidItems.filter(i => i.alternate)];
+}
+
+/// Merge the ticked items into one. Refused — with a reason — when the members
+/// would not share a system: one lump sum carries one scope narrative, and a
+/// mixed item would hide an epoxy area inside a grind-and-seal description.
+function groupSelected() {
+  groupError = null;
+  const chosen = orderedBidItems().filter(it => selectedItems.has(it.id));
+  if (chosen.length < 2) return;
+  const areaIds = chosen.flatMap(it => it.areaIds);
+  const systems = [...new Set(areaIds.map(id => areaById(id)?.systemType ?? null))];
+  if (systems.length > 1) {
+    const label = s => (s ? (systemLabel(s) ?? s) : 'Unassigned');
+    groupError = `These areas do not share a system (${systems.map(label).join(', ')}). `
+      + 'A bid item is presented as one lump sum with one scope narrative, so its '
+      + 'areas must all be the same system.';
+    renderQuoteView();
+    return;
+  }
+  const keep = chosen[0];
+  keep.areaIds = areaIds;
+  // An alternate merged with base work stays out of the base bid only if the
+  // item it lands in says so; the item being kept owns that flag.
+  bidItems = bidItems.filter(it => it === keep || !selectedItems.has(it.id));
+  selectedItems.clear();
+  markDirty(); repriceQuote(); renderQuoteView();
+}
+
+/// Split an item back into one per member area, named from each area. The
+/// exact inverse of grouping, so nothing is trapped.
+function ungroupItem(item) {
+  const idx = bidItems.indexOf(item);
+  const singles = item.areaIds.map(id => ({
+    id: nextBidId++,
+    name: areaById(id)?.name ?? item.name,
+    areaIds: [id],
+    alternate: item.alternate,
+  }));
+  bidItems.splice(idx, 1, ...singles);
+  selectedItems.delete(item.id);
+  markDirty(); repriceQuote(); renderQuoteView();
+}
+
 /// The plausibility band, straight from the engine — never literals here.
 /// Filled after `init()`, not at module scope: every wasm export traps if it
 /// is called before the module is instantiated.
@@ -2166,6 +2365,7 @@ const gritApplies = systemKey => gritLevelsFor(systemKey).length > 0;
 /// perimeter, which is geometry, not money.
 function buildJobInput() {
   const { priced } = quoteAreas();
+  const pricedIds = new Set(priced.map(m => m.id));
   return {
     areas: priced.map(m => {
       const f = scaleOf(m.page);
@@ -2186,6 +2386,17 @@ function buildJobInput() {
         manual_costs: m.manualCosts ?? {},
       };
     }),
+    // Only areas the engine will see. An unassigned area is not priced, so an
+    // item naming one would be rejected for a dangling reference -- and an
+    // item whose areas are ALL unassigned has nothing to price at all.
+    bid_items: orderedBidItems()
+      .map(it => ({
+        id: it.id,
+        name: it.name,
+        area_ids: it.areaIds.filter(id => pricedIds.has(id)),
+        alternate: it.alternate,
+      }))
+      .filter(it => it.area_ids.length > 0),
     job_costs: {
       travel: jobPricing.travel, permits: jobPricing.permits,
       equipment: jobPricing.equipment, mobilization: jobPricing.mobilization,
@@ -2200,6 +2411,9 @@ function buildJobInput() {
 function repriceQuote() {
   lastQuote = null;
   quoteError = null;
+  // Cheap, idempotent, and the one place guaranteed to run before every
+  // price: a new area or a deleted one can never reach the engine ungrouped.
+  normalizeBidItems();
   if (!rateCardText) return;
   const job = buildJobInput();
   if (!job.areas.length) return;
@@ -2231,6 +2445,7 @@ function renderQuoteView() {
   renderQuoteAlerts();
   renderQuoteHeadline();
   renderQuoteAreaList();
+  renderAlternates();
   renderJobLevel();
 
   if (focusKey) {
@@ -2284,6 +2499,33 @@ function renderQuoteAlerts() {
   }
 }
 
+/// Alternates, listed apart with their own totals. The headline stays the base
+/// bid; accepting an alternate is the customer's decision, not a number we
+/// quietly fold into what was bid.
+function renderAlternates() {
+  const box = $('quoteAlternates');
+  const alts = lastQuote ? lastQuote.bid_items.filter(b => b.alternate) : [];
+  box.hidden = alts.length === 0;
+  $('qhScope').hidden = alts.length === 0;
+  if (box.hidden) return;
+
+  const list = $('quoteAltList');
+  list.textContent = '';
+  for (const b of alts) {
+    const row = document.createElement('div');
+    row.className = 'qAltRow';
+    row.dataset.bidItemId = String(b.id);
+    const nm = document.createElement('span');
+    nm.textContent = b.name;
+    const amt = document.createElement('b');
+    // A plus sign, because that is what it does to the price if accepted.
+    amt.textContent = `+${money(b.price)}`;
+    row.append(nm, amt);
+    list.appendChild(row);
+  }
+  $('qAltAll').textContent = `+${money(lastQuote.alternate_price)}`;
+}
+
 function renderQuoteHeadline() {
   const head = $('quoteHeadline');
   if (!lastQuote) { head.hidden = true; return; }
@@ -2317,6 +2559,7 @@ function renderQuoteAreaList() {
     empty.id = 'quoteEmpty';
     empty.textContent = 'No area measurements yet — draw an area on the takeoff to quote it.';
     wrap.appendChild(empty);
+    renderGroupBar();
     return;
   }
   // Past about four areas a twelve-area job stops being navigable, so default
@@ -2325,8 +2568,145 @@ function renderQuoteAreaList() {
     collapseDefaulted = true;
     if (all.length > 4) for (const m of all) collapsedAreas.add(m.id);
   }
-  const byId = new Map((lastQuote ? lastQuote.areas : []).map(a => [a.area_id, a]));
-  for (const m of all) wrap.appendChild(buildAreaBlock(m, byId.get(m.id)));
+  const aqById = new Map((lastQuote ? lastQuote.areas : []).map(a => [a.area_id, a]));
+  const itemById = new Map((lastQuote ? lastQuote.bid_items : []).map(b => [b.id, b]));
+  for (const it of orderedBidItems()) {
+    wrap.appendChild(buildBidItemBlock(it, itemById.get(it.id), aqById));
+  }
+  renderGroupBar();
+}
+
+/// The grouping toolbar: how many items are ticked, and the action. Also where
+/// a refused grouping explains itself, since that is where the attempt was
+/// made.
+function renderGroupBar() {
+  const bar = $('quoteGroupBar');
+  bar.textContent = '';
+  bar.hidden = bidItems.length < 2 && !groupError;
+  if (bar.hidden) return;
+
+  const btn = document.createElement('button');
+  btn.id = 'quoteGroupBtn';
+  btn.type = 'button';
+  btn.dataset.qkey = 'group-btn';
+  btn.disabled = selectedItems.size < 2;
+  btn.textContent = selectedItems.size < 2
+    ? 'Group into one bid item'
+    : `Group ${selectedItems.size} into one bid item`;
+  btn.addEventListener('click', groupSelected);
+  bar.appendChild(btn);
+
+  const hint = document.createElement('span');
+  hint.className = 'qGroupHint';
+  hint.textContent = selectedItems.size < 2
+    ? 'Tick two or more to present them as one line at one price.'
+    : '';
+  bar.appendChild(hint);
+
+  if (groupError) {
+    const err = document.createElement('div');
+    err.className = 'qGroupError';
+    err.id = 'quoteGroupError';
+    err.textContent = groupError;
+    bar.appendChild(err);
+  }
+}
+
+/// One customer-facing line: its name, its lump sum, and its member areas
+/// nested inside with the per-area itemization untouched.
+function buildBidItemBlock(it, biq, aqById) {
+  const block = document.createElement('div');
+  block.className = 'qBidItem';
+  if (it.alternate) block.classList.add('alternate');
+  block.dataset.bidItemId = String(it.id);
+
+  const head = document.createElement('div');
+  head.className = 'qBidHead';
+
+  const tick = document.createElement('input');
+  tick.type = 'checkbox';
+  tick.checked = selectedItems.has(it.id);
+  tick.dataset.qkey = `pick-${it.id}`;
+  tick.title = 'select for grouping';
+  tick.addEventListener('change', () => {
+    if (tick.checked) selectedItems.add(it.id); else selectedItems.delete(it.id);
+    groupError = null;
+    renderQuoteView();
+  });
+
+  const name = document.createElement('input');
+  name.className = 'qBidName';
+  name.value = it.name;
+  name.dataset.qkey = `name-${it.id}`;
+  name.title = 'the name that appears on the proposal';
+  // No re-render on rename: nothing else on screen derives from the name, and
+  // rebuilding the view under a field being typed into is how a keystroke
+  // gets lost.
+  name.addEventListener('input', () => { it.name = name.value; markDirty(); });
+
+  const meta = document.createElement('span');
+  meta.className = 'qBidMeta';
+  const sysKey = biq ? biq.system_key : null;
+  const sysText = sysKey ? (systemLabel(sysKey) ?? sysKey) : '';
+  meta.textContent = it.areaIds.length > 1
+    ? [`${it.areaIds.length} areas`, sysText].filter(Boolean).join(' · ')
+    : sysText;
+  head.append(tick, name, meta);
+
+  // Two areas at different grits price correctly -- each carries its own
+  // hours -- but one lump sum under one grit-bearing name would describe work
+  // that is not what was priced, and no number here reveals that.
+  if (biq && biq.mixed_grit) {
+    const warn = document.createElement('span');
+    warn.className = 'qMixedGrit';
+    warn.textContent = biq.grit_levels.length
+      ? `mixed grit: ${biq.grit_levels.join(', ')}`
+      : 'mixed grit';
+    warn.title = 'Priced correctly — each area keeps its own hours — but one scope '
+      + 'narrative cannot describe two grit specifications.';
+    head.appendChild(warn);
+  }
+
+  const alt = document.createElement('label');
+  alt.className = 'qAltToggle';
+  const altBox = document.createElement('input');
+  altBox.type = 'checkbox';
+  altBox.checked = it.alternate === true;
+  altBox.dataset.qkey = `alt-${it.id}`;
+  altBox.addEventListener('change', () => {
+    it.alternate = altBox.checked;
+    markDirty(); repriceQuote(); renderQuoteView();
+  });
+  alt.append(altBox, document.createTextNode('Alternate'));
+  head.appendChild(alt);
+
+  if (it.areaIds.length > 1) {
+    const un = document.createElement('button');
+    un.className = 'qUngroup';
+    un.type = 'button';
+    un.dataset.qkey = `ungroup-${it.id}`;
+    un.textContent = 'Ungroup';
+    un.addEventListener('click', () => ungroupItem(it));
+    head.appendChild(un);
+  }
+
+  const sum = document.createElement('span');
+  sum.className = 'qBidSum';
+  sum.textContent = biq ? money(biq.price) : '—';
+  sum.title = 'lump sum for this line';
+  head.appendChild(sum);
+  block.appendChild(head);
+
+  // Members keep the existing per-area block whole: itemization, suppression,
+  // add-ons, crew/hours and grit are untouched by the layer above them.
+  const body = document.createElement('div');
+  body.className = 'qBidBody';
+  for (const id of it.areaIds) {
+    const m = areaById(id);
+    if (m) body.appendChild(buildAreaBlock(m, aqById.get(id)));
+  }
+  block.appendChild(body);
+  return block;
 }
 
 function buildAreaBlock(m, aq) {
@@ -3397,6 +3777,7 @@ async function loadPdf(data, name) {
     measurements = proj.measurements.map(fromStored);
     // Legacy projects predate the pricing block; defaults, nothing assumed.
     jobPricing = { ...DEFAULT_PRICING, ...(proj.pricing ?? {}) };
+    loadBidItems(proj.bidItems);
     collapsedAreas = new Set(); collapseDefaulted = false;
     minWidthOverride = proj.minWidthOverride ?? null;
     jobName = proj.jobName ?? null; jobAddress = proj.jobAddress ?? null;
@@ -3408,6 +3789,7 @@ async function loadPdf(data, name) {
     pageScales.clear(); pageScales.set(0, { fpi: 4.0, source: 'synthetic' });
     measurements = []; nextMeasId = 1;
     jobPricing = { ...DEFAULT_PRICING };
+    loadBidItems(null);
     collapsedAreas = new Set(); collapseDefaulted = false;
     measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
     setSaveState('—'); // no project until the first mutation
@@ -3590,6 +3972,8 @@ window.__harness = {
   rateCardError: () => rateCardError,
   jobInput: () => buildJobInput(),
   productivityBand: () => productivity_band_json(),
+  bidItems: () => bidItems,
+  groupError: () => groupError,
   jobPricing: () => jobPricing,
   loadRateCard: () => loadRateCard(),
   repriceQuote: () => { repriceQuote(); renderQuoteView(); },

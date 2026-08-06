@@ -23,9 +23,9 @@
 
 use engine_core::pricing::{
     consumable_rate_per_sf, from_json, material_rate_per_sf, price_area, price_from_cost,
-    price_job, AreaInput, JobCosts, JobInput, LaborInput, LineSource, PricingContext, PricingError,
-    Productivity, RateCard, WageSource, MARGIN_FLOOR, SF_PER_MAN_HOUR_MAX, SF_PER_MAN_HOUR_MIN,
-    SF_PER_MAN_HOUR_TYPICAL,
+    price_job, AreaInput, BidItem, JobCosts, JobInput, LaborInput, LineSource, PricingContext,
+    PricingError, Productivity, RateCard, WageSource, MARGIN_FLOOR, SF_PER_MAN_HOUR_MAX,
+    SF_PER_MAN_HOUR_MIN, SF_PER_MAN_HOUR_TYPICAL,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -261,6 +261,9 @@ fn std_ctx(c: &RateCard) -> PricingContext<'_> {
 fn job_with(areas: Vec<AreaInput>, margin: f64) -> JobInput {
     JobInput {
         areas,
+        // No grouping: the engine synthesizes one bid item per area, which is
+        // exactly how every quote behaved before this layer existed.
+        bid_items: vec![],
         job_costs: JobCosts::default(),
         margin,
         wage_source: WageSource::Standard,
@@ -1129,3 +1132,525 @@ fn a_zero_square_foot_area_is_a_ratio_of_zero_not_a_missing_one() {
     assert_eq!(q.productivity, Productivity::Low);
 }
 
+// ---------- bid items ----------
+//
+// The layer between takeoff units and what a customer buys. An area is a
+// measurement; a bid item is a line on the proposal, and the two are not the
+// same shape: a bathroom on page 7 and a corridor on page 22 may be one
+// "Restrooms" line at one price.
+
+fn area_id(id: u64, system: &str, sf: f64, crew: f64, hours: f64) -> AreaInput {
+    let mut a = area_of(system, sf, crew, hours);
+    a.id = id;
+    a.name = format!("{system} {id}");
+    a
+}
+
+fn item(id: u64, name: &str, area_ids: &[u64], alternate: bool) -> BidItem {
+    BidItem {
+        id,
+        name: name.into(),
+        area_ids: area_ids.to_vec(),
+        alternate,
+    }
+}
+
+fn job_grouped(areas: Vec<AreaInput>, items: Vec<BidItem>, margin: f64) -> JobInput {
+    let mut j = job_with(areas, margin);
+    j.bid_items = items;
+    j
+}
+
+#[test]
+fn a_job_that_names_no_bid_items_gets_one_per_area() {
+    // The compatibility guarantee: every project saved before this layer
+    // existed deserializes with an empty bid_items and must price identically.
+    let c = card();
+    let q = price_job(
+        &c,
+        &job_with(
+            vec![
+                area_id(1, "epoxy", 1000.0, 2.0, 8.0),
+                area_id(2, "polish", 2000.0, 3.0, 10.0),
+            ],
+            0.35,
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(q.bid_items.len(), 2, "one item per area, synthesized");
+    for (b, a) in q.bid_items.iter().zip(&q.areas) {
+        assert_eq!(b.area_ids, vec![a.area_id]);
+        assert_eq!(b.name, a.name, "named from the area it came from");
+        assert!(!b.alternate, "nothing is an alternate by default");
+        cents(b.cost, a.cost, "a lone member's cost IS the item's cost");
+    }
+    // And the job figures are untouched by the grouping layer.
+    cents(
+        q.area_cost,
+        q.areas.iter().map(|a| a.cost).sum::<f64>(),
+        "area cost",
+    );
+}
+
+#[test]
+fn a_single_member_item_prices_identically_to_the_area_ungrouped() {
+    let c = card();
+    let areas = vec![area_id(1, "epoxy", 1000.0, 2.0, 8.0)];
+    let loose = price_job(&c, &job_with(areas.clone(), 0.35)).unwrap();
+    let named = price_job(
+        &c,
+        &job_grouped(areas, vec![item(9, "Front lobby", &[1], false)], 0.35),
+    )
+    .unwrap();
+
+    // Naming a line of work is a labelling act, not a pricing one. Exact
+    // equality: renaming must not move a cent.
+    assert_eq!(named.cost, loose.cost);
+    assert_eq!(named.price, loose.price);
+    assert_eq!(named.profit, loose.profit);
+    assert_eq!(named.bid_items[0].price, loose.bid_items[0].price);
+    assert_eq!(named.bid_items[0].name, "Front lobby");
+    assert_eq!(loose.bid_items[0].name, "epoxy 1", "defaulted from the area");
+}
+
+#[test]
+fn a_bid_items_total_is_the_sum_of_its_members_across_pages() {
+    // Members are not page-scoped -- that is the entire point. Nothing in the
+    // pricing layer knows what page an area came from.
+    let c = card();
+    let areas = vec![
+        area_id(1, "polish", 400.0, 2.0, 6.0),
+        area_id(2, "polish", 250.0, 1.0, 4.0),
+        area_id(3, "epoxy", 1000.0, 2.0, 8.0),
+    ];
+    let q = price_job(
+        &c,
+        &job_grouped(
+            areas,
+            vec![
+                item(10, "Restrooms", &[1, 2], false),
+                item(11, "Warehouse", &[3], false),
+            ],
+            0.35,
+        ),
+    )
+    .unwrap();
+
+    let restrooms = &q.bid_items[0];
+    let a1 = q.areas.iter().find(|a| a.area_id == 1).unwrap();
+    let a2 = q.areas.iter().find(|a| a.area_id == 2).unwrap();
+    cents(restrooms.cost, a1.cost + a2.cost, "lump sum cost");
+    cents(restrooms.area_sf, 650.0, "square footage rolls up");
+    cents(restrooms.man_hours, 12.0 + 4.0, "so do man-hours");
+    assert_eq!(restrooms.system_key, "polish");
+    // The lump sum is the members' cost at the job margin.
+    cents(
+        restrooms.price,
+        restrooms.cost / (1.0 - 0.35),
+        "priced at the job margin like anything else",
+    );
+    cents(
+        restrooms.price - restrooms.cost,
+        restrooms.profit,
+        "profit closes",
+    );
+}
+
+#[test]
+fn mixing_systems_in_one_bid_item_is_rejected_by_name() {
+    // One lump sum carries one scope narrative. A mixed item would hide an
+    // epoxy area inside a grind-and-seal description, and no number on the
+    // page would reveal it.
+    let c = card();
+    let err = price_job(
+        &c,
+        &job_grouped(
+            vec![
+                area_id(1, "polish", 400.0, 2.0, 6.0),
+                area_id(2, "epoxy", 400.0, 2.0, 6.0),
+            ],
+            vec![item(10, "Ground floor", &[1, 2], false)],
+            0.35,
+        ),
+    )
+    .unwrap_err();
+
+    match err {
+        PricingError::BidItemMixedSystems {
+            ref bid_item,
+            ref systems,
+        } => {
+            assert_eq!(bid_item, "Ground floor");
+            assert_eq!(systems, "epoxy, polish", "both named, sorted");
+        }
+        other => panic!("expected BidItemMixedSystems, got {other}"),
+    }
+    assert!(
+        err.to_string().contains("scope narrative"),
+        "the message must say WHY, not just refuse: {err}"
+    );
+}
+
+#[test]
+fn an_area_may_belong_to_only_one_bid_item() {
+    let c = card();
+    let err = price_job(
+        &c,
+        &job_grouped(
+            vec![area_id(1, "polish", 400.0, 2.0, 6.0)],
+            vec![
+                item(10, "Restrooms", &[1], false),
+                item(11, "Corridors", &[1], false),
+            ],
+            0.35,
+        ),
+    )
+    .unwrap_err();
+    match err {
+        PricingError::AreaInTwoBidItems {
+            ref first,
+            ref second,
+            ..
+        } => {
+            assert_eq!(first, "Restrooms");
+            assert_eq!(second, "Corridors", "both claimants named");
+        }
+        other => panic!("expected AreaInTwoBidItems, got {other}"),
+    }
+}
+
+#[test]
+fn a_bid_item_that_is_empty_or_names_a_missing_area_is_rejected() {
+    let c = card();
+    let areas = vec![area_id(1, "polish", 400.0, 2.0, 6.0)];
+
+    let empty = price_job(
+        &c,
+        &job_grouped(areas.clone(), vec![item(10, "Nothing", &[], false)], 0.35),
+    )
+    .unwrap_err();
+    assert!(matches!(empty, PricingError::EmptyBidItem { .. }), "{empty}");
+
+    // The dangling-reference case: an area deleted out from under an item.
+    let dangling = price_job(
+        &c,
+        &job_grouped(areas, vec![item(10, "Ghost", &[1, 77], false)], 0.35),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(dangling, PricingError::BidItemUnknownArea { area_id: 77, .. }),
+        "{dangling}"
+    );
+}
+
+#[test]
+fn duplicate_bid_item_ids_are_rejected() {
+    let c = card();
+    let err = price_job(
+        &c,
+        &job_grouped(
+            vec![
+                area_id(1, "polish", 400.0, 2.0, 6.0),
+                area_id(2, "polish", 400.0, 2.0, 6.0),
+            ],
+            vec![item(10, "A", &[1], false), item(10, "B", &[2], false)],
+            0.35,
+        ),
+    )
+    .unwrap_err();
+    assert!(matches!(err, PricingError::DuplicateBidItem(10)), "{err}");
+}
+
+#[test]
+fn partially_grouped_jobs_synthesize_items_only_for_the_leftovers() {
+    let c = card();
+    let q = price_job(
+        &c,
+        &job_grouped(
+            vec![
+                area_id(1, "polish", 400.0, 2.0, 6.0),
+                area_id(2, "polish", 250.0, 1.0, 4.0),
+                area_id(3, "epoxy", 1000.0, 2.0, 8.0),
+            ],
+            vec![item(10, "Restrooms", &[1, 2], false)],
+            0.35,
+        ),
+    )
+    .unwrap();
+    assert_eq!(q.bid_items.len(), 2);
+    assert_eq!(q.bid_items[0].name, "Restrooms", "explicit items come first");
+    assert_eq!(q.bid_items[1].area_ids, vec![3], "the leftover got its own");
+    assert!(
+        q.bid_items[1].id > 10,
+        "synthesized ids are allocated above every explicit one so they cannot collide"
+    );
+    // Every area is in exactly one item, always.
+    let mut covered: Vec<u64> = q.bid_items.iter().flat_map(|b| b.area_ids.clone()).collect();
+    covered.sort_unstable();
+    assert_eq!(covered, vec![1, 2, 3], "no orphans, no duplicates");
+}
+
+// ---------- alternates ----------
+
+#[test]
+fn an_alternate_is_priced_but_excluded_from_the_base_bid() {
+    let c = card();
+    let areas = vec![
+        area_id(1, "epoxy", 1000.0, 2.0, 8.0),
+        area_id(2, "polish", 500.0, 2.0, 5.0),
+    ];
+    let base_only = price_job(
+        &c,
+        &job_grouped(
+            areas.clone(),
+            vec![item(10, "Warehouse", &[1], false)],
+            0.35,
+        ),
+    )
+    .unwrap();
+    // ^ area 2 is synthesized as a BASE item here.
+
+    let with_alt = price_job(
+        &c,
+        &job_grouped(
+            areas,
+            vec![
+                item(10, "Warehouse", &[1], false),
+                item(11, "Add: polished office", &[2], true),
+            ],
+            0.35,
+        ),
+    )
+    .unwrap();
+
+    let alt = with_alt.bid_items.iter().find(|b| b.alternate).unwrap();
+    // The base total drops by EXACTLY the alternate's price.
+    cents(
+        with_alt.price,
+        base_only.price - alt.price,
+        "flagging an item as an alternate removes exactly its lump sum",
+    );
+    cents(with_alt.alternate_price, alt.price, "and reports it apart");
+    cents(with_alt.alternate_cost, alt.cost, "cost too");
+    cents(with_alt.alternate_profit, alt.profit, "and profit");
+    // It is still fully priced -- an alternate is an offer, not a stub.
+    assert!(alt.price > 0.0 && alt.cost > 0.0);
+    assert!(
+        !with_alt.areas.iter().any(|a| a.area_id == 2 && a.cost == 0.0),
+        "the alternate's area is priced in full"
+    );
+}
+
+#[test]
+fn margin_applies_uniformly_to_base_and_alternate_items() {
+    let c = card();
+    let q = price_job(
+        &c,
+        &job_grouped(
+            vec![
+                area_id(1, "epoxy", 1000.0, 2.0, 8.0),
+                area_id(2, "polish", 500.0, 2.0, 5.0),
+                area_id(3, "seal", 800.0, 2.0, 4.0),
+            ],
+            vec![
+                item(10, "Base", &[1], false),
+                item(11, "Alt A", &[2], true),
+                item(12, "Alt B", &[3], true),
+            ],
+            0.35,
+        ),
+    )
+    .unwrap();
+
+    // Every item, base or alternate, round-trips the SAME margin.
+    for b in &q.bid_items {
+        assert!(
+            (b.profit / b.price - 0.35).abs() < 1e-12,
+            "{} realized {} not 0.35",
+            b.name,
+            b.profit / b.price
+        );
+    }
+    // And so does the base bid as a whole.
+    cents(q.realized_margin(), 0.35, "base bid margin");
+    cents(
+        q.alternate_profit / q.alternate_price,
+        0.35,
+        "alternates blended margin",
+    );
+}
+
+#[test]
+fn job_costs_sit_in_the_base_bid_and_the_lump_sums_add_up() {
+    // An alternate must not carry a share of mobilization: whether it is
+    // accepted cannot change what the base bid costs to mobilize.
+    let c = card();
+    let mut job = job_grouped(
+        vec![
+            area_id(1, "epoxy", 1000.0, 2.0, 8.0),
+            area_id(2, "polish", 500.0, 2.0, 5.0),
+        ],
+        vec![
+            item(10, "Warehouse", &[1], false),
+            item(11, "Add: office", &[2], true),
+        ],
+        0.35,
+    );
+    job.job_costs = JobCosts {
+        travel: 250.0,
+        permits: 100.0,
+        equipment: 0.0,
+        mobilization: 400.0,
+    };
+    let q = price_job(&c, &job).unwrap();
+
+    let base_sum: f64 = q
+        .bid_items
+        .iter()
+        .filter(|b| !b.alternate)
+        .map(|b| b.price)
+        .sum();
+    // THE PROPOSAL ARITHMETIC: lump sums plus marked-up job costs is the price.
+    cents(
+        base_sum + q.job_cost_price,
+        q.price,
+        "base lump sums + marked-up job costs = the quoted price",
+    );
+    cents(q.job_cost_price, 750.0 / (1.0 - 0.35), "job costs marked up");
+    // The alternate's lump sum carries none of it.
+    let alt = q.bid_items.iter().find(|b| b.alternate).unwrap();
+    let a2 = q.areas.iter().find(|a| a.area_id == 2).unwrap();
+    cents(alt.cost, a2.cost, "alternate cost is its areas, nothing else");
+}
+
+#[test]
+fn base_bid_productivity_excludes_alternate_hours() {
+    // The headline describes the base bid, so the rate beside it must too --
+    // blending in hours for work that may never happen describes a job nobody
+    // is going to run.
+    let c = card();
+    let q = price_job(
+        &c,
+        &job_grouped(
+            vec![
+                area_id(1, "epoxy", 1000.0, 2.0, 8.0),  // 16 mh
+                area_id(2, "polish", 500.0, 10.0, 10.0), // 100 mh, absurdly slow
+            ],
+            vec![
+                item(10, "Base", &[1], false),
+                item(11, "Alt", &[2], true),
+            ],
+            0.35,
+        ),
+        )
+    .unwrap();
+    cents(q.man_hours, 16.0, "base hours only");
+    cents(q.area_sf, 1000.0, "base square footage only");
+    cents(q.sf_per_man_hour.unwrap(), 62.5, "base bid rate");
+    // The alternate's own area still carries its (implausible) readout.
+    let a2 = q.areas.iter().find(|a| a.area_id == 2).unwrap();
+    cents(a2.sf_per_man_hour.unwrap(), 5.0, "per-area readout unaffected");
+    assert_eq!(a2.productivity, Productivity::Low);
+}
+
+#[test]
+fn a_job_that_is_entirely_alternates_has_a_base_bid_of_just_its_job_costs() {
+    // Degenerate but reachable: everything optional. The base must not become
+    // NaN or silently absorb the alternates.
+    let c = card();
+    let mut job = job_grouped(
+        vec![area_id(1, "epoxy", 1000.0, 2.0, 8.0)],
+        vec![item(10, "Everything optional", &[1], true)],
+        0.35,
+    );
+    job.job_costs = JobCosts {
+        travel: 100.0,
+        ..JobCosts::default()
+    };
+    let q = price_job(&c, &job).unwrap();
+    cents(q.area_cost, 0.0, "no base areas");
+    cents(q.cost, 100.0, "just the job costs");
+    cents(q.price, 100.0 / 0.65, "priced normally");
+    assert!(q.alternate_price > 0.0, "the alternate is still quoted");
+    assert_eq!(q.sf_per_man_hour, None, "no base work to rate");
+    assert_eq!(q.productivity, Productivity::Unknown);
+}
+
+// ---------- mixed grit ----------
+
+#[test]
+fn a_bid_item_mixing_grit_levels_prices_correctly_and_says_so() {
+    // Grouping is ALLOWED -- each area carries its own hours, so the sum is
+    // right. It is flagged because one lump sum under one grit-bearing name
+    // would describe work that is not what was priced, and no number on the
+    // page reveals that.
+    let c = card();
+    let mut a1 = area_id(1, "polish", 400.0, 2.0, 6.0);
+    a1.grit_level = Some("400".into());
+    let mut a2 = area_id(2, "polish", 250.0, 1.0, 4.0);
+    a2.grit_level = Some("800".into());
+
+    let q = price_job(
+        &c,
+        &job_grouped(
+            vec![a1, a2],
+            vec![item(10, "Showroom", &[1, 2], false)],
+            0.35,
+        ),
+    )
+    .unwrap();
+    let b = &q.bid_items[0];
+    assert!(b.mixed_grit, "flagged");
+    assert_eq!(b.grit_levels, vec!["400", "800"], "both levels named");
+    let sum: f64 = q.areas.iter().map(|a| a.cost).sum();
+    cents(b.cost, sum, "still exactly the sum of its members");
+}
+
+#[test]
+fn one_grit_across_every_member_is_not_mixed() {
+    let c = card();
+    let mut a1 = area_id(1, "polish", 400.0, 2.0, 6.0);
+    a1.grit_level = Some("800".into());
+    let mut a2 = area_id(2, "polish", 250.0, 1.0, 4.0);
+    a2.grit_level = Some("800".into());
+    let q = price_job(
+        &c,
+        &job_grouped(vec![a1, a2], vec![item(10, "Showroom", &[1, 2], false)], 0.35),
+    )
+    .unwrap();
+    assert!(!q.bid_items[0].mixed_grit);
+    assert_eq!(q.bid_items[0].grit_levels, vec!["800"]);
+
+    // Neither is no grit at all, which is the overwhelmingly common case.
+    let plain = price_job(
+        &c,
+        &job_grouped(
+            vec![area_id(1, "polish", 400.0, 2.0, 6.0), area_id(2, "polish", 250.0, 1.0, 4.0)],
+            vec![item(10, "Showroom", &[1, 2], false)],
+            0.35,
+        ),
+    )
+    .unwrap();
+    assert!(!plain.bid_items[0].mixed_grit);
+    assert!(plain.bid_items[0].grit_levels.is_empty());
+}
+
+#[test]
+fn a_grit_specified_on_only_some_members_is_mixed_too() {
+    // The subtle one: "800 grit" on one area and nothing on the other is
+    // still two different specifications sharing a name.
+    let c = card();
+    let mut a1 = area_id(1, "polish", 400.0, 2.0, 6.0);
+    a1.grit_level = Some("800".into());
+    let a2 = area_id(2, "polish", 250.0, 1.0, 4.0);
+    let q = price_job(
+        &c,
+        &job_grouped(vec![a1, a2], vec![item(10, "Showroom", &[1, 2], false)], 0.35),
+    )
+    .unwrap();
+    assert!(
+        q.bid_items[0].mixed_grit,
+        "one member specified and one not is a mixed specification"
+    );
+}

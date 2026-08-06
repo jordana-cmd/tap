@@ -38,9 +38,9 @@ pub mod calc;
 
 pub use calc::{
     consumable_rate_per_sf, material_rate_per_sf, price_area, price_from_cost, price_job,
-    rate_summary, AreaInput, AreaQuote, JobCosts, JobInput, JobQuote, LaborInput, LineSource,
-    PricingContext, PricingError, Productivity, QuoteLine, MARGIN_FLOOR, SF_PER_MAN_HOUR_MAX,
-    SF_PER_MAN_HOUR_MIN, SF_PER_MAN_HOUR_TYPICAL,
+    rate_summary, resolve_bid_items, AreaInput, AreaQuote, BidItem, BidItemQuote, JobCosts,
+    JobInput, JobQuote, LaborInput, LineSource, PricingContext, PricingError, Productivity,
+    QuoteLine, MARGIN_FLOOR, SF_PER_MAN_HOUR_MAX, SF_PER_MAN_HOUR_MIN, SF_PER_MAN_HOUR_TYPICAL,
 };
 
 #[cfg(feature = "serde")]

@@ -113,6 +113,51 @@ price, profit and man-hours bit-identical. A grit stranded on a measurement by
 a system change is remembered but never sent, since the engine rejects a grit
 it cannot apply rather than ignoring it.
 
+### Bid items
+
+An area is a takeoff unit; a **bid item** is a line on the proposal. They are
+not the same shape — a bathroom on page 7 and a corridor on page 22 may be one
+"Restrooms" line at one price — so grouping sits *above* pricing and never
+changes how an area is priced.
+
+- **Every area is in exactly one item**, always. Anything ungrouped gets its
+  own, named from the area, so the default is identical to what existed before.
+  A project saved before bid items had them loads to exactly the quote it had:
+  there is no migration branch because there is nothing to migrate.
+- **Members may span pages.** A bid item is not page-scoped; nothing in the
+  pricing layer knows what page an area came from.
+- **All members must share a system.** Rejected in the UI with a reason rather
+  than allowed: one lump sum carries one scope narrative, and a mixed item
+  would hide an epoxy area inside a grind-and-seal description. The engine
+  rejects it too, but the UI refusal explains one bad grouping instead of
+  blanking the whole quote.
+- **Deleting an area** drops it from its item; an item left with no members is
+  removed. An item is a name for some work — with no work under it, it is not
+  an empty item, it is not an item.
+- Membership, names and alternate flags are **inputs**, persisted with the
+  project alongside crew/hours. Prices stay derived.
+
+**Alternates** are bid items flagged out of the base bid — the mechanism for
+"add double broadcast: +$X". They are priced identically (same engine, same
+margin) but never summed into the headline: the headline is the **base bid**,
+labelled as such whenever alternates exist, with alternates listed below at
+`+$X` each plus an "if all accepted" total.
+
+Job-level costs sit inside the base bid — mobilization is not contingent on an
+alternate being accepted, and an alternate quietly carrying a share of it would
+be priced differently depending on what else happened to be on the quote. So Σ
+base lump sums + marked-up job costs = the quoted price; the engine reports
+that markup as `job_cost_price` so a proposal can be shown to add up.
+
+Job-level man-hours and SF/man-hour are **base-bid only**, for the same reason:
+blending in hours for work that may never happen describes a job nobody is
+going to run. Per-area readouts still cover every area.
+
+**Mixed grit within one item** is allowed and priced correctly — each area
+keeps its own hours — but flagged, because one lump sum under one grit-bearing
+name would describe work that is not what was priced, and no number on the page
+reveals that.
+
 ### The handoff payload
 
 `buildQuotePayload()` remains the takeoff → quoting handoff (and the shape an

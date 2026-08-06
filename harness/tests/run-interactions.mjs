@@ -1258,6 +1258,287 @@ await run('quote: a grit left over from another system never poisons the quote',
   assert.ok(st.quote && st.quote.price > 0, 'and still prices');
 });
 
+// ---- bid items: the grouping layer ----
+//
+// An area is a takeoff unit; a bid item is a line on the proposal. Grouping
+// sits ABOVE pricing and never changes how an area is priced.
+
+/// Click the nth match, resolving it immediately beforehand. Every edit on
+/// the quote screen re-prices and rebuilds the view, which detaches any handle
+/// resolved before the previous edit -- so a handle may never outlive one.
+async function clickNth(page, selector, i) {
+  const els = await page.$$(selector);
+  assert.ok(els[i], `no element ${i} for ${selector} (found ${els.length})`);
+  await els[i].click();
+}
+async function typeNth(page, selector, i, text) {
+  const els = await page.$$(selector);
+  assert.ok(els[i], `no element ${i} for ${selector} (found ${els.length})`);
+  await els[i].click({ clickCount: 3 });
+  await page.keyboard.type(text, { delay: 20 });
+}
+
+/// Bid item blocks on screen, in presentation order.
+const bidBlocks = page => page.$$eval('.qBidItem', bs => bs.map(b => ({
+  id: Number(b.dataset.bidItemId),
+  name: b.querySelector('.qBidName').value,
+  sum: b.querySelector('.qBidSum').textContent,
+  alternate: b.classList.contains('alternate'),
+  members: b.querySelectorAll('.qArea').length,
+})));
+
+/// Two priced areas on DIFFERENT pages, same system — the case bid items
+/// exist for. Returns nothing; leaves the page on #/quote.
+async function twoPagesPriced(page, system) {
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of SQ) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  await gotoPage(page, +1);
+  // The deep-linked fpi seeds page 1 ONLY; page 2 guards until it has a scale
+  // of its own, so give it one before drawing.
+  await openScaleTab(page);
+  await page.select('#preset', '20');
+  await page.click('.ribbonTab[data-tab="tools"]');
+  await setTool(page, 'area');
+  for (const [x, y] of [[600, 250], [660, 250], [660, 290], [600, 290]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  // Both rows are only visible together in the all-pages view.
+  await page.evaluate(() => { const c = document.querySelector('#allPages'); if (!c.checked) c.click(); });
+  const pickers = await page.$$('.measRow .measSystem');
+  assert.equal(pickers.length, 2, 'two areas, one per page');
+  for (const p of pickers) await p.select(system);
+  await gotoQuote(page);
+  await page.waitForFunction(
+    () => document.querySelectorAll('.qArea input[data-qkey^="crew-"]').length === 2,
+    { timeout: 5_000 });
+  for (const i of [0, 1]) {
+    await typeNth(page, '.qArea input[data-qkey^="crew-"]', i, '2');
+    await typeNth(page, '.qArea input[data-qkey^="hours-"]', i, '8');
+  }
+  await page.waitForFunction(
+    () => window.__harness.quote() !== null && window.__harness.quote().areas.length === 2,
+    { timeout: 5_000 });
+}
+
+await run('bid items: every area gets one, named from the area, by default', async page => {
+  // The compatibility guarantee. A project that has never been grouped -- and
+  // every project saved before this layer existed -- looks exactly like this.
+  await priceOneArea(page, 'epoxy');
+  const items = await page.evaluate(() => window.__harness.bidItems());
+  const meas = await page.evaluate(() => window.__harness.measurements());
+  assert.equal(items.length, 1, 'one item per area');
+  assert.deepEqual(items[0].areaIds, [meas[0].id]);
+  assert.equal(items[0].name, meas[0].name, 'named from the area');
+  assert.equal(items[0].alternate, false);
+
+  // And the lump sum IS the area's price -- grouping changed nothing.
+  const q = await page.evaluate(() => window.__harness.quote());
+  assert.equal(q.bid_items.length, 1);
+  assert.ok(Math.abs(q.bid_items[0].cost - q.areas[0].cost) < 0.005,
+    'a single-member item costs exactly its area');
+  assert.ok(Math.abs(q.bid_items[0].price + q.job_cost_price - q.price) < 0.005,
+    'and its lump sum plus job costs is the quoted price');
+});
+
+await run('bid items: two areas from different pages group into one line at one price', async page => {
+  await twoPagesPriced(page, 'polish');
+  const before = await page.evaluate(() => {
+    const q = window.__harness.quote();
+    return { price: q.price, items: q.bid_items.length, pages: window.__harness.measurements().map(m => m.page) };
+  });
+  assert.equal(before.items, 2, 'ungrouped to start');
+  assert.notEqual(before.pages[0], before.pages[1], 'the areas really are on different pages');
+
+  for (const i of [0, 1]) await clickNth(page, '.qBidItem input[data-qkey^="pick-"]', i);
+  await page.waitForFunction(() => !document.querySelector('#quoteGroupBtn').disabled, { timeout: 5_000 });
+  await page.click('#quoteGroupBtn');
+  await page.waitForFunction(() => window.__harness.bidItems().length === 1, { timeout: 5_000 });
+
+  const after = await page.evaluate(() => window.__harness.quote());
+  const blocks = await bidBlocks(page);
+  assert.equal(blocks.length, 1, 'one line of work now');
+  assert.equal(blocks[0].members, 2, 'with both areas still expandable inside it');
+  assert.deepEqual((await page.evaluate(() => window.__harness.bidItems()))[0].areaIds.length, 2);
+  // A bid item is NOT page-scoped, and grouping is a presentation act: the
+  // money must not move.
+  assert.ok(Math.abs(after.price - before.price) < 0.005,
+    `grouping must not reprice: ${before.price} -> ${after.price}`);
+  assert.ok(Math.abs(after.bid_items[0].cost - after.areas.reduce((s, a) => s + a.cost, 0)) < 0.005,
+    'the lump sum is the sum of its members');
+});
+
+await run('bid items: ungroup returns each area to its own line', async page => {
+  await twoPagesPriced(page, 'polish');
+  for (const i of [0, 1]) await clickNth(page, '.qBidItem input[data-qkey^="pick-"]', i);
+  await page.click('#quoteGroupBtn');
+  await page.waitForFunction(() => window.__harness.bidItems().length === 1, { timeout: 5_000 });
+  const grouped = await page.evaluate(() => window.__harness.quote().price);
+
+  await page.click('.qBidItem button[data-qkey^="ungroup-"]');
+  await page.waitForFunction(() => window.__harness.bidItems().length === 2, { timeout: 5_000 });
+  const items = await page.evaluate(() => window.__harness.bidItems());
+  const meas = await page.evaluate(() => window.__harness.measurements());
+  assert.deepEqual(items.map(i => i.areaIds.length), [1, 1], 'one area each');
+  assert.deepEqual(items.map(i => i.name).sort(), meas.map(m => m.name).sort(),
+    're-named from their areas');
+  assert.ok(Math.abs(await page.evaluate(() => window.__harness.quote().price) - grouped) < 0.005,
+    'and ungrouping does not reprice either');
+});
+
+await run('bid items: grouping areas on different systems is refused, with a reason', async page => {
+  // One lump sum carries one scope narrative. Refusing in the UI matters: the
+  // engine would reject it too, but that would blank the whole quote instead
+  // of explaining one bad grouping.
+  await twoPagesPriced(page, 'polish');
+  const pickers = await page.$$('.qArea select[data-qkey^="sys-"]');
+  await pickers[1].select('epoxy');
+  await page.waitForFunction(
+    () => window.__harness.measurements().filter(m => m.systemType === 'epoxy').length === 1,
+    { timeout: 5_000 });
+
+  for (const i of [0, 1]) await clickNth(page, '.qBidItem input[data-qkey^="pick-"]', i);
+  await page.click('#quoteGroupBtn');
+  await page.waitForFunction(() => window.__harness.groupError() !== null, { timeout: 5_000 });
+
+  const st = await page.evaluate(() => ({
+    err: window.__harness.groupError(),
+    items: window.__harness.bidItems().length,
+    quote: window.__harness.quote(),
+    shown: document.querySelector('#quoteGroupError').textContent,
+  }));
+  assert.equal(st.items, 2, 'nothing was merged');
+  assert.match(st.err, /same system/, 'and it says why');
+  assert.match(st.shown, /Polish|Epoxy/, 'naming the systems involved');
+  assert.ok(st.quote && st.quote.price > 0, 'the quote is untouched, not blanked');
+});
+
+await run('bid items: renaming a line survives reload and does not reprice', async page => {
+  await priceOneArea(page, 'epoxy');
+  const before = await page.evaluate(() => window.__harness.quote().price);
+  await typeQuote(page, '.qBidItem input[data-qkey^="name-"]', 'Front Showroom');
+  await page.waitForFunction(() => window.__harness.bidItems()[0].name === 'Front Showroom',
+    { timeout: 5_000 });
+  assert.ok(Math.abs(await page.evaluate(() => window.__harness.quote().price) - before) < 0.005,
+    'naming work is not pricing it');
+
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.reload();
+  await waitReady(page);
+  assert.equal((await page.evaluate(() => window.__harness.bidItems()))[0].name, 'Front Showroom',
+    'survives the IndexedDB round-trip');
+  const json = await page.evaluate(() => window.__harness.exportJson());
+  assert.match(json, /"name": "Front Showroom"/, 'and is in the JSON backup');
+});
+
+await run('bid items: flagging an alternate drops the base bid by exactly its price', async page => {
+  await twoPagesPriced(page, 'polish');
+  const before = await page.evaluate(() => {
+    const q = window.__harness.quote();
+    return { price: q.price, profit: q.profit, items: q.bid_items.map(b => ({ id: b.id, price: b.price })) };
+  });
+
+  await clickNth(page, '.qBidItem input[data-qkey^="alt-"]', 1);
+  await page.waitForFunction(() => window.__harness.quote().alternate_price > 0, { timeout: 5_000 });
+
+  const after = await page.evaluate(() => {
+    const q = window.__harness.quote();
+    return {
+      price: q.price, altPrice: q.alternate_price,
+      alt: q.bid_items.find(b => b.alternate),
+      shown: document.querySelector('#quoteAlternates').hidden,
+      rows: [...document.querySelectorAll('.qAltRow')].map(r => r.textContent),
+      all: document.querySelector('#qAltAll').textContent,
+      scopeHidden: document.querySelector('#qhScope').hidden,
+      headline: document.querySelector('#qhPriceVal').textContent,
+    };
+  });
+  const wasWorth = before.items.find(i => i.id === after.alt.id).price;
+  assert.ok(Math.abs(after.price - (before.price - wasWorth)) < 0.005,
+    `base bid must drop by exactly the alternate's lump sum: ${before.price} - ${wasWorth} != ${after.price}`);
+  assert.ok(Math.abs(after.altPrice - wasWorth) < 0.005, 'and it is reported apart');
+  assert.equal(after.shown, false, 'alternates are listed separately');
+  assert.ok(after.rows.some(r => r.includes('+')), 'shown as an addition, not a subtotal');
+  assert.equal(after.scopeHidden, false, 'the headline says which figure it is');
+  // The headline is the BASE bid, never the two silently summed.
+  assert.ok(!after.headline.includes(String(Math.round(before.price))),
+    'the headline is no longer the everything-included figure');
+});
+
+await run('bid items: an alternate is still fully priced, at the same margin', async page => {
+  await twoPagesPriced(page, 'polish');
+  await clickNth(page, '.qBidItem input[data-qkey^="alt-"]', 1);
+  await page.waitForFunction(() => window.__harness.quote().alternate_price > 0, { timeout: 5_000 });
+  const q = await page.evaluate(() => window.__harness.quote());
+  const a = q.bid_items.find(b => b.alternate);
+  assert.ok(a.cost > 0 && a.price > 0, 'priced in full, not stubbed');
+  assert.ok(Math.abs(a.profit / a.price - q.margin) < 1e-9, 'same margin as the base bid');
+  // Its area still carries its own itemization on screen.
+  assert.ok(await page.$('.qBidItem.alternate .qArea table.qLines'), 'itemization intact');
+});
+
+await run('bid items: deleting a member area leaves no dangling reference', async page => {
+  await twoPagesPriced(page, 'polish');
+  for (const i of [0, 1]) await clickNth(page, '.qBidItem input[data-qkey^="pick-"]', i);
+  await page.click('#quoteGroupBtn');
+  await page.waitForFunction(() => window.__harness.bidItems().length === 1, { timeout: 5_000 });
+
+  // Delete one member from the takeoff, where the delete control lives.
+  await gotoTakeoff(page);
+  const doomed = await page.evaluate(() => window.__harness.measurements()[0].id);
+  // The row controls are hover-revealed (display:none until :hover), so the
+  // row has to be hovered before its delete button is a clickable element.
+  await page.hover('.measRow');
+  await page.click('.measRow .delToggle');
+  await page.waitForFunction(id => !window.__harness.measurements().some(m => m.id === id),
+    { timeout: 5_000 }, doomed);
+
+  const items = await page.evaluate(() => window.__harness.bidItems());
+  assert.equal(items.length, 1, 'the item survives its surviving member');
+  assert.equal(items[0].areaIds.length, 1, 'and drops the dead reference');
+  assert.ok(!items[0].areaIds.includes(doomed));
+
+  await gotoQuote(page);
+  const q = await page.evaluate(() => window.__harness.quote());
+  assert.ok(q && q.price > 0, 'and the quote still prices rather than erroring');
+
+  // Delete the LAST member: the item goes with it. An item is a name for some
+  // work; with no work under it, it is not an empty item, it is not an item.
+  await gotoTakeoff(page);
+  await page.hover('.measRow');
+  await page.click('.measRow .delToggle');
+  await page.waitForFunction(() => window.__harness.measurements().length === 0, { timeout: 5_000 });
+  assert.equal((await page.evaluate(() => window.__harness.bidItems())).length, 0,
+    'no orphaned bid item left behind');
+});
+
+await run('bid items: a legacy project loads with one item per area', async page => {
+  // Simulates a project saved before bid items existed: the stored record has
+  // no bidItems key at all.
+  await priceOneArea(page, 'epoxy');
+  const json = await page.evaluate(() => window.__harness.exportJson());
+  const legacy = JSON.parse(json);
+  delete legacy.bidItems;
+  assert.ok(!('bidItems' in legacy), 'the backup now looks pre-bid-item');
+
+  await page.evaluate(() => window.__harness.deleteProject(window.__harness.currentSha()));
+  // priceOneArea left us on #/quote, and the hash survives a reload -- come
+  // back to takeoff so the Quote button is reachable again.
+  await page.evaluate(() => { location.hash = '#/takeoff'; });
+  await page.reload();
+  await waitReady(page);
+  await page.evaluate(j => window.__harness.importJson(j), JSON.stringify(legacy));
+
+  const items = await page.evaluate(() => window.__harness.bidItems());
+  const meas = await page.evaluate(() => window.__harness.measurements());
+  assert.equal(items.length, 1, 'one item per area, synthesized on load');
+  assert.deepEqual(items[0].areaIds, [meas[0].id]);
+  assert.equal(items[0].name, meas[0].name, 'named from the area');
+  await gotoQuote(page);
+  assert.ok(await page.evaluate(() => window.__harness.quote().price) > 0,
+    'and it prices without a migration step');
+});
+
 await run('quote: entering the route cancels an in-progress draft', async page => {
   await setTool(page, 'area');
   await snapOff(page);

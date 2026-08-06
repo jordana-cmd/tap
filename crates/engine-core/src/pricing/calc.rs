@@ -183,11 +183,41 @@ impl JobCosts {
     }
 }
 
+/// A customer-facing line of work: one or more areas, presented as one name
+/// at one lump sum.
+///
+/// Areas are TAKEOFF units — a bathroom on page 7 and a corridor on page 22
+/// are two measurements. What the customer buys is neither of those; it is
+/// "Restrooms — grind & seal, $X". A bid item is that layer, and it is
+/// deliberately not page-scoped.
+///
+/// Membership rules are enforced in [`price_job`], not here: an area belongs
+/// to exactly one item, every area belongs to one (unclaimed areas are given
+/// their own — see [`resolve_bid_items`]), and every member shares a system.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct BidItem {
+    pub id: u64,
+    /// What appears on the proposal. Free text, independent of area names.
+    pub name: String,
+    /// Member [`AreaInput::id`]s, in presentation order.
+    pub area_ids: Vec<u64>,
+    /// `true` flags this OUT of the base bid: priced identically, totalled
+    /// separately, never silently summed into the headline.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub alternate: bool,
+}
+
 /// A whole job.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct JobInput {
     pub areas: Vec<AreaInput>,
+    /// Grouping of areas into customer-facing lines. EMPTY IS LEGAL and means
+    /// "one item per area" — which is exactly what every project saved before
+    /// bid items existed deserializes to, so nothing needs migrating.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub bid_items: Vec<BidItem>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub job_costs: JobCosts,
     /// Single job-level rate applied uniformly across the whole quote.
@@ -331,12 +361,60 @@ pub struct AreaQuote {
     pub cost: f64,
 }
 
+/// One bid item, priced as a lump sum.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct BidItemQuote {
+    pub id: u64,
+    pub name: String,
+    pub area_ids: Vec<u64>,
+    /// Shared by every member — enforced, so the scope narrative this will
+    /// carry has exactly one recipe behind it.
+    pub system_key: String,
+    pub alternate: bool,
+    /// Σ member area costs. Job-level costs are NOT included; they belong to
+    /// the job, not to any one line of work — see [`JobQuote::cost`].
+    pub cost: f64,
+    /// `cost / (1 - margin)` at the job's margin. The lump sum.
+    pub price: f64,
+    pub profit: f64,
+    pub area_sf: f64,
+    pub man_hours: f64,
+    /// Distinct grit levels among the members, sorted; empty when none is set.
+    /// More than one is legal and correctly priced — each area carries its own
+    /// hours — but it is REPORTED because one lump sum labelled with a single
+    /// grit would misdescribe the work in a way the price cannot reveal.
+    pub grit_levels: Vec<String>,
+    /// `grit_levels.len() > 1`, or one explicit level mixed with unset members.
+    pub mixed_grit: bool,
+}
+
 /// The whole job, priced.
+///
+/// # Base bid versus alternates
+///
+/// `cost`, `price`, and `profit` are the BASE BID — the number quoted. An
+/// alternate is priced identically and reported in `bid_items` and the
+/// `alternate_*` rollups, but is never summed into the headline: "add double
+/// broadcast: +$X" is an offer, not part of what was bid.
+///
+/// With no alternates (the default, and every project saved before bid items
+/// existed) base is everything and these fields mean exactly what they always
+/// did.
+///
+/// Job-level costs sit inside the BASE bid. Mobilization and permits are not
+/// contingent on an alternate being accepted, and an alternate that quietly
+/// carried a share of them would be priced differently depending on what else
+/// happened to be on the quote. One consequence to know: Σ base bid item
+/// prices is short of `price` by the marked-up job costs, reported as
+/// [`JobQuote::job_cost_price`] so the arithmetic closes.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct JobQuote {
     pub areas: Vec<AreaQuote>,
-    /// Σ area costs.
+    /// Every bid item, base and alternate, in presentation order.
+    pub bid_items: Vec<BidItemQuote>,
+    /// Σ BASE-bid area costs. Alternates are in `alternate_cost`.
     pub area_cost: f64,
     pub job_costs: JobCosts,
     /// area_cost + job_costs.total()
@@ -348,10 +426,24 @@ pub struct JobQuote {
     /// `price - cost`, in DOLLARS — a primary output, not something the UI
     /// derives.
     pub profit: f64,
-    /// Σ area square footage — the denominator's partner in the blended
-    /// productivity figure below.
+    /// The job costs above, marked up at the job margin. Σ base bid item
+    /// prices plus this equals [`JobQuote::price`] — stated so a proposal
+    /// that lists lump sums can be shown to add up.
+    pub job_cost_price: f64,
+    /// Σ ALTERNATE bid item costs. Zero when there are none.
+    pub alternate_cost: f64,
+    /// Σ alternate lump sums — what accepting every alternate would add.
+    /// Never part of `price`.
+    pub alternate_price: f64,
+    pub alternate_profit: f64,
+    /// Σ BASE-bid area square footage — the denominator's partner in the
+    /// blended productivity figure below.
     pub area_sf: f64,
-    /// Σ escalated man-hours across every area.
+    /// Σ escalated man-hours across BASE-bid areas. Alternates are excluded
+    /// for the same reason they are excluded from the price: they describe
+    /// work that may never happen, and blending them into a rate for work
+    /// that will would describe a job nobody is going to run. Per-area
+    /// readouts still cover every area, alternate or not.
     pub man_hours: f64,
     /// Blended `area_sf / man_hours` for the whole job. NOT the mean of the
     /// per-area figures: a 200 SF closet and a 20,000 SF warehouse are not
@@ -418,6 +510,27 @@ pub enum PricingError {
     MissingConsumableMultiplier { system: String, consumable: String },
     #[error("area `{area}`: unknown grit level `{grit}`")]
     UnknownGritLevel { area: String, grit: String },
+    #[error("duplicate bid item id `{0}`")]
+    DuplicateBidItem(u64),
+    #[error("bid item `{bid_item}` has no areas in it")]
+    EmptyBidItem { bid_item: String },
+    #[error("bid item `{bid_item}` names area {area_id}, which is not on this job")]
+    BidItemUnknownArea { bid_item: String, area_id: u64 },
+    #[error(
+        "area `{area}` is in two bid items (`{first}` and `{second}`) — an area \
+         belongs to exactly one line of work"
+    )]
+    AreaInTwoBidItems {
+        area: String,
+        first: String,
+        second: String,
+    },
+    #[error(
+        "bid item `{bid_item}` mixes systems ({systems}) — one lump sum can carry \
+         only one scope narrative, and a mixed item would hide one system's work \
+         inside another's description"
+    )]
+    BidItemMixedSystems { bid_item: String, systems: String },
     #[error(
         "area `{area}`: system `{system}` involves no grinding, so a grit level \
          (`{grit}`) has no meaning on it"
@@ -758,6 +871,128 @@ fn grit_escalator(
         })
 }
 
+/// Every area's bid item, explicit ones first, then one synthesized per area
+/// nobody claimed.
+///
+/// The synthesis is what makes this layer free: a job that names no bid items
+/// at all resolves to one item per area, which is exactly how the quote behaved
+/// before bid items existed. No migration, no legacy branch, no flag.
+///
+/// Synthesized ids are allocated above every explicit id so they cannot
+/// collide, and assignment is deterministic — the same input always resolves
+/// to the same ids.
+pub fn resolve_bid_items(job: &JobInput) -> Result<Vec<BidItem>, PricingError> {
+    let name_of = |id: u64| {
+        job.areas
+            .iter()
+            .find(|a| a.id == id)
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| format!("area {id}"))
+    };
+
+    let mut seen_ids: BTreeMap<u64, ()> = BTreeMap::new();
+    // area id -> the item that claimed it, so a second claim can name both.
+    let mut claimed: BTreeMap<u64, String> = BTreeMap::new();
+    let mut out: Vec<BidItem> = Vec::new();
+
+    for item in &job.bid_items {
+        if seen_ids.insert(item.id, ()).is_some() {
+            return Err(PricingError::DuplicateBidItem(item.id));
+        }
+        if item.area_ids.is_empty() {
+            return Err(PricingError::EmptyBidItem {
+                bid_item: item.name.clone(),
+            });
+        }
+        for &area_id in &item.area_ids {
+            if !job.areas.iter().any(|a| a.id == area_id) {
+                return Err(PricingError::BidItemUnknownArea {
+                    bid_item: item.name.clone(),
+                    area_id,
+                });
+            }
+            if let Some(first) = claimed.get(&area_id) {
+                return Err(PricingError::AreaInTwoBidItems {
+                    area: name_of(area_id),
+                    first: first.clone(),
+                    second: item.name.clone(),
+                });
+            }
+            claimed.insert(area_id, item.name.clone());
+        }
+        out.push(item.clone());
+    }
+
+    let mut next_id = seen_ids.keys().copied().max().map_or(1, |m| m + 1);
+    for area in &job.areas {
+        if claimed.contains_key(&area.id) {
+            continue;
+        }
+        out.push(BidItem {
+            id: next_id,
+            // Named from the area, because that is the only name anyone has
+            // given this work yet.
+            name: area.name.clone(),
+            area_ids: vec![area.id],
+            alternate: false,
+        });
+        next_id += 1;
+    }
+    Ok(out)
+}
+
+/// Roll priced areas up into one bid item, enforcing the shared-system rule.
+fn price_bid_item(
+    item: &BidItem,
+    by_id: &BTreeMap<u64, &AreaQuote>,
+    margin: f64,
+) -> Result<BidItemQuote, PricingError> {
+    let members: Vec<&AreaQuote> = item
+        .area_ids
+        .iter()
+        .filter_map(|id| by_id.get(id).copied())
+        .collect();
+
+    // One scope narrative needs one recipe. This is the rule that stops an
+    // epoxy area being hidden inside a grind-and-seal line.
+    let mut systems: Vec<&str> = members.iter().map(|a| a.system_key.as_str()).collect();
+    systems.sort_unstable();
+    systems.dedup();
+    if systems.len() > 1 {
+        return Err(PricingError::BidItemMixedSystems {
+            bid_item: item.name.clone(),
+            systems: systems.join(", "),
+        });
+    }
+
+    let cost: f64 = members.iter().map(|a| a.cost).sum();
+    let (price, profit) = price_from_cost(cost, margin)?;
+
+    let mut grits: Vec<String> = members.iter().filter_map(|a| a.grit_level.clone()).collect();
+    grits.sort();
+    grits.dedup();
+    // Two areas at different grits is legal and priced correctly -- each
+    // carries its own hours. It is flagged because ONE lump sum under ONE
+    // grit-bearing name would describe work that is not what was priced, and
+    // no number on the page reveals that.
+    let mixed_grit = grits.len() > 1 || (grits.len() == 1 && members.len() > grits.len() && members.iter().any(|a| a.grit_level.is_none()));
+
+    Ok(BidItemQuote {
+        id: item.id,
+        name: item.name.clone(),
+        area_ids: item.area_ids.clone(),
+        system_key: systems.first().map(|s| s.to_string()).unwrap_or_default(),
+        alternate: item.alternate,
+        cost,
+        price,
+        profit,
+        area_sf: members.iter().map(|a| a.area_sf).sum(),
+        man_hours: members.iter().map(|a| a.man_hours).sum(),
+        grit_levels: grits,
+        mixed_grit,
+    })
+}
+
 /// Price a whole job: every area, plus job-level costs, then margin.
 ///
 /// Recomputes from scratch every call — there is no cached state, so a changed
@@ -776,10 +1011,31 @@ pub fn price_job(card: &RateCard, job: &JobInput) -> Result<JobQuote, PricingErr
         .map(|a| price_area(&ctx, a))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let area_cost: f64 = areas.iter().map(|a| a.cost).sum();
+    // Group into customer-facing lines. Every area lands in exactly one,
+    // whether or not the caller said anything about grouping.
+    let by_id: BTreeMap<u64, &AreaQuote> = areas.iter().map(|a| (a.area_id, a)).collect();
+    let bid_items = resolve_bid_items(job)?
+        .iter()
+        .map(|it| price_bid_item(it, &by_id, job.margin))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // The split the whole layer exists for. An alternate is priced exactly
+    // like anything else and then kept OUT of the number being quoted.
+    let (alt, base): (Vec<&BidItemQuote>, Vec<&BidItemQuote>) =
+        bid_items.iter().partition(|b| b.alternate);
+
+    let area_cost: f64 = base.iter().map(|b| b.cost).sum();
     let cost = area_cost + job.job_costs.total();
     let (price, profit) = price_from_cost(cost, job.margin)?;
+    let (job_cost_price, _) = price_from_cost(job.job_costs.total(), job.margin)?;
 
+    let alternate_cost: f64 = alt.iter().map(|b| b.cost).sum();
+    let alternate_price: f64 = alt.iter().map(|b| b.price).sum();
+    let alternate_profit: f64 = alt.iter().map(|b| b.profit).sum();
+
+    // Unconfirmed recipes are reported across EVERY area, alternate included:
+    // an alternate the customer accepts is quoted from the same inferred
+    // recipe, so hiding the caveat until acceptance would be backwards.
     let mut unconfirmed: Vec<String> = areas
         .iter()
         .filter(|a| !a.system_confirmed)
@@ -788,20 +1044,25 @@ pub fn price_job(card: &RateCard, job: &JobInput) -> Result<JobQuote, PricingErr
     unconfirmed.sort();
     unconfirmed.dedup();
 
-    // Blended from the job's totals, not averaged across areas — see the note
-    // on JobQuote::sf_per_man_hour.
-    let total_sf: f64 = areas.iter().map(|a| a.area_sf).sum();
-    let total_hours: f64 = areas.iter().map(|a| a.man_hours).sum();
+    // Blended from the BASE bid's totals, not averaged across areas — see the
+    // notes on JobQuote::man_hours and JobQuote::sf_per_man_hour.
+    let total_sf: f64 = base.iter().map(|b| b.area_sf).sum();
+    let total_hours: f64 = base.iter().map(|b| b.man_hours).sum();
     let blended = sf_per_man_hour(total_sf, total_hours);
 
     Ok(JobQuote {
         areas,
+        bid_items,
         area_cost,
         job_costs: job.job_costs,
         cost,
         margin: job.margin,
         price,
         profit,
+        job_cost_price,
+        alternate_cost,
+        alternate_price,
+        alternate_profit,
         area_sf: total_sf,
         man_hours: total_hours,
         sf_per_man_hour: blended,
