@@ -909,6 +909,22 @@ pub fn validate_rate_card_json(json: &str) -> Result<String, JsValue> {
     }
 }
 
+/// The productivity band and its reference median, as
+/// `{ typical, min, max }` in SF per man-hour.
+///
+/// Exported rather than written into the UI as literals for the same reason
+/// `MARGIN_FLOOR` is: the engine decides what counts as implausible and flags
+/// each area, and the screen only renders the flag. Two copies of `22` drift.
+#[wasm_bindgen]
+pub fn productivity_band_json() -> String {
+    format!(
+        "{{\"typical\":{},\"min\":{},\"max\":{}}}",
+        engine_core::pricing::SF_PER_MAN_HOUR_TYPICAL,
+        engine_core::pricing::SF_PER_MAN_HOUR_MIN,
+        engine_core::pricing::SF_PER_MAN_HOUR_MAX,
+    )
+}
+
 /// Price a job: rate card JSON + job input JSON in, quote JSON out.
 ///
 /// The host holds the rate card (fetched from `/data/`, never compiled in) and

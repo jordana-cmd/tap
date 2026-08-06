@@ -39,7 +39,8 @@ pub mod calc;
 pub use calc::{
     consumable_rate_per_sf, material_rate_per_sf, price_area, price_from_cost, price_job,
     rate_summary, AreaInput, AreaQuote, JobCosts, JobInput, JobQuote, LaborInput, LineSource,
-    PricingContext, PricingError, QuoteLine, MARGIN_FLOOR,
+    PricingContext, PricingError, Productivity, QuoteLine, MARGIN_FLOOR, SF_PER_MAN_HOUR_MAX,
+    SF_PER_MAN_HOUR_MIN, SF_PER_MAN_HOUR_TYPICAL,
 };
 
 #[cfg(feature = "serde")]
@@ -143,6 +144,44 @@ pub struct SystemRecipe {
     /// comparing four same-square-footage sheets; a consumer that quotes from
     /// an unconfirmed recipe should say so rather than imply authority.
     pub confirmed: bool,
+    /// The grit level this system's LABOR FIGURES ALREADY REFLECT, keyed into
+    /// [`RateCard::grit_levels`].
+    ///
+    /// `None` means grit does not apply to this system — it involves no
+    /// grinding, so an area may not set one (that is
+    /// [`PricingError::GritNotApplicable`], not a silently ignored field).
+    ///
+    /// This is the baseline the escalator measures FROM. Without it, a system
+    /// whose standard is already 800 grit would have the 800-grit multiplier
+    /// applied on top of hours that were priced at 800 grit to begin with —
+    /// double-counting the very passes the figures include.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub standard_grit: Option<String>,
+}
+
+/// One grinding grit level the catalog knows about.
+///
+/// Which levels exist is DATA, not an enum: adding 1200 grit is an edit to
+/// `data/rate-cards/*.json` and no rebuild. A level is referenced by `key`
+/// everywhere, so display text can change freely.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct GritLevel {
+    /// Stable machine key (`"400"`, `"800"`). Never renamed.
+    pub key: String,
+    pub name: String,
+    /// Man-hours multiplier for this level, on a scale SHARED by every level.
+    ///
+    /// It is not applied directly — see [`RateCard::grit_labor_multiplier`].
+    /// What reaches an area is this level's figure divided by its system's
+    /// standard, so the number here is meaningful only relative to the other
+    /// levels. Must be > 0: a 0.0 would zero out an area's hours and produce
+    /// a materials-only price that reads as legitimate, the same failure
+    /// [`PricingError::MissingLabor`] exists to prevent.
+    ///
+    /// Seeded at 1.0 across the board, which makes the whole mechanism inert
+    /// until real timing data replaces the seeds.
+    pub labor_multiplier: f64,
 }
 
 /// How an add-on changes the product set a base recipe contributed.
@@ -264,6 +303,10 @@ pub struct RateCard {
     pub systems: Vec<SystemRecipe>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub add_ons: Vec<AddOn>,
+    /// The grit ladder. Empty is legal and means no area may specify a grit —
+    /// a card written before this existed keeps pricing exactly as it did.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub grit_levels: Vec<GritLevel>,
     pub labor: LaborRates,
 }
 
@@ -291,6 +334,31 @@ impl RateCard {
             .consumable_multipliers
             .get(consumable_id)
             .copied()
+    }
+    pub fn grit_level(&self, key: &str) -> Option<&GritLevel> {
+        self.grit_levels.iter().find(|g| g.key == key)
+    }
+    /// Grit levels a system may be quoted at: the whole ladder if it grinds,
+    /// nothing if it does not. What a UI populates a picker from.
+    pub fn grits_for_system(&self, system_key: &str) -> &[GritLevel] {
+        match self.system(system_key).and_then(|s| s.standard_grit.as_ref()) {
+            Some(_) => &self.grit_levels,
+            None => &[],
+        }
+    }
+    /// The man-hours escalator for quoting `system_key` at `grit_key`:
+    /// **that level's multiplier divided by the system's standard**.
+    ///
+    /// The division is the whole design. A system's entered hours already
+    /// describe work at its standard grit, so only the DIFFERENCE from that
+    /// baseline may be charged; quoting a system at its own standard yields
+    /// exactly 1.0 and changes nothing. Returns `None` if either level is
+    /// unknown — the caller decides which error that is.
+    pub fn grit_labor_multiplier(&self, system_key: &str, grit_key: &str) -> Option<f64> {
+        let standard = self.system(system_key)?.standard_grit.as_ref()?;
+        let at = self.grit_level(grit_key)?.labor_multiplier;
+        let base = self.grit_level(standard)?.labor_multiplier;
+        (base > 0.0).then_some(at / base)
     }
 }
 
@@ -331,6 +399,15 @@ pub enum RateCardError {
     },
     #[error("product `{0}` belongs to no system recipe and no add-on")]
     OrphanProduct(String),
+    #[error("duplicate grit level key `{0}`")]
+    DuplicateGritLevel(String),
+    #[error("system `{system}` names unknown standard grit `{grit}`")]
+    UnknownGritInSystem { system: String, grit: String },
+    #[error(
+        "grit level `{grit}` has labor_multiplier {value} — it must be greater than zero, \
+         because a multiplier of 0 zeroes out an area's hours and prices it materials-only"
+    )]
+    GritMultiplierNotPositive { grit: String, value: f64 },
     #[error("`{field}` is not a finite number (got {value})")]
     NotFinite { field: String, value: f64 },
     #[error("`{field}` must not be negative (got {value})")]
@@ -413,9 +490,35 @@ pub fn validate(card: &RateCard) -> Result<(), Vec<RateCardError>> {
             errs.push(RateCardError::DuplicateAddOn(a.key.clone()));
         }
     }
+    let mut seen_grit = BTreeMap::new();
+    for g in &card.grit_levels {
+        if seen_grit.insert(g.key.clone(), ()).is_some() {
+            errs.push(RateCardError::DuplicateGritLevel(g.key.clone()));
+        }
+        // Strictly positive, not merely non-negative: the escalator divides by
+        // the standard level's figure, and a 0.0 anywhere in the ladder is
+        // either a division by zero or a free area.
+        if !g.labor_multiplier.is_finite() || g.labor_multiplier <= 0.0 {
+            errs.push(RateCardError::GritMultiplierNotPositive {
+                grit: g.key.clone(),
+                value: g.labor_multiplier,
+            });
+        }
+    }
 
     // ---- system membership resolves, and to the right class ----
     for s in &card.systems {
+        // A standard grit naming a level that does not exist would make every
+        // grit-bearing area on that system unpriceable at quote time instead
+        // of at load time.
+        if let Some(g) = &s.standard_grit {
+            if card.grit_level(g).is_none() {
+                errs.push(RateCardError::UnknownGritInSystem {
+                    system: s.key.clone(),
+                    grit: g.clone(),
+                });
+            }
+        }
         // Exhaustive: a consumable with no entry is a load-time failure, not
         // a silently-defaulted line on someone's invoice.
         for cons in card.consumables() {

@@ -329,6 +329,21 @@
   .qAreaControls { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 12px; }
   .qAreaControls label { color: var(--text-dim); font-size: 11.5px; display: flex; align-items: center; gap: 6px; }
   .qAreaControls input[type=number] { width: 70px; }
+  /* Hours plausibility readout. Hours are the most leveraged input in the
+     model -- one man-hour is $82.59 fully loaded -- so the entered figure gets
+     a live second opinion right where it is typed. Deliberately QUIETER than
+     the sub-margin-floor warning: that one reports a decision about the job,
+     this one only says a number looks unusual, and some jobs genuinely are. */
+  .qProductivity {
+    display: inline-flex; align-items: baseline; gap: 6px; font-size: 11px;
+    color: var(--text-dim); font-variant-numeric: tabular-nums;
+    padding: 2px 8px; border-radius: 999px; background: var(--surface-2);
+  }
+  .qProductivity b { color: var(--text); font-weight: 600; }
+  .qProductivity .qpRef { color: var(--text-faint); font-size: 10.5px; }
+  /* No red, no border, no uppercase: an advisory, not a verdict. */
+  .qProductivity.outside { background: var(--surface-3); }
+  .qProductivity.outside .qpRef { color: var(--text-dim); font-style: italic; }
   .qAddOns { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
   .qAddOn { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-dim); }
   .qAddOn input[type=number] { width: 90px; }
@@ -607,6 +622,7 @@
          confidently wrong one is not, so this replaces the numbers. -->
     <div id="quoteAlerts"></div>
 
+
     <!-- THE HEADLINE: profit in dollars and the margin it is running at. -->
     <div id="quoteHeadline" hidden>
       <div class="qhFig qhProfit">
@@ -644,6 +660,10 @@
         <div><span>Job cost</span><b id="qjCost">—</b></div>
         <div><span>Price</span><b id="qjPrice">—</b></div>
         <div class="qjProfit"><span>Profit</span><b id="qjProfit">—</b></div>
+        <!-- Blended across the whole job, not averaged per area: a 200 SF
+             closet and a 20,000 SF warehouse are not equal votes. -->
+        <div><span>Man-hours</span><b id="qjManHours">—</b></div>
+        <div><span>SF / man-hour</span><b id="qjSfPerMh">—</b></div>
       </div>
     </div>
   </section>
@@ -701,7 +721,8 @@
 
 <script type="module">
 import init, { detect_room, measure_polyline, measure_polygon_area, calibrate_two_point,
-  scale_presets_json, validate_rate_card_json, price_job_json, PageGeometry } from './pkg/engine_web.js';
+  scale_presets_json, validate_rate_card_json, price_job_json, productivity_band_json,
+  PageGeometry } from './pkg/engine_web.js';
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
 import { extractSegments } from './extract.js';
 import * as store from './store.js';
@@ -1432,6 +1453,7 @@ function addMeasurement(kind, family, value, valueText, origin, geometry) {
     // derived). labor stays null until entered: the engine errors on missing
     // hours rather than pricing materials-only.
     labor: null,                 // {crew, hours}
+    gritLevel: null,             // rate-card grit key; null = the system's standard
     quantityOverrides: {},       // productId -> factor; 0 = suppressed
     addOns: [],                  // add-on keys
     manualCosts: {},             // addOnKey -> dollars
@@ -1497,6 +1519,7 @@ function toStored(m) {
     visible: m.visible !== false, snapEnabled: m.snapEnabled !== false,
     systemType: m.systemType ?? null,
     labor: m.labor ?? null,
+    gritLevel: m.gritLevel ?? null,
     quantityOverrides: m.quantityOverrides ?? {},
     addOns: m.addOns ?? [],
     manualCosts: m.manualCosts ?? {},
@@ -1514,6 +1537,7 @@ function fromStored(r) {
     // later: a legacy project loads clean with nothing assumed.
     systemType: r.systemType ?? null,
     labor: r.labor ?? null,
+    gritLevel: r.gritLevel ?? null,
     quantityOverrides: r.quantityOverrides ?? {},
     addOns: r.addOns ?? [],
     manualCosts: r.manualCosts ?? {},
@@ -2118,6 +2142,26 @@ function quoteAreas() {
   };
 }
 
+/// The plausibility band, straight from the engine — never literals here.
+/// Filled after `init()`, not at module scope: every wasm export traps if it
+/// is called before the module is instantiated.
+let PRODUCTIVITY_BAND = null;
+let PRODUCTIVITY_TYPICAL = null;
+/// Which Productivity flags draw the advisory. `unknown` deliberately does
+/// NOT: no hours entered is an unfinished quote, not a suspicious one.
+const OUTSIDE_BAND = new Set(['low', 'high']);
+
+/// Grit levels selectable for a system: the rate card's ladder if it grinds,
+/// nothing if it does not. Mirrors `RateCard::grits_for_system` — a system
+/// with no `standard_grit` involves no grinding, and the engine rejects a
+/// grit on it rather than ignoring one.
+function gritLevelsFor(systemKey) {
+  if (!rateCard || !systemKey) return [];
+  const sys = (rateCard.systems ?? []).find(s => s.key === systemKey);
+  return sys && sys.standard_grit ? (rateCard.grit_levels ?? []) : [];
+}
+const gritApplies = systemKey => gritLevelsFor(systemKey).length > 0;
+
 /// Build the engine's JobInput. Pure translation — no arithmetic beyond the
 /// perimeter, which is geometry, not money.
 function buildJobInput() {
@@ -2132,6 +2176,10 @@ function buildJobInput() {
         area_sf: m.value,
         perimeter_lf: f == null ? null : measure_polyline(flat.concat(flat.slice(0, 2)), f),
         system_key: m.systemType,
+        // Only sent when the system actually grinds: the engine ERRORS on a
+        // grit it cannot apply, and a stale key left over from a system change
+        // would take the whole quote down with it.
+        grit_level: gritApplies(m.systemType) ? (m.gritLevel ?? null) : null,
         add_on_keys: m.addOns ?? [],
         labor: m.labor ? { crew: m.labor.crew, hours: m.labor.hours } : null,
         quantity_overrides: m.quantityOverrides ?? {},
@@ -2319,7 +2367,7 @@ function buildAreaBlock(m, aq) {
 
   const body = document.createElement('div');
   body.className = 'qAreaBody';
-  body.appendChild(buildAreaControls(m));
+  body.appendChild(buildAreaControls(m, aq));
   if (aq) {
     body.appendChild(buildLineTable(m, aq));
     body.appendChild(buildSubtotals(aq));
@@ -2335,7 +2383,7 @@ function buildAreaBlock(m, aq) {
   return block;
 }
 
-function buildAreaControls(m) {
+function buildAreaControls(m, aq) {
   const row = document.createElement('div');
   row.className = 'qAreaControls';
 
@@ -2372,8 +2420,82 @@ function buildAreaControls(m) {
     setLabor(m, 'hours', v); markDirty(); repriceQuote(); renderQuoteView();
   }));
 
-  row.append(sysLab, crewLab, hoursLab, buildAddOns(m));
+  row.append(sysLab, crewLab, hoursLab, productivityReadout(aq));
+  const grit = buildGritPicker(m);
+  if (grit) row.appendChild(grit);
+  row.appendChild(buildAddOns(m));
   return row;
+}
+
+/// The live second opinion on an entered hour figure, sitting directly beside
+/// the input that produced it.
+///
+/// Both numbers come from the ENGINE (`man_hours`, `sf_per_man_hour`) rather
+/// than being multiplied out here — the grit escalator means crew × hours is
+/// no longer necessarily the figure the job is priced on, and a readout that
+/// disagreed with the labor line would be worse than none.
+///
+/// Blank when the area is not priced: hours are routinely half-entered, the
+/// engine refuses to price that, and a stale ratio next to a live input is a
+/// lie. Blank is the honest state.
+function productivityReadout(aq) {
+  const box = document.createElement('span');
+  box.className = 'qProductivity';
+  if (!aq || aq.sf_per_man_hour == null) {
+    box.appendChild(document.createTextNode('—'));
+    const hint = document.createElement('span');
+    hint.className = 'qpRef';
+    hint.textContent = 'SF/man-hour';
+    box.appendChild(hint);
+    return box;
+  }
+  box.dataset.productivity = aq.productivity;
+  const mh = document.createElement('b');
+  mh.textContent = qty(aq.man_hours);
+  box.append(mh, document.createTextNode('man-hours ·'));
+  const rate = document.createElement('b');
+  rate.textContent = qty(aq.sf_per_man_hour);
+  box.append(rate, document.createTextNode('SF/man-hour'));
+
+  const ref = document.createElement('span');
+  ref.className = 'qpRef';
+  // The median is shown ALWAYS, not only when the advisory fires. The real
+  // 2.3x-high quote sat inside the band; what would have caught it is seeing
+  // 10.4 next to 22, not a warning.
+  ref.textContent = OUTSIDE_BAND.has(box.dataset.productivity)
+    ? `unusual — typical is ~${PRODUCTIVITY_TYPICAL}`
+    : `typical ~${PRODUCTIVITY_TYPICAL}`;
+  box.appendChild(ref);
+  box.classList.toggle('outside', OUTSIDE_BAND.has(box.dataset.productivity));
+  return box;
+}
+
+/// Grit picker, or null when the system does not grind. Populated from the
+/// RATE CARD, never a hardcoded list — adding 1200 grit is a data edit.
+function buildGritPicker(m) {
+  const levels = gritLevelsFor(m.systemType);
+  if (!levels.length) return null;
+  const lab = document.createElement('label');
+  lab.appendChild(document.createTextNode('Grit'));
+  const sel = document.createElement('select');
+  sel.className = 'measSystem';
+  sel.dataset.qkey = `grit-${m.id}`;
+  const std = document.createElement('option');
+  std.value = '';
+  std.textContent = 'Standard';
+  sel.appendChild(std);
+  for (const g of levels) {
+    const o = document.createElement('option');
+    o.value = g.key; o.textContent = g.name;
+    sel.appendChild(o);
+  }
+  sel.value = m.gritLevel ?? '';
+  sel.addEventListener('change', () => {
+    m.gritLevel = sel.value || null;
+    markDirty(); repriceQuote(); renderQuoteView();
+  });
+  lab.appendChild(sel);
+  return lab;
 }
 
 /// What to SHOW in a labor field. Crew alone is not labor the engine will
@@ -2589,6 +2711,14 @@ function buildSubtotals(aq) {
   const b = document.createElement('b');
   b.textContent = qty(aq.man_hours);
   mh.appendChild(b);
+  // When grit moved the hours, say so. A total that differs from crew × hours
+  // with no explanation reads as a bug in the arithmetic.
+  if (aq.grit_labor_multiplier !== 1) {
+    const why = document.createElement('span');
+    why.className = 'qpRef';
+    why.textContent = ` (${qty(aq.base_man_hours)} entered × ${qty(aq.grit_labor_multiplier)} for ${aq.grit_level} grit)`;
+    mh.appendChild(why);
+  }
   row.appendChild(mh);
   return row;
 }
@@ -2632,6 +2762,13 @@ function renderJobLevel() {
   $('qjCost').textContent = lastQuote ? money(lastQuote.cost) : '—';
   $('qjPrice').textContent = lastQuote ? money(lastQuote.price) : '—';
   $('qjProfit').textContent = lastQuote ? money(lastQuote.profit) : '—';
+
+  $('qjManHours').textContent = lastQuote ? qty(lastQuote.man_hours) : '—';
+  const blended = $('qjSfPerMh');
+  blended.textContent = lastQuote && lastQuote.sf_per_man_hour != null
+    ? qty(lastQuote.sf_per_man_hour) : '—';
+  blended.title = `historical median ≈ ${PRODUCTIVITY_TYPICAL} SF per man-hour`;
+  blended.dataset.productivity = lastQuote ? lastQuote.productivity : 'unknown';
 }
 
 // ---- routing: hash-based view swap (#/takeoff | #/quote) ----
@@ -3449,7 +3586,10 @@ window.__harness = {
   buildQuotePayload: () => buildQuotePayload(),
   quote: () => lastQuote,
   quoteError: () => quoteError,
+  rateCard: () => rateCard,
   rateCardError: () => rateCardError,
+  jobInput: () => buildJobInput(),
+  productivityBand: () => productivity_band_json(),
   jobPricing: () => jobPricing,
   loadRateCard: () => loadRateCard(),
   repriceQuote: () => { repriceQuote(); renderQuoteView(); },
@@ -3462,6 +3602,8 @@ window.__harness = {
 // ---- boot ----
 await init();
 store.requestPersist(); // best-effort: keep our storage across eviction
+PRODUCTIVITY_BAND = JSON.parse(productivity_band_json());
+PRODUCTIVITY_TYPICAL = PRODUCTIVITY_BAND.typical;
 for (const p of JSON.parse(scale_presets_json())) {
   const o = document.createElement('option');
   o.value = p.fpi; o.textContent = p.label;

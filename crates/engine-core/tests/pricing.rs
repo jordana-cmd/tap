@@ -11,8 +11,8 @@
 #![cfg(feature = "serde")]
 
 use engine_core::pricing::{
-    from_json, validate, AddOn, AddOnEffect, LaborRates, Product, ProductClass, ProductOp,
-    ProductUnit, RateBasis, RateCard, RateCardError, SystemRecipe, WageSource,
+    from_json, validate, AddOn, AddOnEffect, GritLevel, LaborRates, Product, ProductClass,
+    ProductOp, ProductUnit, RateBasis, RateCard, RateCardError, SystemRecipe, WageSource,
 };
 use std::collections::BTreeMap;
 
@@ -334,8 +334,10 @@ fn minimal() -> RateCard {
             product_ids: vec!["a".into()],
             consumable_multipliers: BTreeMap::new(),
             confirmed: false,
+            standard_grit: None,
         }],
         add_ons: vec![],
+        grit_levels: vec![],
         labor: LaborRates {
             standard_wage_per_hour: 27.5,
             payroll_tax_rate: 0.0765,
@@ -501,6 +503,7 @@ fn allows_conflicting_replaces_on_disjoint_systems() {
         product_ids: vec![],
         consumable_multipliers: BTreeMap::new(),
         confirmed: false,
+        standard_grit: None,
     });
     let mk = |key: &str, with: &str, sys: &str| AddOn {
         key: key.into(),
@@ -643,4 +646,104 @@ fn consumable_rate_at_full_multiplier_is_plausible() {
     let c = card();
     let per_sf: f64 = c.consumables().map(|p| p.unit_cost * p.rate).sum();
     cents(per_sf, 0.1741);
+}
+
+// ---------- grit ladder ----------
+
+fn grit(key: &str, mult: f64) -> GritLevel {
+    GritLevel {
+        key: key.into(),
+        name: format!("{key} grit"),
+        labor_multiplier: mult,
+    }
+}
+
+#[test]
+fn a_card_with_no_grit_ladder_is_valid() {
+    // Every card written before grit existed, and every fixture, is this one.
+    let c = minimal();
+    assert!(c.grit_levels.is_empty());
+    validate(&c).expect("grit is optional");
+}
+
+#[test]
+fn rejects_duplicate_grit_level_key() {
+    let mut c = minimal();
+    c.grit_levels.push(grit("400", 1.0));
+    c.grit_levels.push(grit("400", 1.2));
+    assert!(errs(&c).contains(&RateCardError::DuplicateGritLevel("400".into())));
+}
+
+#[test]
+fn rejects_a_standard_grit_that_names_no_level() {
+    // Caught at LOAD. Otherwise every grit-bearing area on that system fails
+    // individually at quote time, far from the typo that caused it.
+    let mut c = minimal();
+    c.grit_levels.push(grit("400", 1.0));
+    c.systems[0].standard_grit = Some("450".into());
+    assert!(errs(&c).contains(&RateCardError::UnknownGritInSystem {
+        system: "s".into(),
+        grit: "450".into(),
+    }));
+}
+
+#[test]
+fn rejects_a_non_positive_grit_multiplier() {
+    // 0.0 would zero out an area's hours and price it materials-only -- the
+    // same silent-and-plausible failure MissingLabor exists to prevent -- and
+    // a 0.0 at a system's STANDARD would divide by zero.
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let mut c = minimal();
+        c.grit_levels.push(grit("400", bad));
+        assert!(
+            errs(&c).iter().any(|e| matches!(
+                e,
+                RateCardError::GritMultiplierNotPositive { grit, .. } if grit == "400"
+            )),
+            "multiplier {bad} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn the_shipped_card_grinds_on_exactly_the_systems_with_a_standard_grit() {
+    let c = card();
+    // Grinding systems offer the whole ladder; the others offer nothing, and
+    // that is what a UI populates a picker from.
+    for sys in ["polish", "seal"] {
+        assert_eq!(
+            c.grits_for_system(sys).len(),
+            c.grit_levels.len(),
+            "{sys} grinds and should offer every level"
+        );
+    }
+    for sys in ["epoxy", "polyurea"] {
+        assert!(
+            c.grits_for_system(sys).is_empty(),
+            "{sys} has no standard grit, so no level may be chosen on it"
+        );
+    }
+    assert!(c.grits_for_system("nonexistent").is_empty());
+}
+
+#[test]
+fn the_escalator_lookup_is_relative_to_the_system_not_absolute() {
+    let mut c = card();
+    for g in c.grit_levels.iter_mut() {
+        g.labor_multiplier = match g.key.as_str() {
+            "100" => 0.5,
+            "400" => 1.0,
+            "800" => 1.25,
+            _ => 1.0,
+        };
+    }
+    // Seal's standard is 100 (0.5), polish's is 400 (1.0). The same level
+    // therefore escalates them differently, and each is unity at its own.
+    cents(c.grit_labor_multiplier("seal", "100").unwrap(), 1.0);
+    cents(c.grit_labor_multiplier("polish", "400").unwrap(), 1.0);
+    cents(c.grit_labor_multiplier("seal", "800").unwrap(), 2.5);
+    cents(c.grit_labor_multiplier("polish", "800").unwrap(), 1.25);
+    // No standard means grit does not apply, which is not the same as 1.0.
+    assert_eq!(c.grit_labor_multiplier("epoxy", "800"), None);
+    assert_eq!(c.grit_labor_multiplier("polish", "9999"), None);
 }

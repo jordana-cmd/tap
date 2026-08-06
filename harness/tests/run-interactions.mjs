@@ -32,7 +32,7 @@ async function withPage(fn) {
   await waitReady(page);
   try {
     await fn(page, pageErrors);
-    assert.deepEqual(pageErrors, [], 'uncaught page errors');
+    assert.deepEqual(pageErrors, [], `uncaught page errors: ${JSON.stringify(pageErrors)}`);
   } finally {
     await context.close();
   }
@@ -664,6 +664,13 @@ const waitRoute = (page, want) => page.waitForFunction(
 const gotoQuote = async page => {
   await page.click('#quoteBtn');
   await waitRoute(page, 'quote');
+  // The rate card is fetched ASYNCHRONOUSLY on the first visit and re-renders
+  // the area controls when it lands (the grit picker only exists once the
+  // card says which systems grind). Interacting before it settles resolves an
+  // element handle the re-render then detaches.
+  await page.waitForFunction(
+    () => window.__harness.rateCard() !== null || window.__harness.rateCardError() !== null,
+    { timeout: 5_000 });
 };
 const gotoTakeoff = async page => {
   await page.click('#quoteBackBtn');
@@ -1030,6 +1037,225 @@ await run('quote view: empty takeoff shows an empty state, not a bare table', as
   assert.equal(view.blocks, 0, 'no area blocks');
   assert.ok(view.headlineHidden, 'no headline with nothing to price');
   assert.ok(view.jobLevelHidden, 'and no job-level costs either');
+});
+
+// ---- hours plausibility ----
+//
+// One man-hour is $82.59 fully loaded, which makes hours the most leveraged
+// input in the model by an order of magnitude. A real quote came out roughly
+// 2.3x high on an hour figure nothing on screen questioned.
+
+await run('quote view: the hours readout is the engine\'s, not a second multiplication', async page => {
+  await priceOneArea(page, 'epoxy');
+  const seen = await page.evaluate(() => {
+    const a = window.__harness.quote().areas[0];
+    const box = document.querySelector('.qArea .qProductivity');
+    return {
+      manHours: a.man_hours,
+      sfPerMh: a.sf_per_man_hour,
+      areaSf: a.area_sf,
+      text: box.textContent,
+      band: JSON.parse(window.__harness.productivityBand()),
+    };
+  });
+  // 100 SF at 2 crew x 8 h = 16 man-hours = 6.25 SF/man-hour.
+  assert.equal(seen.manHours, 16, 'engine man-hours');
+  assert.ok(Math.abs(seen.sfPerMh - seen.areaSf / seen.manHours) < 1e-9,
+    'the engine divides, the screen does not');
+  assert.match(seen.text, /16\s*man-hours/, 'man-hours rendered from the engine figure');
+  // Derived from the engine's own figure -- the square's SF depends on the
+  // page scale in force, and hardcoding it would test the fixture, not the
+  // readout.
+  const ratio = String(Number(seen.sfPerMh.toFixed(4)));
+  assert.ok(seen.text.includes(ratio),
+    `the ratio belongs beside it: expected ${ratio} in ${JSON.stringify(seen.text)}`);
+  // The median is ALWAYS shown, not only when the advisory fires: the real
+  // 2.3x-high quote sat inside the band, and what catches that is seeing the
+  // number next to its reference.
+  assert.ok(seen.text.includes(String(seen.band.typical)),
+    `the historical median belongs on screen — got ${seen.text}`);
+  assert.equal(seen.band.typical, 22, 'band comes from engine constants');
+});
+
+await run('quote view: an implausible hour figure is flagged quietly and still prices', async page => {
+  await priceOneArea(page, 'epoxy');   // 6.25 SF/mh — below the 8 floor
+  const st = await page.evaluate(() => {
+    const box = document.querySelector('.qArea .qProductivity');
+    return {
+      flag: window.__harness.quote().areas[0].productivity,
+      outside: box.classList.contains('outside'),
+      text: box.textContent,
+      priced: window.__harness.quote().price,
+      alerts: [...document.querySelectorAll('#quoteAlerts .qAlert')].map(a => a.textContent),
+      // The sub-margin-floor warning is the loud one; this must not borrow it.
+      borrowsFloorTreatment: box.className.includes('qhWarn') || box.className.includes('below'),
+    };
+  });
+  assert.equal(st.flag, 'low', 'the ENGINE owns the band, the screen reads the flag');
+  assert.ok(st.outside, 'and marks the readout');
+  assert.match(st.text, /unusual/, 'says so in words');
+  assert.ok(st.priced > 0, 'advisory only — the job still prices');
+  assert.ok(!st.alerts.some(a => /hour|productiv|SF\//i.test(a)),
+    `an implausible hour figure stays a per-area hint — got ${JSON.stringify(st.alerts)}`);
+  assert.ok(!st.borrowsFloorTreatment, 'quieter than the margin-floor warning');
+});
+
+await run('quote view: no hours means no ratio, never Infinity', async page => {
+  // Hours are routinely half-entered. Infinity or NaN beside a dollar figure
+  // reads as a broken quote rather than an unfinished one.
+  await drawArea(page);
+  await pickSystem(page, 'epoxy');
+  await gotoQuote(page);
+  const st = await page.evaluate(() => ({
+    quote: window.__harness.quote(),
+    readout: document.querySelector('.qArea .qProductivity').textContent,
+    screen: document.querySelector('#quoteView').textContent,
+  }));
+  assert.equal(st.quote, null, 'the engine refuses to price without hours');
+  assert.match(st.readout, /—/, 'blank readout rather than a stale or invented ratio');
+  assert.ok(!/Infinity|NaN/.test(st.screen), `no Infinity/NaN on screen: ${st.readout}`);
+});
+
+await run('quote view: job level blends man-hours across areas rather than averaging', async page => {
+  // A 200 SF closet and a 20,000 SF warehouse are not equal votes on how fast
+  // a job runs, so the job figure is total SF over total hours.
+  await priceOneArea(page, 'epoxy');            // 100 SF, 16 mh
+  await gotoTakeoff(page);
+  await setTool(page, 'area');
+  await snapOff(page);
+  for (const [x, y] of [[600, 250], [660, 250], [660, 290], [600, 290]]) await clickBase(page, x, y);
+  await page.keyboard.press('Enter');
+  const pickers = await page.$$('.measRow .measSystem');
+  assert.equal(pickers.length, 2, 'both areas committed and offer a system picker');
+  await pickers[pickers.length - 1].select('epoxy');
+
+  await gotoQuote(page);
+  await page.waitForFunction(
+    () => document.querySelectorAll('.qArea input[data-qkey^="crew-"]').length === 2,
+    { timeout: 5_000 });
+  const crews = await page.$$('.qArea input[data-qkey^="crew-"]');
+  // Deliberately SLOW: a small area soaking up more hours than the big one,
+  // so the blended figure and the per-area mean cannot coincide by accident.
+  await crews[1].click({ clickCount: 3 }); await page.keyboard.type('1', { delay: 20 });
+  const hours2 = await page.$$('.qArea input[data-qkey^="hours-"]');
+  await hours2[1].click({ clickCount: 3 }); await page.keyboard.type('40', { delay: 20 });
+  await page.waitForFunction(() => window.__harness.quote() !== null
+    && window.__harness.quote().areas.length === 2, { timeout: 5_000 });
+
+  const st = await page.evaluate(() => {
+    const q = window.__harness.quote();
+    return {
+      totalMh: q.man_hours,
+      totalSf: q.area_sf,
+      blended: q.sf_per_man_hour,
+      perArea: q.areas.map(a => a.sf_per_man_hour),
+      domMh: document.querySelector('#qjManHours').textContent,
+      domBlend: document.querySelector('#qjSfPerMh').textContent,
+    };
+  });
+  assert.equal(st.totalMh, 56, '16 + 40 man-hours');
+  assert.ok(Math.abs(st.blended - st.totalSf / st.totalMh) < 1e-9, 'total over total');
+  // The big fast area and the small slow one are NOT equal votes: the mean
+  // flatters the job, the blend reports it.
+  const mean = (st.perArea[0] + st.perArea[1]) / 2;
+  assert.ok(Math.abs(st.blended - mean) / st.blended > 0.2,
+    `blended ${st.blended} must not be the mean ${mean} of ${JSON.stringify(st.perArea)}`);
+  assert.ok(st.blended < mean, 'the slow area drags the real figure down');
+  assert.equal(st.domMh, String(st.totalMh), 'job man-hours on screen come from the engine total');
+  assert.ok(!/Infinity|NaN|—/.test(st.domBlend), `blended figure on screen — got ${st.domBlend}`);
+});
+
+// ---- grit hook ----
+//
+// Wired end to end and completely inert: every multiplier on the shipped card
+// is seeded at 1.0 until Jordan has timing data to populate it.
+
+await run('quote: grit is offered only on systems that grind', async page => {
+  await priceOneArea(page, 'polish');
+  const polish = await page.evaluate(() => ({
+    picker: !!document.querySelector('.qArea select[data-qkey^="grit-"]'),
+    options: [...document.querySelectorAll('.qArea select[data-qkey^="grit-"] option')]
+      .map(o => o.value),
+  }));
+  assert.ok(polish.picker, 'polish grinds, so a grit may be specified');
+  assert.equal(polish.options[0], '', 'defaults to the system standard, not a guess');
+  // Populated FROM THE RATE CARD — adding 1200 grit is a data edit, not a
+  // code change, so the list must match the card rather than a literal.
+  const card = await page.evaluate(() => window.__harness.rateCard().grit_levels.map(g => g.key));
+  assert.deepEqual(polish.options.slice(1), card, 'options come from the card ladder');
+
+  await gotoTakeoff(page);
+  await pickSystem(page, 'epoxy');
+  await gotoQuote(page);
+  const epoxy = await page.evaluate(() =>
+    !!document.querySelector('.qArea select[data-qkey^="grit-"]'));
+  assert.equal(epoxy, false, 'epoxy has no standard grit, so no grit may be chosen on it');
+});
+
+await run('quote: selecting a grit changes no price while the ladder is seeded flat', async page => {
+  await priceOneArea(page, 'polish');
+  const before = await page.evaluate(() => {
+    const q = window.__harness.quote();
+    return { cost: q.cost, price: q.price, profit: q.profit, mh: q.man_hours };
+  });
+  await page.select('.qArea select[data-qkey^="grit-"]', '800');
+  await page.waitForFunction(() => window.__harness.measurements()[0].gritLevel === '800',
+    { timeout: 5_000 });
+  const after = await page.evaluate(() => {
+    const q = window.__harness.quote();
+    return {
+      cost: q.cost, price: q.price, profit: q.profit, mh: q.man_hours,
+      mult: q.areas[0].grit_labor_multiplier,
+      grit: q.areas[0].grit_level,
+      base: q.areas[0].base_man_hours,
+    };
+  });
+  assert.deepEqual(
+    [after.cost, after.price, after.profit, after.mh],
+    [before.cost, before.price, before.profit, before.mh],
+    'the hook is inert at seed values — not one cent moves',
+  );
+  assert.equal(after.mult, 1, 'identity multiplier');
+  assert.equal(after.grit, '800', 'but the selection did reach the engine');
+  assert.equal(after.base, after.mh, 'entered hours and priced hours agree at 1.0x');
+});
+
+await run('quote: grit selection persists through reload', async page => {
+  await priceOneArea(page, 'polish');
+  await page.select('.qArea select[data-qkey^="grit-"]', '1200');
+  await page.waitForFunction(() => window.__harness.measurements()[0].gritLevel === '1200',
+    { timeout: 5_000 });
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.reload();
+  await waitReady(page);
+  assert.equal(await page.evaluate(() => window.__harness.measurements()[0].gritLevel), '1200',
+    'survives the IndexedDB round-trip');
+
+  const json = await page.evaluate(() => window.__harness.exportJson());
+  assert.match(json, /"gritLevel": "1200"/, 'and is in the JSON backup');
+});
+
+await run('quote: a grit left over from another system never poisons the quote', async page => {
+  // Switching polish -> epoxy strands the grit key on the measurement. The
+  // engine ERRORS on a grit it cannot apply, so sending it would take down
+  // the whole quote over a field the user can no longer even see.
+  await priceOneArea(page, 'polish');
+  await page.select('.qArea select[data-qkey^="grit-"]', '800');
+  await page.waitForFunction(() => window.__harness.measurements()[0].gritLevel === '800',
+    { timeout: 5_000 });
+  await gotoTakeoff(page);
+  await pickSystem(page, 'epoxy');
+  await gotoQuote(page);
+  const st = await page.evaluate(() => ({
+    stored: window.__harness.measurements()[0].gritLevel,
+    sent: window.__harness.jobInput().areas[0].grit_level,
+    quote: window.__harness.quote(),
+    err: window.__harness.quoteError(),
+  }));
+  assert.equal(st.stored, '800', 'the selection is remembered for a switch back');
+  assert.equal(st.sent, null, 'but never sent to a system that cannot use it');
+  assert.equal(st.err, null, 'so the quote does not fail');
+  assert.ok(st.quote && st.quote.price > 0, 'and still prices');
 });
 
 await run('quote: entering the route cancels an in-progress draft', async page => {

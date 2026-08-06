@@ -11,6 +11,10 @@
     "CONSUMABLES are applied to every job but SCALED PER SYSTEM via systems[].consumable_multipliers. A multiplier of 0 means the system does not use that consumable at all. Seal reduces or omits most of them; applying them at full rate overcharges every sealer job.",
     "CONSUMABLE MULTIPLIERS ARE EXHAUSTIVE: every system lists every consumable and there is NO default. validate() rejects a card with any system x consumable pair missing, so adding a product here without deciding its multiplier for all four systems fails to LOAD rather than silently mispricing. A default of 1.0 would silently overcharge sealer jobs and 0.0 would silently undercharge them; neither is safe, and a CI test does not help the person hand-editing this file. 1.0 = full rate, 0.0 = the system does not use it.",
     "OMITTED PENDING CLARIFICATION: 'Whips' (source rate 5e-08/SF would need 20M SF to consume one unit).",
+    "GRIT ESCALATOR IS INERT: every grit_levels[].labor_multiplier is seeded at 1.0, so selecting any grit level changes no quote by a cent. The mechanism is wired end to end and waiting on data. Populate a level by editing its multiplier here -- no rebuild.",
+    "GRIT MULTIPLIERS ARE RELATIVE, NOT ABSOLUTE. What gets applied to an area is grit_levels[area grit].labor_multiplier / grit_levels[system standard_grit].labor_multiplier. A system's entered hours already describe work at its own standard_grit, so only the difference from that baseline may be charged; quoting a system at its standard is always exactly 1.0. Multipliers are therefore meaningful only against each other, and the scale they sit on is arbitrary.",
+    "GRIT ESCALATES HOURS, NOT COST. Labor, overhead, and the SF-per-man-hour readout are all functions of man-hours, so routing it through hours means every one of them picks the change up with no special-casing. More passes means more time, not a surcharge.",
+    "STANDARD GRITS AND THE LADDER ARE PLACEHOLDERS: seal at 100 and polish at 400 are reasonable guesses, not Jordan's confirmed practice, and the seven levels are a conventional ladder rather than the set he actually sells. Both are one-line edits. A system with no standard_grit (epoxy, polyurea) involves no grinding, and an area may not set a grit level on it -- that ERRORS rather than being ignored, so 'I picked 1200 and nothing happened' can never be a silent no-op.",
     "RATES ARE EDITED HERE, NOT IN RUST. Changing a price requires no rebuild of engine-core or engine-web."
   ],
 
@@ -53,11 +57,22 @@
     { "id": "trash_bags",         "name": "Trash Bags",         "class": "consumable", "unit": "each", "unit_cost":  0.78,  "rate": 0.006,  "rate_basis": "area_sf" }
   ],
 
+  "grit_levels": [
+    { "key": "100",  "name": "100 grit",  "labor_multiplier": 1.0 },
+    { "key": "200",  "name": "200 grit",  "labor_multiplier": 1.0 },
+    { "key": "400",  "name": "400 grit",  "labor_multiplier": 1.0 },
+    { "key": "800",  "name": "800 grit",  "labor_multiplier": 1.0 },
+    { "key": "1200", "name": "1200 grit", "labor_multiplier": 1.0 },
+    { "key": "1500", "name": "1500 grit", "labor_multiplier": 1.0 },
+    { "key": "3000", "name": "3000 grit", "labor_multiplier": 1.0 }
+  ],
+
   "systems": [
     {
       "key": "seal",
       "name": "Seal",
       "confirmed": false,
+      "standard_grit": "100",
       "product_ids": ["cure_and_seal_first", "cure_and_seal_second", "polyurea_caulk"],
       "consumable_multipliers": {
         "cups_10_quart":      0.0,
@@ -77,6 +92,7 @@
       "key": "polish",
       "name": "Polish",
       "confirmed": false,
+      "standard_grit": "400",
       "product_ids": [
         "simihard_polishing", "cure_and_seal_first", "cure_and_seal_second",
         "polyurea_caulk", "mender_part_a", "mender_part_b"

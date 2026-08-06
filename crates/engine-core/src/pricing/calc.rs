@@ -41,6 +41,64 @@ use serde::{Deserialize, Serialize};
 /// warns. Refusing to price a thin job just hides it.
 pub const MARGIN_FLOOR: f64 = 0.20;
 
+/// Median SF per man-hour across ~220 historical jobs. Shown as the reference
+/// a quoted figure is read against; nothing computes from it.
+pub const SF_PER_MAN_HOUR_TYPICAL: f64 = 22.0;
+
+/// Outside `[SF_PER_MAN_HOUR_MIN, SF_PER_MAN_HOUR_MAX]` an area is flagged as
+/// implausible — ADVISORY ONLY, never an error and never blocking, because
+/// some jobs genuinely run outside it.
+///
+/// The band exists because hours are the most leveraged input in the model by
+/// an order of magnitude: at $27.50/h plus 7.65% payroll tax plus $52.99/h
+/// overhead, one man-hour is $82.59 fully loaded, so a doubled hour figure
+/// roughly doubles the quote. A real job priced at 10.4 SF per man-hour when
+/// the work runs at about 24 — 2.3× the hours it takes — is what these bounds
+/// exist to catch, and nothing on screen questioned it at the time.
+pub const SF_PER_MAN_HOUR_MIN: f64 = 8.0;
+/// Upper edge of the plausibility band. See [`SF_PER_MAN_HOUR_MIN`].
+pub const SF_PER_MAN_HOUR_MAX: f64 = 60.0;
+
+/// How an area's SF per man-hour reads against the plausibility band.
+///
+/// A flag rather than a threshold the UI re-implements: the engine owns the
+/// bounds, the screen owns the wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum Productivity {
+    /// No hours entered, or zero — there is no ratio to judge.
+    Unknown,
+    /// Fewer SF per man-hour than the band: MORE hours than this much floor
+    /// usually takes. The direction that overprices a job.
+    Low,
+    /// Within the band.
+    Typical,
+    /// More SF per man-hour than the band: fewer hours than usual. The
+    /// direction that underbids one.
+    High,
+}
+
+impl Productivity {
+    fn of(sf_per_man_hour: Option<f64>) -> Self {
+        match sf_per_man_hour {
+            None => Productivity::Unknown,
+            Some(v) if v < SF_PER_MAN_HOUR_MIN => Productivity::Low,
+            Some(v) if v > SF_PER_MAN_HOUR_MAX => Productivity::High,
+            Some(_) => Productivity::Typical,
+        }
+    }
+}
+
+/// SF per man-hour, or `None` when there are no hours to divide by.
+///
+/// Returning `None` rather than infinity is the point: hours are routinely
+/// empty mid-entry, and a readout showing `Infinity` or `NaN` beside a dollar
+/// figure looks like a broken quote rather than an unfinished one.
+fn sf_per_man_hour(area_sf: f64, man_hours: f64) -> Option<f64> {
+    (man_hours > 0.0 && area_sf.is_finite()).then(|| area_sf / man_hours)
+}
+
 // ---------- inputs ----------
 
 /// Crew size and duration for one area. Both are required: labor and overhead
@@ -75,6 +133,15 @@ pub struct AreaInput {
     #[cfg_attr(feature = "serde", serde(default))]
     pub perimeter_lf: Option<f64>,
     pub system_key: String,
+    /// Grinding grit this area is specified at, keyed into
+    /// [`super::RateCard::grit_levels`]. `None` = quote at the system's own
+    /// standard, which is what every area does until a spec says otherwise.
+    ///
+    /// Setting one on a system that does not grind is an ERROR rather than an
+    /// ignored field — "I selected 1200 grit and it changed nothing" is
+    /// indistinguishable from a bug.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub grit_level: Option<String>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub add_on_keys: Vec<String>,
     /// `None` = hours not entered yet. Pricing ERRORS rather than guessing.
@@ -243,7 +310,23 @@ pub struct AreaQuote {
     pub labor: f64,
     pub overhead: f64,
     pub manual_costs: f64,
+    /// Grit this area was quoted at, echoed back. `None` = the system's own
+    /// standard.
+    pub grit_level: Option<String>,
+    /// The escalator actually applied to the entered hours (1.0 when the area
+    /// is at its system's standard, or when the ladder is still seeded flat).
+    pub grit_labor_multiplier: f64,
+    /// `crew × hours` AS ENTERED, before any grit escalation. Reported so a
+    /// changed total is attributable: if `man_hours` differs from this, the
+    /// grit did it, not a mistyped hour.
+    pub base_man_hours: f64,
+    /// `base_man_hours × grit_labor_multiplier` — the figure labor and
+    /// overhead are actually computed from.
     pub man_hours: f64,
+    /// `area_sf / man_hours`, or `None` when no hours are entered.
+    pub sf_per_man_hour: Option<f64>,
+    /// How that reads against the plausibility band. Advisory only.
+    pub productivity: Productivity,
     /// materials + consumables + labor + overhead + manual costs.
     pub cost: f64,
 }
@@ -265,6 +348,17 @@ pub struct JobQuote {
     /// `price - cost`, in DOLLARS — a primary output, not something the UI
     /// derives.
     pub profit: f64,
+    /// Σ area square footage — the denominator's partner in the blended
+    /// productivity figure below.
+    pub area_sf: f64,
+    /// Σ escalated man-hours across every area.
+    pub man_hours: f64,
+    /// Blended `area_sf / man_hours` for the whole job. NOT the mean of the
+    /// per-area figures: a 200 SF closet and a 20,000 SF warehouse are not
+    /// equal votes on how fast this job runs.
+    pub sf_per_man_hour: Option<f64>,
+    /// How the blended figure reads against the band. Advisory only.
+    pub productivity: Productivity,
     /// `margin < MARGIN_FLOOR`. A flag, never an error.
     pub below_margin_floor: bool,
     /// System keys quoted from an UNCONFIRMED recipe, deduplicated.
@@ -322,6 +416,17 @@ pub enum PricingError {
     },
     #[error("system `{system}` has no consumable multiplier for `{consumable}`")]
     MissingConsumableMultiplier { system: String, consumable: String },
+    #[error("area `{area}`: unknown grit level `{grit}`")]
+    UnknownGritLevel { area: String, grit: String },
+    #[error(
+        "area `{area}`: system `{system}` involves no grinding, so a grit level \
+         (`{grit}`) has no meaning on it"
+    )]
+    GritNotApplicable {
+        area: String,
+        system: String,
+        grit: String,
+    },
     #[error("wage source {0:?} has no rates loaded — Davis-Bacon prevailing wages are unpopulated, and falling back to the standard wage would underbid by roughly half")]
     WageUnavailable(WageSource),
     #[error(
@@ -577,7 +682,13 @@ pub fn price_area(ctx: &PricingContext<'_>, area: &AreaInput) -> Result<AreaQuot
         .map(|l| l.extended_cost)
         .sum();
 
-    let man_hours = labor_in.man_hours();
+    // Grit escalates HOURS, never cost directly. Everything downstream is a
+    // function of man-hours, so labor, overhead, and the productivity readout
+    // all pick the change up with no special-casing anywhere.
+    let grit_multiplier = grit_escalator(card, system, area)?;
+    let base_man_hours = labor_in.man_hours();
+    let man_hours = base_man_hours * grit_multiplier;
+
     let labor = ctx.wage_per_hour * man_hours * (1.0 + card.labor.payroll_tax_rate)
         + card.labor.insurance_benefits_per_hour * man_hours;
     let overhead = card.labor.overhead_per_man_hour * man_hours;
@@ -610,9 +721,41 @@ pub fn price_area(ctx: &PricingContext<'_>, area: &AreaInput) -> Result<AreaQuot
         labor,
         overhead,
         manual_costs,
+        grit_level: area.grit_level.clone(),
+        grit_labor_multiplier: grit_multiplier,
+        base_man_hours,
         man_hours,
+        sf_per_man_hour: sf_per_man_hour(area.area_sf, man_hours),
+        productivity: Productivity::of(sf_per_man_hour(area.area_sf, man_hours)),
         cost: materials + consumables + labor + overhead + manual_costs,
     })
+}
+
+/// The man-hours escalator for an area, or 1.0 when it names no grit.
+///
+/// Exactly 1.0 — not "approximately" — when there is no grit, and `x * 1.0 ==
+/// x` in IEEE-754, so an area with no grit prices to the identical bits it did
+/// before this field existed.
+fn grit_escalator(
+    card: &RateCard,
+    system: &super::SystemRecipe,
+    area: &AreaInput,
+) -> Result<f64, PricingError> {
+    let Some(grit) = &area.grit_level else {
+        return Ok(1.0);
+    };
+    if system.standard_grit.is_none() {
+        return Err(PricingError::GritNotApplicable {
+            area: area.name.clone(),
+            system: system.key.clone(),
+            grit: grit.clone(),
+        });
+    }
+    card.grit_labor_multiplier(&system.key, grit)
+        .ok_or_else(|| PricingError::UnknownGritLevel {
+            area: area.name.clone(),
+            grit: grit.clone(),
+        })
 }
 
 /// Price a whole job: every area, plus job-level costs, then margin.
@@ -645,6 +788,12 @@ pub fn price_job(card: &RateCard, job: &JobInput) -> Result<JobQuote, PricingErr
     unconfirmed.sort();
     unconfirmed.dedup();
 
+    // Blended from the job's totals, not averaged across areas — see the note
+    // on JobQuote::sf_per_man_hour.
+    let total_sf: f64 = areas.iter().map(|a| a.area_sf).sum();
+    let total_hours: f64 = areas.iter().map(|a| a.man_hours).sum();
+    let blended = sf_per_man_hour(total_sf, total_hours);
+
     Ok(JobQuote {
         areas,
         area_cost,
@@ -653,6 +802,10 @@ pub fn price_job(card: &RateCard, job: &JobInput) -> Result<JobQuote, PricingErr
         margin: job.margin,
         price,
         profit,
+        area_sf: total_sf,
+        man_hours: total_hours,
+        sf_per_man_hour: blended,
+        productivity: Productivity::of(blended),
         below_margin_floor: job.margin < MARGIN_FLOOR,
         unconfirmed_systems: unconfirmed,
     })

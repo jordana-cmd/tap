@@ -24,7 +24,8 @@
 use engine_core::pricing::{
     consumable_rate_per_sf, from_json, material_rate_per_sf, price_area, price_from_cost,
     price_job, AreaInput, JobCosts, JobInput, LaborInput, LineSource, PricingContext, PricingError,
-    RateCard, WageSource, MARGIN_FLOOR,
+    Productivity, RateCard, WageSource, MARGIN_FLOOR, SF_PER_MAN_HOUR_MAX, SF_PER_MAN_HOUR_MIN,
+    SF_PER_MAN_HOUR_TYPICAL,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -243,6 +244,7 @@ fn area_of(system: &str, sf: f64, crew: f64, hours: f64) -> AreaInput {
         area_sf: sf,
         perimeter_lf: None,
         system_key: system.to_string(),
+        grit_level: None,
         add_on_keys: vec![],
         labor: Some(LaborInput { crew, hours }),
         quantity_overrides: BTreeMap::new(),
@@ -837,3 +839,293 @@ fn every_line_carries_what_the_ui_needs_to_render_it() {
         cents(l.quantity, l.base_quantity * l.factor, &l.product_id);
     }
 }
+
+// ---------- grit escalator ----------
+//
+// The whole mechanism ships INERT: every multiplier on the shipped card is
+// seeded at 1.0 because the timing data to populate it does not exist yet.
+// The tests below are therefore in two halves — the inertness of the seeded
+// card, which is what protects today's quotes, and the arithmetic on a card
+// with real multipliers, which is what will be true once it is populated.
+
+/// A card whose grit ladder is NOT seeded flat, for testing the escalator
+/// itself. Standard is 400; 800 costs a quarter more time, 200 a fifth less.
+fn gritted_card() -> RateCard {
+    let mut c = card();
+    for g in c.grit_levels.iter_mut() {
+        g.labor_multiplier = match g.key.as_str() {
+            "200" => 0.8,
+            "400" => 1.0,
+            "800" => 1.25,
+            "1200" => 1.5,
+            _ => 1.0,
+        };
+    }
+    c
+}
+
+fn at_grit(system: &str, sf: f64, crew: f64, hours: f64, grit: &str) -> AreaInput {
+    let mut a = area_of(system, sf, crew, hours);
+    a.grit_level = Some(grit.into());
+    a
+}
+
+#[test]
+fn the_shipped_grit_ladder_is_seeded_entirely_flat() {
+    // If this fails someone has populated a multiplier, and every assertion
+    // about prices being unchanged below is no longer about the shipped card.
+    let c = card();
+    assert!(!c.grit_levels.is_empty(), "the ladder must exist to be used");
+    for g in &c.grit_levels {
+        assert_eq!(
+            g.labor_multiplier, 1.0,
+            "grit `{}` is populated at {} — seed values only until real timing \
+             data lands, and the inertness tests below assume it",
+            g.key, g.labor_multiplier
+        );
+    }
+}
+
+#[test]
+fn seeded_grit_leaves_every_number_bit_identical() {
+    // THE test this session exists to satisfy: adding the grit field may not
+    // move a quote by a cent. Exact f64 equality, not a cent tolerance --
+    // x * 1.0 == x in IEEE-754, so "unchanged" is provable rather than
+    // approximate, and a tolerance would hide a multiplier that had drifted.
+    let c = card();
+    let base = price_job(&c, &job_with(vec![area_of("polish", 3000.0, 3.0, 9.0)], 0.35)).unwrap();
+
+    for grit in ["100", "200", "400", "800", "1200", "1500", "3000"] {
+        let with = price_job(
+            &c,
+            &job_with(vec![at_grit("polish", 3000.0, 3.0, 9.0, grit)], 0.35),
+        )
+        .unwrap();
+        assert_eq!(with.cost, base.cost, "{grit}: cost moved");
+        assert_eq!(with.price, base.price, "{grit}: price moved");
+        assert_eq!(with.profit, base.profit, "{grit}: profit moved");
+        assert_eq!(with.margin, base.margin, "{grit}: margin moved");
+        assert_eq!(with.man_hours, base.man_hours, "{grit}: hours moved");
+        assert_eq!(with.areas[0].labor, base.areas[0].labor, "{grit}: labor");
+        assert_eq!(
+            with.areas[0].overhead, base.areas[0].overhead,
+            "{grit}: overhead"
+        );
+        assert_eq!(with.areas[0].grit_labor_multiplier, 1.0);
+        // Only the echoed-back field differs, which is the point of a hook.
+        assert_eq!(with.areas[0].grit_level.as_deref(), Some(grit));
+    }
+}
+
+#[test]
+fn an_area_at_no_grit_reports_the_identity_multiplier() {
+    let c = card();
+    let q = price_area(&std_ctx(&c), &area_of("polish", 1000.0, 2.0, 8.0)).unwrap();
+    assert_eq!(q.grit_level, None);
+    assert_eq!(q.grit_labor_multiplier, 1.0);
+    assert_eq!(q.base_man_hours, q.man_hours, "nothing escalated");
+}
+
+#[test]
+fn a_populated_escalator_scales_hours_relative_to_the_systems_standard() {
+    let c = gritted_card();
+    // Polish's standard is 400, so 400 is exactly 1.0 no matter what figure
+    // the level carries -- it is the baseline the hours were entered against.
+    let at_standard = price_area(&std_ctx(&c), &at_grit("polish", 3000.0, 3.0, 10.0, "400")).unwrap();
+    cents(at_standard.grit_labor_multiplier, 1.0, "standard is unity");
+    cents(at_standard.man_hours, 30.0, "hours as entered");
+
+    // 800 is 1.25 / 1.0 = 1.25x the time.
+    let up = price_area(&std_ctx(&c), &at_grit("polish", 3000.0, 3.0, 10.0, "800")).unwrap();
+    cents(up.grit_labor_multiplier, 1.25, "800 against a 400 standard");
+    cents(up.base_man_hours, 30.0, "entered hours are preserved");
+    cents(up.man_hours, 37.5, "escalated hours");
+
+    // A finer spec than standard can also mean LESS time, and nothing forbids it.
+    let down = price_area(&std_ctx(&c), &at_grit("polish", 3000.0, 3.0, 10.0, "200")).unwrap();
+    cents(down.grit_labor_multiplier, 0.8, "200 against a 400 standard");
+    cents(down.man_hours, 24.0, "de-escalated hours");
+}
+
+#[test]
+fn the_escalator_is_a_ratio_so_a_systems_own_standard_never_double_counts() {
+    // The failure this design exists to prevent: seal's standard is 100 and
+    // polish's is 400. If the multiplier were applied ABSOLUTELY, quoting
+    // seal at its own standard would multiply hours that already describe
+    // 100-grit work. Both systems must come out at exactly 1.0 at their own
+    // standard despite carrying different figures.
+    let mut c = gritted_card();
+    // Give the two systems different standards AND different figures at them.
+    c.grit_levels
+        .iter_mut()
+        .find(|g| g.key == "100")
+        .expect("100 is on the shipped ladder")
+        .labor_multiplier = 0.5;
+    let seal = price_area(&std_ctx(&c), &at_grit("seal", 2000.0, 2.0, 6.0, "100")).unwrap();
+    let polish = price_area(&std_ctx(&c), &at_grit("polish", 2000.0, 2.0, 6.0, "400")).unwrap();
+    cents(seal.grit_labor_multiplier, 1.0, "seal at its own standard");
+    cents(polish.grit_labor_multiplier, 1.0, "polish at its own standard");
+    cents(seal.man_hours, 12.0, "seal hours unescalated");
+    cents(polish.man_hours, 12.0, "polish hours unescalated");
+
+    // And the SAME level means different things to the two systems, because
+    // they start from different baselines: 800 is 1.25/0.5 = 2.5x for seal
+    // but 1.25/1.0 = 1.25x for polish.
+    let seal_800 = price_area(&std_ctx(&c), &at_grit("seal", 2000.0, 2.0, 6.0, "800")).unwrap();
+    let polish_800 = price_area(&std_ctx(&c), &at_grit("polish", 2000.0, 2.0, 6.0, "800")).unwrap();
+    cents(seal_800.grit_labor_multiplier, 2.5, "800 from a 100 baseline");
+    cents(polish_800.grit_labor_multiplier, 1.25, "800 from a 400 baseline");
+}
+
+#[test]
+fn escalated_hours_flow_into_labor_overhead_and_productivity_with_no_special_casing() {
+    // Routing grit through HOURS rather than cost is what buys this. Nothing
+    // downstream knows grit exists.
+    let c = gritted_card();
+    let base = price_area(&std_ctx(&c), &at_grit("polish", 3000.0, 3.0, 10.0, "400")).unwrap();
+    let up = price_area(&std_ctx(&c), &at_grit("polish", 3000.0, 3.0, 10.0, "800")).unwrap();
+
+    cents(up.labor, base.labor * 1.25, "labor scaled with hours");
+    cents(up.overhead, base.overhead * 1.25, "overhead scaled with hours");
+    cents(
+        up.sf_per_man_hour.unwrap(),
+        3000.0 / 37.5,
+        "productivity reflects escalated hours, not entered ones",
+    );
+    // Materials do NOT move: more passes is more time, not more product.
+    cents(up.materials, base.materials, "materials untouched by grit");
+    cents(up.consumables, base.consumables, "consumables untouched");
+}
+
+#[test]
+fn a_grit_on_a_system_that_does_not_grind_is_an_error_not_a_silent_no_op() {
+    // Epoxy has no standard_grit. Accepting and ignoring the field would make
+    // "I selected 1200 grit and the price did not move" indistinguishable
+    // from the seeded-flat case, which is exactly the confusion to avoid.
+    let c = card();
+    let err = price_area(&std_ctx(&c), &at_grit("epoxy", 1000.0, 2.0, 8.0, "800")).unwrap_err();
+    match err {
+        PricingError::GritNotApplicable {
+            ref system,
+            ref grit,
+            ..
+        } => {
+            assert_eq!(system, "epoxy");
+            assert_eq!(grit, "800");
+        }
+        other => panic!("expected GritNotApplicable, got {other}"),
+    }
+    assert!(
+        err.to_string().contains("no grinding"),
+        "the message must say why: {err}"
+    );
+}
+
+#[test]
+fn an_unknown_grit_level_names_itself_rather_than_pricing_at_par() {
+    let c = card();
+    let err = price_area(&std_ctx(&c), &at_grit("polish", 1000.0, 2.0, 8.0, "9999")).unwrap_err();
+    assert!(
+        matches!(err, PricingError::UnknownGritLevel { ref grit, .. } if grit == "9999"),
+        "got {err}"
+    );
+}
+
+// ---------- SF per man-hour ----------
+
+#[test]
+fn productivity_is_reported_per_area_and_blended_for_the_job() {
+    let c = card();
+    // 3000 SF at 3 crew x 10 h = 30 man-hours = 100 SF/mh (implausibly fast).
+    // 1000 SF at 2 crew x 40 h = 80 man-hours = 12.5 SF/mh (typical-ish).
+    let job = job_with(
+        vec![
+            area_of("polish", 3000.0, 3.0, 10.0),
+            {
+                let mut a = area_of("epoxy", 1000.0, 2.0, 40.0);
+                a.id = 2;
+                a
+            },
+        ],
+        0.35,
+    );
+    let q = price_job(&c, &job).unwrap();
+    cents(q.areas[0].sf_per_man_hour.unwrap(), 100.0, "area 1");
+    cents(q.areas[1].sf_per_man_hour.unwrap(), 12.5, "area 2");
+
+    // Blended is total/total, NOT the mean of 100 and 12.5 (=56.25). The big
+    // slow area dominates, which is the honest reading of the job.
+    cents(q.man_hours, 110.0, "job man-hours");
+    cents(q.area_sf, 4000.0, "job square footage");
+    cents(q.sf_per_man_hour.unwrap(), 4000.0 / 110.0, "blended");
+    assert!(
+        (q.sf_per_man_hour.unwrap() - 56.25).abs() > 1.0,
+        "blended must not be the mean of the per-area figures"
+    );
+}
+
+#[test]
+fn the_productivity_band_flags_both_directions_and_blocks_neither() {
+    let c = card();
+    // 1554 SF at 150 man-hours = 10.4 SF/mh: the real quote that came out
+    // 2.3x high. It is inside the 8-60 band, so the band alone would not have
+    // caught it -- the READOUT is what does, by putting 10.4 next to a median
+    // of 22. The band only catches the wilder cases.
+    let real = price_area(&std_ctx(&c), &area_of("polish", 1554.0, 3.0, 50.0)).unwrap();
+    cents(real.sf_per_man_hour.unwrap(), 10.36, "the real job");
+    assert_eq!(real.productivity, Productivity::Typical);
+
+    // 500 SF at 2 x 40 = 80 mh = 6.25 SF/mh: below the band.
+    let slow = price_area(&std_ctx(&c), &area_of("polish", 500.0, 2.0, 40.0)).unwrap();
+    assert_eq!(slow.productivity, Productivity::Low);
+    // 10000 SF at 1 x 8 = 8 mh = 1250 SF/mh: above it.
+    let fast = price_area(&std_ctx(&c), &area_of("polish", 10000.0, 1.0, 8.0)).unwrap();
+    assert_eq!(fast.productivity, Productivity::High);
+
+    // Advisory ONLY: both still priced, and neither is an error.
+    assert!(slow.cost > 0.0 && fast.cost > 0.0);
+}
+
+#[test]
+fn the_band_edges_are_inclusive_and_named() {
+    cents(SF_PER_MAN_HOUR_MIN, 8.0, "band floor");
+    cents(SF_PER_MAN_HOUR_MAX, 60.0, "band ceiling");
+    cents(SF_PER_MAN_HOUR_TYPICAL, 22.0, "historical median");
+    let c = card();
+    // Exactly on an edge is INSIDE the band -- "roughly 8-60" should not fire
+    // on the boundary itself.
+    let at_min = price_area(&std_ctx(&c), &area_of("polish", 80.0, 1.0, 10.0)).unwrap();
+    cents(at_min.sf_per_man_hour.unwrap(), 8.0, "on the floor");
+    assert_eq!(at_min.productivity, Productivity::Typical);
+    let at_max = price_area(&std_ctx(&c), &area_of("polish", 600.0, 1.0, 10.0)).unwrap();
+    cents(at_max.sf_per_man_hour.unwrap(), 60.0, "on the ceiling");
+    assert_eq!(at_max.productivity, Productivity::Typical);
+}
+
+#[test]
+fn zero_hours_yields_no_ratio_rather_than_infinity() {
+    // Hours are routinely empty mid-entry. Infinity or NaN beside a dollar
+    // figure reads as a broken quote rather than an unfinished one.
+    let c = card();
+    let q = price_area(&std_ctx(&c), &area_of("polish", 1000.0, 0.0, 0.0)).unwrap();
+    assert_eq!(q.man_hours, 0.0);
+    assert_eq!(q.sf_per_man_hour, None);
+    assert_eq!(q.productivity, Productivity::Unknown);
+
+    // And at the job level, where every area has no hours.
+    let job = price_job(&c, &job_with(vec![area_of("polish", 1000.0, 0.0, 0.0)], 0.35)).unwrap();
+    assert_eq!(job.sf_per_man_hour, None);
+    assert_eq!(job.productivity, Productivity::Unknown);
+}
+
+#[test]
+fn a_zero_square_foot_area_is_a_ratio_of_zero_not_a_missing_one() {
+    // Distinct from the case above: there ARE hours, so the ratio is real and
+    // is legitimately 0.0. Flagged Low, which is correct -- hours booked
+    // against no floor is exactly the kind of thing worth noticing.
+    let c = card();
+    let q = price_area(&std_ctx(&c), &area_of("polish", 0.0, 2.0, 4.0)).unwrap();
+    cents(q.sf_per_man_hour.unwrap(), 0.0, "zero SF over real hours");
+    assert_eq!(q.productivity, Productivity::Low);
+}
+

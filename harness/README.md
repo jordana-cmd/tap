@@ -65,6 +65,54 @@ fixtures behind it. Consequences worth knowing:
 - `serve.ps1` and the test server both map `/data/` to the repo's `data/`
   directory; without it the screen loads but prices nothing.
 
+### The hours readout
+
+One man-hour is **$82.59 fully loaded** ($27.50 wage + 7.65% payroll tax +
+$52.99 overhead), which makes hours the most leveraged input in the model by
+an order of magnitude — and a real quote came out roughly 2.3× high on an hour
+figure nothing on screen questioned. So beside every area's crew and hours,
+live: **man-hours** and **SF per man-hour**, with the historical median
+(~22 SF/man-hour across ~220 jobs) shown next to it.
+
+The median is shown *always*, not only when something looks wrong. The quote
+that prompted this ran at 10.4 SF/man-hour, comfortably inside the advisory
+band; what catches that is seeing 10.4 beside 22, not a warning.
+
+Outside roughly 8–60 SF/man-hour the readout picks up a quiet advisory. It is
+**informational and never blocks** — some jobs genuinely run outside it — and
+it is deliberately styled quieter than the sub-margin-floor warning, which
+reports a decision about the job rather than a number that looks unusual. The
+band and the median are `engine-core` constants read through
+`productivity_band_json()`; the flag itself is computed per area by the engine
+(`Productivity::{Low,Typical,High,Unknown}`), so the screen renders a verdict
+it does not make. With hours empty or zero the readout is **blank** rather than
+`Infinity` — the engine returns `None`, because a half-entered quote is
+unfinished, not broken.
+
+The job-level block carries the same pair, **blended** (total SF ÷ total
+man-hours) rather than averaged: a 200 SF closet and a 20,000 SF warehouse are
+not equal votes on how fast a job runs.
+
+### Grit
+
+A grit level per area, offered only on systems that grind (`standard_grit` in
+the rate card; polish and seal today, not epoxy or polyurea). Levels come from
+the card's `grit_levels` ladder, never a hardcoded list — adding 1200 grit is a
+data edit.
+
+**The escalator multiplies man-hours, not cost.** More passes is more time, and
+routing it through hours means labor, overhead, and the readout above all pick
+it up with no special-casing. What is applied is a *ratio*: the chosen level's
+multiplier divided by the system's own standard, so a system quoted at its
+standard is always exactly 1.0 and hours that already describe 400-grit work
+are never charged twice for it.
+
+**Every multiplier ships seeded at 1.0**, so the whole mechanism is inert until
+Jordan has timing data — a test asserts that selecting any grit leaves cost,
+price, profit and man-hours bit-identical. A grit stranded on a measurement by
+a system change is remembered but never sent, since the engine rejects a grit
+it cannot apply rather than ignoring it.
+
 ### The handoff payload
 
 `buildQuotePayload()` remains the takeoff → quoting handoff (and the shape an
