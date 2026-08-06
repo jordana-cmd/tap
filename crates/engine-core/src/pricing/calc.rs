@@ -29,7 +29,7 @@
 
 use super::{
     AddOn, AddOnEffect, Product, ProductClass, ProductOp, ProductUnit, RateBasis, RateCard,
-    WageSource,
+    SystemRecipe, WageSource,
 };
 use std::collections::BTreeMap;
 
@@ -361,6 +361,20 @@ pub struct AreaQuote {
     pub cost: f64,
 }
 
+/// One sentence of a scope of work, and the catalog lines it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct ScopeStep {
+    pub text: String,
+    /// Products that produced this step. EMPTY for the system's own intro and
+    /// outro sentences (mobilization, cleanup), which belong to no product.
+    ///
+    /// More than one when a two-part product collapses: Mender Part A and Part
+    /// B are two catalog lines and one thing a crew does, so they share a
+    /// sentence and appear once.
+    pub product_ids: Vec<String>,
+}
+
 /// One bid item, priced as a lump sum.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -387,6 +401,15 @@ pub struct BidItemQuote {
     pub grit_levels: Vec<String>,
     /// `grit_levels.len() > 1`, or one explicit level mixed with unset members.
     pub mixed_grit: bool,
+    /// The generated scope of work: this system's intro, the work steps its
+    /// SURVIVING product lines describe, then its outro.
+    ///
+    /// Derived from the same resolved lines the price is, which is the whole
+    /// point — a narrative kept in a separate list drifts from the quote it
+    /// describes the first time someone suppresses a line. A DRAFT: the UI
+    /// pre-fills an editable field with it, because there is always a job
+    /// where the standard language is not quite right.
+    pub scope: Vec<ScopeStep>,
 }
 
 /// The whole job, priced.
@@ -941,8 +964,74 @@ pub fn resolve_bid_items(job: &JobInput) -> Result<Vec<BidItem>, PricingError> {
     Ok(out)
 }
 
+/// The scope of work for a set of priced areas sharing a system.
+///
+/// Reads the SURVIVING direct lines — suppressed ones are already excluded, so
+/// deleting the mender on a new slab drops the joint-repair sentence with no
+/// second list to maintain. Consumables never contribute: brushes and rags are
+/// not work a customer is buying.
+///
+/// Across several member areas the steps are the UNION, not the intersection:
+/// one lump sum has to describe everything under it, including an add-on that
+/// only one member carries.
+fn build_scope(card: &RateCard, system: &SystemRecipe, members: &[&AreaQuote]) -> Vec<ScopeStep> {
+    let mut steps: Vec<ScopeStep> = system
+        .scope_intro
+        .iter()
+        .map(|t| ScopeStep {
+            text: t.clone(),
+            product_ids: Vec::new(),
+        })
+        .collect();
+
+    // (order, first-seen index, text) -> the products behind it. Sentences are
+    // deduplicated by TEXT, which is what collapses a two-part product into
+    // one step without anyone having to declare the pairing.
+    let mut seen: Vec<(i32, usize, String, Vec<String>)> = Vec::new();
+    for area in members {
+        for line in &area.lines {
+            if line.source == LineSource::Consumable || line.suppressed {
+                continue;
+            }
+            let Some(product) = card.product(&line.product_id) else {
+                continue;
+            };
+            let Some(text) = product.scope_line.as_ref().filter(|t| !t.is_empty()) else {
+                continue;
+            };
+            match seen.iter_mut().find(|(_, _, t, _)| t == text) {
+                Some((_, _, _, ids)) => {
+                    if !ids.contains(&product.id) {
+                        ids.push(product.id.clone());
+                    }
+                }
+                None => seen.push((
+                    product.scope_order,
+                    seen.len(),
+                    text.clone(),
+                    vec![product.id.clone()],
+                )),
+            }
+        }
+    }
+    // Work sequence, not catalog order: joints are repaired before the floor
+    // is sealed however the products happen to be listed.
+    seen.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    steps.extend(seen.into_iter().map(|(_, _, text, product_ids)| ScopeStep {
+        text,
+        product_ids,
+    }));
+
+    steps.extend(system.scope_outro.iter().map(|t| ScopeStep {
+        text: t.clone(),
+        product_ids: Vec::new(),
+    }));
+    steps
+}
+
 /// Roll priced areas up into one bid item, enforcing the shared-system rule.
 fn price_bid_item(
+    card: &RateCard,
     item: &BidItem,
     by_id: &BTreeMap<u64, &AreaQuote>,
     margin: f64,
@@ -990,6 +1079,12 @@ fn price_bid_item(
         man_hours: members.iter().map(|a| a.man_hours).sum(),
         grit_levels: grits,
         mixed_grit,
+        // Empty when the item has no system yet -- there is no recipe to
+        // narrate, and an invented sentence would be worse than none.
+        scope: match systems.first().and_then(|k| card.system(k)) {
+            Some(system) => build_scope(card, system, &members),
+            None => Vec::new(),
+        },
     })
 }
 
@@ -1016,7 +1111,7 @@ pub fn price_job(card: &RateCard, job: &JobInput) -> Result<JobQuote, PricingErr
     let by_id: BTreeMap<u64, &AreaQuote> = areas.iter().map(|a| (a.area_id, a)).collect();
     let bid_items = resolve_bid_items(job)?
         .iter()
-        .map(|it| price_bid_item(it, &by_id, job.margin))
+        .map(|it| price_bid_item(card, it, &by_id, job.margin))
         .collect::<Result<Vec<_>, _>>()?;
 
     // The split the whole layer exists for. An alternate is priced exactly

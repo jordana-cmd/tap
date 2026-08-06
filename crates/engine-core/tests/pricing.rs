@@ -319,6 +319,8 @@ fn product(id: &str, class: ProductClass) -> Product {
         unit_cost: 1.0,
         rate: 0.001,
         rate_basis: RateBasis::AreaSf,
+        scope_line: None,
+        scope_order: 0,
     }
 }
 
@@ -335,6 +337,8 @@ fn minimal() -> RateCard {
             consumable_multipliers: BTreeMap::new(),
             confirmed: false,
             standard_grit: None,
+            scope_intro: vec![],
+            scope_outro: vec![],
         }],
         add_ons: vec![],
         grit_levels: vec![],
@@ -504,6 +508,8 @@ fn allows_conflicting_replaces_on_disjoint_systems() {
         consumable_multipliers: BTreeMap::new(),
         confirmed: false,
         standard_grit: None,
+        scope_intro: vec![],
+        scope_outro: vec![],
     });
     let mk = |key: &str, with: &str, sys: &str| AddOn {
         key: key.into(),

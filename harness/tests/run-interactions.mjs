@@ -1539,6 +1539,283 @@ await run('bid items: a legacy project loads with one item per area', async page
     'and it prices without a migration step');
 });
 
+// ---- proposal content ----
+//
+// The customer-facing words around the numbers. The editorial rule this whole
+// screen turns on: a scope narrative is a GENERATED DRAFT until someone edits
+// it, and an edit is sticky.
+
+const gotoProposal = async page => {
+  await page.click('#proposalBtn');
+  await waitRoute(page, 'proposal');
+  await page.waitForFunction(
+    () => window.__harness.rateCard() !== null || window.__harness.rateCardError() !== null,
+    { timeout: 5_000 });
+};
+const scopeBox = page => page.$eval('.propItem textarea.propScope', t => t.value);
+
+await run('proposal: routes from the quote and back, and deep-links', async page => {
+  await priceOneArea(page, 'polish');
+  await gotoProposal(page);
+  const on = await routeState(page);
+  assert.equal(on.route, 'proposal');
+  assert.equal(on.hash, '#/proposal');
+  assert.equal(await page.$eval('#proposalView', v => getComputedStyle(v).display !== 'none'), true);
+
+  await page.click('#proposalBackBtn');
+  await waitRoute(page, 'quote');
+  assert.equal((await routeState(page)).route, 'quote', 'back returns to the quote, not the takeoff');
+
+  // Deep link: the proposal rests on the quote, so the quote must be current
+  // before a lump sum or a generated scope can be shown.
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.evaluate(() => { location.hash = '#/proposal'; });
+  await page.reload();
+  await waitReady(page);
+  await page.waitForFunction(() => document.querySelectorAll('.propItem').length === 1,
+    { timeout: 10_000 });
+  assert.ok((await scopeBox(page)).length > 0, 'and the narrative is there after a cold boot');
+});
+
+await run('proposal: the scope is the engine\'s generated narrative, pre-filled', async page => {
+  await priceOneArea(page, 'polish');
+  await gotoProposal(page);
+  const st = await page.evaluate(() => {
+    const q = window.__harness.quote();
+    return {
+      generated: q.bid_items[0].scope.map(s => s.text).join('\n'),
+      steps: q.bid_items[0].scope.length,
+      shown: document.querySelector('.propItem textarea.propScope').value,
+      foot: document.querySelector('.propScopeFoot').textContent,
+    };
+  });
+  assert.ok(st.steps >= 5, `a real narrative, got ${st.steps} steps`);
+  assert.equal(st.shown, st.generated, 'the screen writes none of it itself');
+  assert.match(st.foot, /Generated from the recipe/, 'and says where it came from');
+  // Bookended by work that belongs to no product.
+  assert.match(st.generated, /Mobilise/);
+  assert.match(st.generated, /demobilise/);
+  // The polish recipe's own steps, in work order.
+  assert.ok(st.generated.indexOf('Repair spalls') < st.generated.indexOf('cure and seal'),
+    `joints are repaired before the floor is sealed:\n${st.generated}`);
+});
+
+await run('proposal: suppressing a line rewrites the scope, with no second list', async page => {
+  // THE requirement: delete the mender on a new slab and the joint-repair
+  // sentence goes with it.
+  await priceOneArea(page, 'polish');
+  await gotoProposal(page);
+  assert.match(await scopeBox(page), /Repair spalls/, 'the step is there to begin with');
+
+  await page.click('#proposalBackBtn');
+  await waitRoute(page, 'quote');
+  for (const id of ['mender_part_a', 'mender_part_b']) {
+    await page.click(`tr[data-product-id="${id}"] .qRowAct`);
+    await page.waitForFunction(
+      pid => window.__harness.measurements()[0].quantityOverrides[pid] === 0,
+      { timeout: 5_000 }, id);
+  }
+  await gotoProposal(page);
+  const after = await scopeBox(page);
+  assert.ok(!/Repair spalls/.test(after), `suppressed work must stop being narrated:\n${after}`);
+  assert.match(after, /Mobilise/, 'and the rest of the narrative survives');
+});
+
+await run('proposal: an edited scope is sticky, flagged, and resettable', async page => {
+  await priceOneArea(page, 'polish');
+  await gotoProposal(page);
+  const generated = await scopeBox(page);
+
+  // Triple-click selects one LINE in a textarea; the narrative is many.
+  await page.click('.propItem textarea.propScope');
+  await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
+  await page.keyboard.type('Hand-written scope for this one job.', { delay: 10 });
+  const id = await page.evaluate(() => window.__harness.bidItems()[0].id);
+  await page.waitForFunction(
+    i => typeof window.__harness.proposal().scopeOverrides[i] === 'string',
+    { timeout: 5_000 }, id);
+
+  const edited = await page.evaluate(() => ({
+    foot: document.querySelector('.propScopeFoot').textContent,
+    alerts: [...document.querySelectorAll('#proposalAlerts .qAlert')].map(a => a.textContent),
+  }));
+  assert.match(edited.foot, /Edited/, 'the screen says it no longer follows the recipe');
+  assert.ok(edited.alerts.some(a => /edited/i.test(a)), 'and says so at the top too');
+
+  // Sticky across a change that WOULD have rewritten a generated narrative.
+  await page.click('#proposalBackBtn');
+  await waitRoute(page, 'quote');
+  // BOTH parts: a step survives while any of its products does, so
+  // suppressing half of a two-part mender leaves the joint repair described.
+  for (const pid of ['mender_part_a', 'mender_part_b']) {
+    await page.click(`tr[data-product-id="${pid}"] .qRowAct`);
+    await page.waitForFunction(
+      i => window.__harness.measurements()[0].quantityOverrides[i] === 0,
+      { timeout: 5_000 }, pid);
+  }
+  await gotoProposal(page);
+  assert.equal(await scopeBox(page), 'Hand-written scope for this one job.',
+    'an edit outlives the recipe changing under it');
+
+  // And survives a reload.
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.reload();
+  await waitReady(page);
+  await page.waitForFunction(() => document.querySelectorAll('.propItem').length === 1,
+    { timeout: 10_000 });
+  assert.equal(await scopeBox(page), 'Hand-written scope for this one job.');
+
+  // Reset drops back to the CURRENT generated text, not the one it replaced.
+  await page.click('.propReset');
+  await page.waitForFunction(
+    i => window.__harness.proposal().scopeOverrides[i] === undefined,
+    { timeout: 5_000 }, id);
+  const reset = await scopeBox(page);
+  assert.ok(!/Repair spalls/.test(reset), 'reset regenerates rather than restoring the old draft');
+  assert.notEqual(reset, generated, 'the recipe changed while it was overridden');
+});
+
+await run('proposal: client fields and notes persist with the project', async page => {
+  await priceOneArea(page, 'epoxy');
+  await gotoProposal(page);
+  await typeQuote(page, '#propClientName', 'Riverside Logistics');
+  await typeQuote(page, '#propClientContact', 'Dana Ruiz');
+  await typeQuote(page, '#propNotes', 'Night work, dock 4 kept clear.');
+  await page.waitForFunction(() => window.__harness.proposal().client.name === 'Riverside Logistics',
+    { timeout: 5_000 });
+
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.reload();
+  await waitReady(page);
+  const p = await page.evaluate(() => window.__harness.proposal());
+  assert.equal(p.client.name, 'Riverside Logistics');
+  assert.equal(p.client.contact, 'Dana Ruiz');
+  assert.equal(p.notes, 'Night work, dock 4 kept clear.');
+  const json = await page.evaluate(() => window.__harness.exportJson());
+  assert.match(json, /"Riverside Logistics"/, 'and rides along in the JSON backup');
+});
+
+await run('proposal: the number is issued once and never reissued', async page => {
+  await priceOneArea(page, 'epoxy');
+  await gotoProposal(page);
+  const first = await page.evaluate(() => window.__harness.proposal().number);
+  // Date plus a random suffix, deliberately NOT a sequence: a counter in local
+  // storage is exactly the thing that issues the same number twice when a job
+  // is quoted from a laptop and a tablet.
+  assert.match(first, /^MCF-\d{8}-[0-9A-Z]{4}$/, `unexpected shape: ${first}`);
+
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.reload();
+  await waitReady(page);
+  await page.evaluate(() => { location.hash = '#/proposal'; });
+  await page.waitForFunction(() => document.querySelectorAll('.propItem').length === 1,
+    { timeout: 10_000 });
+  assert.equal(await page.evaluate(() => window.__harness.proposal().number), first,
+    'a number, once issued, identifies that document forever');
+
+  // A different project gets a different one -- the suffix is random, so two
+  // devices quoting the same day cannot collide.
+  await page.evaluate(async () => {
+    const bytes = await (await fetch('/test/other.pdf')).arrayBuffer();
+    await window.__harness.loadPdf(bytes, 'other.pdf');
+  });
+  await new Promise(r => setTimeout(r, 400));
+  await page.evaluate(() => { location.hash = '#/takeoff'; });
+  // A different document is a clean slate -- including its scale, which the
+  // deep-linked fpi seeded only for the file it was loaded with.
+  await openScaleTab(page);
+  await page.select('#preset', '20');
+  await page.click('.ribbonTab[data-tab="tools"]');
+  await priceOneArea(page, 'epoxy');
+  await gotoProposal(page);
+  const second = await page.evaluate(() => window.__harness.proposal().number);
+  assert.notEqual(second, first, 'a second project gets its own number');
+});
+
+await run('proposal: exclusions default on, toggle, and persist', async page => {
+  await priceOneArea(page, 'epoxy');
+  await gotoProposal(page);
+  const st = await page.evaluate(() => ({
+    chosen: window.__harness.proposal().exclusions,
+    library: window.__harness.settings().exclusions.map(e => ({ key: e.key, on: e.defaultOn })),
+    boxes: [...document.querySelectorAll('#proposalExclusions input')].map(i => i.checked),
+  }));
+  const expected = st.library.filter(e => e.on).map(e => e.key);
+  assert.deepEqual(st.chosen.sort(), expected.sort(), 'the library defaults are pre-selected');
+  assert.equal(st.boxes.filter(Boolean).length, expected.length, 'and the boxes agree');
+
+  await page.click('#proposalExclusions input[data-pkey="excl-permits"]');
+  await page.waitForFunction(() => window.__harness.proposal().exclusions.includes('permits'),
+    { timeout: 5_000 });
+  await page.evaluate(() => window.__harness.flushSave());
+  await page.reload();
+  await waitReady(page);
+  assert.ok((await page.evaluate(() => window.__harness.proposal().exclusions)).includes('permits'),
+    'survives the round-trip');
+});
+
+await run('proposal: company details are global, not per project', async page => {
+  // The company address does not change per job, and retyping it per proposal
+  // is how one goes out with last year's phone number on it.
+  await priceOneArea(page, 'epoxy');
+  await gotoProposal(page);
+  await page.click('#settingsBtn');
+  await typeQuote(page, '#setCoAddress', '1400 Woodward Ave, Detroit MI');
+  await typeQuote(page, '#setCoPhone', '(313) 555-0142');
+  await page.waitForFunction(() => window.__harness.settings().company.phone === '(313) 555-0142',
+    { timeout: 5_000 });
+  await page.click('#settingsClose');
+  assert.match(await page.$eval('#propFrom', e => e.textContent), /Woodward/,
+    'and it appears on the proposal');
+
+  // A DIFFERENT project must see the same company details.
+  await page.evaluate(async () => {
+    const bytes = await (await fetch('/test/other.pdf')).arrayBuffer();
+    await window.__harness.loadPdf(bytes, 'other.pdf');
+  });
+  await new Promise(r => setTimeout(r, 400));
+  const co = await page.evaluate(() => window.__harness.settings().company);
+  assert.equal(co.phone, '(313) 555-0142', 'settings are global, not carried by the project');
+
+  await page.reload();
+  await waitReady(page);
+  assert.equal((await page.evaluate(() => window.__harness.settings().company.address)),
+    '1400 Woodward Ave, Detroit MI', 'and they survive a reload');
+});
+
+await run('proposal: an item spanning sheets names every sheet, not the first', async page => {
+  // Naming one would quietly drop the rest.
+  await twoPagesPriced(page, 'polish');
+  for (const i of [0, 1]) await clickNth(page, '.qBidItem input[data-qkey^="pick-"]', i);
+  await page.click('#quoteGroupBtn');
+  await page.waitForFunction(() => window.__harness.bidItems().length === 1, { timeout: 5_000 });
+
+  await gotoProposal(page);
+  const id = await page.evaluate(() => window.__harness.bidItems()[0].id);
+  const sheets = await page.evaluate(i => window.__harness.sheetsFor(i), id);
+  assert.equal(sheets.length, 2, `two sheets, got ${JSON.stringify(sheets)}`);
+  const meta = await page.$eval('.propItemMeta', e => e.textContent);
+  assert.match(meta, /2 sheets/, `the proposal says so: ${meta}`);
+});
+
+await run('proposal: an alternate carries its own scope and reads as an addition', async page => {
+  await twoPagesPriced(page, 'polish');
+  await clickNth(page, '.qBidItem input[data-qkey^="alt-"]', 1);
+  await page.waitForFunction(() => window.__harness.quote().alternate_price > 0, { timeout: 5_000 });
+  await gotoProposal(page);
+  const blocks = await page.$$eval('.propItem', bs => bs.map(b => ({
+    alternate: b.classList.contains('alternate'),
+    sum: b.querySelector('.propItemSum').textContent,
+    scope: b.querySelector('textarea.propScope').value,
+  })));
+  assert.equal(blocks.length, 2);
+  const alt = blocks.find(b => b.alternate);
+  assert.ok(alt, 'the alternate is marked');
+  assert.ok(alt.sum.startsWith('+'), `shown as an addition: ${alt.sum}`);
+  assert.ok(alt.scope.length > 0, 'an alternate is quoted work and needs its scope');
+  assert.ok(!blocks.find(b => !b.alternate).sum.startsWith('+'), 'base work is not');
+});
+
 await run('quote: entering the route cancels an in-progress draft', async page => {
   await setTool(page, 'area');
   await snapOff(page);

@@ -10,7 +10,7 @@
 // the Node test rig drives it through the page, never imports it.
 
 const DB_NAME = 'takeoff-harness';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 /// Hex SHA-256 of the PDF bytes — the content-addressed project key.
 export async function sha256(bytes) {
@@ -28,6 +28,11 @@ export function openDb() {
       const db = req.result;
       if (!db.objectStoreNames.contains('files')) db.createObjectStore('files', { keyPath: 'sha' });
       if (!db.objectStoreNames.contains('projects')) db.createObjectStore('projects', { keyPath: 'sha' });
+      // v2: company details, the exclusions library, and proposal defaults.
+      // GLOBAL, not per project -- the company address does not change per
+      // job, and retyping it on every proposal is how one of them goes out
+      // with last year's phone number on it.
+      if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'key' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -64,6 +69,17 @@ export async function listProjects() {
   const all = await tx(await openDb(), 'projects', 'readonly', s => s.getAll());
   return (all ?? []).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }
+/// Global app settings, a single record under a fixed key. Returns null when
+/// nothing has been saved, so the caller supplies the defaults rather than
+/// this module pretending to know them.
+export async function getSettings() {
+  const rec = await tx(await openDb(), 'settings', 'readonly', s => s.get('app'));
+  return rec ? rec.value : null;
+}
+export async function putSettings(value) {
+  return tx(await openDb(), 'settings', 'readwrite', s => s.put({ key: 'app', value }));
+}
+
 export async function deleteProject(sha) {
   const db = await openDb();
   await tx(db, 'projects', 'readwrite', s => s.delete(sha));

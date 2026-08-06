@@ -2,7 +2,6 @@
   "version": "commercial-v1",
   "effective_date": "2026-08-03",
   "source": "Robs Pricing model / 'Pricing Model 6.0 Commercial Qu' (unit costs); Cheat Sheet (rates)",
-
   "_notes": [
     "JSON has no comment syntax; this field is ignored by the deserializer and exists to keep the warnings next to the data they describe.",
     "NEGATIVE COSTS ARE INTENTIONAL: flake_recovered and flake_recovered_double_broadcasted are credits for reclaimed flake. Nothing may assume unit_cost > 0.",
@@ -15,78 +14,443 @@
     "GRIT MULTIPLIERS ARE RELATIVE, NOT ABSOLUTE. What gets applied to an area is grit_levels[area grit].labor_multiplier / grit_levels[system standard_grit].labor_multiplier. A system's entered hours already describe work at its own standard_grit, so only the difference from that baseline may be charged; quoting a system at its standard is always exactly 1.0. Multipliers are therefore meaningful only against each other, and the scale they sit on is arbitrary.",
     "GRIT ESCALATES HOURS, NOT COST. Labor, overhead, and the SF-per-man-hour readout are all functions of man-hours, so routing it through hours means every one of them picks the change up with no special-casing. More passes means more time, not a surcharge.",
     "STANDARD GRITS AND THE LADDER ARE PLACEHOLDERS: seal at 100 and polish at 400 are reasonable guesses, not Jordan's confirmed practice, and the seven levels are a conventional ladder rather than the set he actually sells. Both are one-line edits. A system with no standard_grit (epoxy, polyurea) involves no grinding, and an area may not set a grit level on it -- that ERRORS rather than being ignored, so 'I picked 1200 and nothing happened' can never be a silent no-op.",
-    "RATES ARE EDITED HERE, NOT IN RUST. Changing a price requires no rebuild of engine-core or engine-web."
+    "RATES ARE EDITED HERE, NOT IN RUST. Changing a price requires no rebuild of engine-core or engine-web.",
+    "SCOPE OF WORK IS GENERATED, NOT TYPED. products[].scope_line is one customer-facing sentence per product and systems[].scope_intro / scope_outro bookend it with mobilisation, surface prep, and cleanup -- which belong to no product, so hanging them off one would make them vanish the day that product is suppressed. The narrative is built from the SAME resolved lines the price is: suppress the mender on a new slab and the joint-repair sentence goes with it, with no second list to keep in sync.",
+    "SCOPE_ORDER IS WORK SEQUENCE, not catalog order and not recipe order -- joints are repaired before the floor is sealed however the products happen to be listed. Sentences are deduplicated by TEXT, which is what collapses a two-part product (Mender Part A and Part B, flake thrown and recovered) into a single step: two catalog lines, one thing a crew does. Give two products the same sentence and they merge; that is the mechanism, not a coincidence."
   ],
-
   "products": [
-    { "id": "mender_part_a",         "name": "Mender-Part A",         "class": "direct", "unit": "litre",  "unit_cost":  10.17, "rate": 0.004,   "rate_basis": "area_sf" },
-    { "id": "mender_part_b",         "name": "Mender-Part B",         "class": "direct", "unit": "litre",  "unit_cost":  10.17, "rate": 0.004,   "rate_basis": "area_sf" },
-    { "id": "sand",                  "name": "Sand",                  "class": "direct", "unit": "cup",    "unit_cost":   0.05, "rate": 0.003,   "rate_basis": "area_sf" },
-    { "id": "shark_grip",            "name": "Shark Grip",            "class": "direct", "unit": "cap",    "unit_cost":   0.05, "rate": 0.08,    "rate_basis": "area_sf" },
-    { "id": "polyurea_base_paint_a", "name": "Polyurea Base Paint-A", "class": "direct", "unit": "litre",  "unit_cost":  10.22, "rate": 0.01,    "rate_basis": "area_sf" },
-    { "id": "polyurea_base_paint_b", "name": "Polyurea Base Paint-B", "class": "direct", "unit": "litre",  "unit_cost":  10.22, "rate": 0.005,   "rate_basis": "area_sf" },
-    { "id": "flake_thrown",          "name": "Flake Thrown",          "class": "direct", "unit": "box",    "unit_cost":  74.00, "rate": 0.0075,  "rate_basis": "area_sf" },
-    { "id": "flake_recovered",       "name": "Flake Recovered",       "class": "direct", "unit": "box",    "unit_cost": -74.00, "rate": 0.00425, "rate_basis": "area_sf" },
-    { "id": "flake_thrown_double_broadcasted",    "name": "Flake Thrown-Double Broadcasted",    "class": "direct", "unit": "box", "unit_cost":  74.00, "rate": 0.01,  "rate_basis": "area_sf" },
-    { "id": "flake_recovered_double_broadcasted", "name": "Flake Recovered-Double Broadcasted", "class": "direct", "unit": "box", "unit_cost": -74.00, "rate": 0.005, "rate_basis": "area_sf" },
-    { "id": "polyaspartic_clear_a",  "name": "Polyaspartic Clear A",  "class": "direct", "unit": "litre",  "unit_cost":  15.85, "rate": 0.02,    "rate_basis": "area_sf" },
-    { "id": "polyaspartic_clear_b",  "name": "Polyaspartic Clear B",  "class": "direct", "unit": "litre",  "unit_cost":  15.85, "rate": 0.02,    "rate_basis": "area_sf" },
-    { "id": "second_top_coat_part_a","name": "2nd Top Coat-Part A",   "class": "direct", "unit": "litre",  "unit_cost":  15.85, "rate": 0.022,   "rate_basis": "area_sf" },
-    { "id": "second_top_coat_part_b","name": "2nd Top Coat-Part B",   "class": "direct", "unit": "litre",  "unit_cost":  15.85, "rate": 0.022,   "rate_basis": "area_sf" },
-    { "id": "h2_out",                "name": "H2 Out",                "class": "direct", "unit": "litre",  "unit_cost":  19.82, "rate": 0.003,   "rate_basis": "area_sf" },
-    { "id": "haze_gray_epoxy",       "name": "Haze Gray Epoxy",       "class": "direct", "unit": "gallon", "unit_cost":  44.00, "rate": 0.004,   "rate_basis": "area_sf" },
-    { "id": "clear_epoxy",           "name": "Clear Epoxy",           "class": "direct", "unit": "gallon", "unit_cost":  42.40, "rate": 0.004,   "rate_basis": "area_sf" },
-    { "id": "fast_cure_activator",   "name": "Fast Cure Activator",   "class": "direct", "unit": "gallon", "unit_cost":  30.00, "rate": 0.004,   "rate_basis": "area_sf" },
-    { "id": "high_wear_urethane",    "name": "High Wear Urethane",    "class": "direct", "unit": "gallon", "unit_cost": 159.60, "rate": 0.004,   "rate_basis": "area_sf" },
-    { "id": "simihard_polishing",    "name": "Simihard (Polishing)",  "class": "direct", "unit": "gallon", "unit_cost":  29.88, "rate": 0.001,   "rate_basis": "area_sf" },
-    { "id": "cure_and_seal_first",   "name": "Cure and Seal - First Coat",  "class": "direct", "unit": "gallon", "unit_cost": 27.02, "rate": 0.001,  "rate_basis": "area_sf" },
-    { "id": "cure_and_seal_second",  "name": "Cure and Seal - Second Coat", "class": "direct", "unit": "gallon", "unit_cost": 27.02, "rate": 0.0008, "rate_basis": "area_sf" },
-    { "id": "polyurea_caulk",        "name": "Polyurea Caulk",        "class": "direct", "unit": "tube",   "unit_cost":  55.00, "rate": 0.0002,  "rate_basis": "area_sf" },
-    { "id": "quartz_double_broadcast","name": "Quartz (Double Broadcast)", "class": "direct", "unit": "pound", "unit_cost": 1.00, "rate": 1.0,  "rate_basis": "area_sf" },
-
-    { "id": "cups_10_quart",      "name": "10 Quart Cups",      "class": "consumable", "unit": "each", "unit_cost":  4.95,  "rate": 0.003,  "rate_basis": "area_sf" },
-    { "id": "cups_5_quart",       "name": "5 Quart Cups",       "class": "consumable", "unit": "each", "unit_cost":  4.70,  "rate": 0.003,  "rate_basis": "area_sf" },
-    { "id": "cups_2_5_quart",     "name": "2-1/2 Quart Cups",   "class": "consumable", "unit": "each", "unit_cost":  2.27,  "rate": 0.006,  "rate_basis": "area_sf" },
-    { "id": "cups_quart",         "name": "Quart Cups",         "class": "consumable", "unit": "each", "unit_cost":  0.50,  "rate": 0.01,   "rate_basis": "area_sf" },
-    { "id": "brushes",            "name": "Brushes",            "class": "consumable", "unit": "each", "unit_cost":  0.69,  "rate": 0.0064, "rate_basis": "area_sf" },
-    { "id": "roller_covers",      "name": "Roller Covers",      "class": "consumable", "unit": "each", "unit_cost":  8.40,  "rate": 0.003,  "rate_basis": "area_sf" },
-    { "id": "trowles",            "name": "Trowles",            "class": "consumable", "unit": "each", "unit_cost": 32.99,  "rate": 0.002,  "rate_basis": "area_sf" },
-    { "id": "mini_roller_covers", "name": "Mini roller covers", "class": "consumable", "unit": "each", "unit_cost":  4.33,  "rate": 0.002,  "rate_basis": "area_sf" },
-    { "id": "rags",               "name": "Rags",               "class": "consumable", "unit": "each", "unit_cost": 13.82,  "rate": 0.001,  "rate_basis": "area_sf" },
-    { "id": "gloves",             "name": "Gloves",             "class": "consumable", "unit": "each", "unit_cost":  0.178, "rate": 0.0192, "rate_basis": "area_sf" },
-    { "id": "trash_bags",         "name": "Trash Bags",         "class": "consumable", "unit": "each", "unit_cost":  0.78,  "rate": 0.006,  "rate_basis": "area_sf" }
+    {
+      "id": "mender_part_a",
+      "name": "Mender-Part A",
+      "class": "direct",
+      "unit": "litre",
+      "unit_cost": 10.17,
+      "rate": 0.004,
+      "rate_basis": "area_sf",
+      "scope_line": "Repair spalls, divots, and deteriorated joints with a two-part epoxy mender.",
+      "scope_order": 10
+    },
+    {
+      "id": "mender_part_b",
+      "name": "Mender-Part B",
+      "class": "direct",
+      "unit": "litre",
+      "unit_cost": 10.17,
+      "rate": 0.004,
+      "rate_basis": "area_sf",
+      "scope_line": "Repair spalls, divots, and deteriorated joints with a two-part epoxy mender.",
+      "scope_order": 10
+    },
+    {
+      "id": "sand",
+      "name": "Sand",
+      "class": "direct",
+      "unit": "cup",
+      "unit_cost": 0.05,
+      "rate": 0.003,
+      "rate_basis": "area_sf",
+      "scope_line": "Broadcast anti-slip aggregate into the topcoat for slip resistance.",
+      "scope_order": 62
+    },
+    {
+      "id": "shark_grip",
+      "name": "Shark Grip",
+      "class": "direct",
+      "unit": "cap",
+      "unit_cost": 0.05,
+      "rate": 0.08,
+      "rate_basis": "area_sf",
+      "scope_line": "Broadcast anti-slip aggregate into the topcoat for slip resistance.",
+      "scope_order": 62
+    },
+    {
+      "id": "polyurea_base_paint_a",
+      "name": "Polyurea Base Paint-A",
+      "class": "direct",
+      "unit": "litre",
+      "unit_cost": 10.22,
+      "rate": 0.01,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a two-part polyurea base coat.",
+      "scope_order": 40
+    },
+    {
+      "id": "polyurea_base_paint_b",
+      "name": "Polyurea Base Paint-B",
+      "class": "direct",
+      "unit": "litre",
+      "unit_cost": 10.22,
+      "rate": 0.005,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a two-part polyurea base coat.",
+      "scope_order": 40
+    },
+    {
+      "id": "flake_thrown",
+      "name": "Flake Thrown",
+      "class": "direct",
+      "unit": "box",
+      "unit_cost": 74.0,
+      "rate": 0.0075,
+      "rate_basis": "area_sf",
+      "scope_line": "Broadcast decorative vinyl flake to refusal and scrape back the excess.",
+      "scope_order": 50
+    },
+    {
+      "id": "flake_recovered",
+      "name": "Flake Recovered",
+      "class": "direct",
+      "unit": "box",
+      "unit_cost": -74.0,
+      "rate": 0.00425,
+      "rate_basis": "area_sf",
+      "scope_line": "Broadcast decorative vinyl flake to refusal and scrape back the excess.",
+      "scope_order": 50
+    },
+    {
+      "id": "flake_thrown_double_broadcasted",
+      "name": "Flake Thrown-Double Broadcasted",
+      "class": "direct",
+      "unit": "box",
+      "unit_cost": 74.0,
+      "rate": 0.01,
+      "rate_basis": "area_sf",
+      "scope_line": "Broadcast a second full coat of flake for complete coverage.",
+      "scope_order": 52
+    },
+    {
+      "id": "flake_recovered_double_broadcasted",
+      "name": "Flake Recovered-Double Broadcasted",
+      "class": "direct",
+      "unit": "box",
+      "unit_cost": -74.0,
+      "rate": 0.005,
+      "rate_basis": "area_sf",
+      "scope_line": "Broadcast a second full coat of flake for complete coverage.",
+      "scope_order": 52
+    },
+    {
+      "id": "polyaspartic_clear_a",
+      "name": "Polyaspartic Clear A",
+      "class": "direct",
+      "unit": "litre",
+      "unit_cost": 15.85,
+      "rate": 0.02,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a two-part polyaspartic clear coat.",
+      "scope_order": 60
+    },
+    {
+      "id": "polyaspartic_clear_b",
+      "name": "Polyaspartic Clear B",
+      "class": "direct",
+      "unit": "litre",
+      "unit_cost": 15.85,
+      "rate": 0.02,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a two-part polyaspartic clear coat.",
+      "scope_order": 60
+    },
+    {
+      "id": "second_top_coat_part_a",
+      "name": "2nd Top Coat-Part A",
+      "class": "direct",
+      "unit": "litre",
+      "unit_cost": 15.85,
+      "rate": 0.022,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a second polyaspartic top coat.",
+      "scope_order": 65
+    },
+    {
+      "id": "second_top_coat_part_b",
+      "name": "2nd Top Coat-Part B",
+      "class": "direct",
+      "unit": "litre",
+      "unit_cost": 15.85,
+      "rate": 0.022,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a second polyaspartic top coat.",
+      "scope_order": 65
+    },
+    {
+      "id": "h2_out",
+      "name": "H2 Out",
+      "class": "direct",
+      "unit": "litre",
+      "unit_cost": 19.82,
+      "rate": 0.003,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a moisture-vapour mitigation primer to the prepared slab.",
+      "scope_order": 5
+    },
+    {
+      "id": "haze_gray_epoxy",
+      "name": "Haze Gray Epoxy",
+      "class": "direct",
+      "unit": "gallon",
+      "unit_cost": 44.0,
+      "rate": 0.004,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a pigmented epoxy base coat.",
+      "scope_order": 40
+    },
+    {
+      "id": "clear_epoxy",
+      "name": "Clear Epoxy",
+      "class": "direct",
+      "unit": "gallon",
+      "unit_cost": 42.4,
+      "rate": 0.004,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a clear epoxy build coat.",
+      "scope_order": 60
+    },
+    {
+      "id": "fast_cure_activator",
+      "name": "Fast Cure Activator",
+      "class": "direct",
+      "unit": "gallon",
+      "unit_cost": 30.0,
+      "rate": 0.004,
+      "rate_basis": "area_sf",
+      "scope_line": "Use a fast-cure activator so the floor returns to service sooner.",
+      "scope_order": 90
+    },
+    {
+      "id": "high_wear_urethane",
+      "name": "High Wear Urethane",
+      "class": "direct",
+      "unit": "gallon",
+      "unit_cost": 159.6,
+      "rate": 0.004,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a high-wear urethane topcoat.",
+      "scope_order": 70
+    },
+    {
+      "id": "simihard_polishing",
+      "name": "Simihard (Polishing)",
+      "class": "direct",
+      "unit": "gallon",
+      "unit_cost": 29.88,
+      "rate": 0.001,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a lithium densifier and burnish the slab to the specified finish.",
+      "scope_order": 30
+    },
+    {
+      "id": "cure_and_seal_first",
+      "name": "Cure and Seal - First Coat",
+      "class": "direct",
+      "unit": "gallon",
+      "unit_cost": 27.02,
+      "rate": 0.001,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply the first coat of penetrating cure and seal.",
+      "scope_order": 40
+    },
+    {
+      "id": "cure_and_seal_second",
+      "name": "Cure and Seal - Second Coat",
+      "class": "direct",
+      "unit": "gallon",
+      "unit_cost": 27.02,
+      "rate": 0.0008,
+      "rate_basis": "area_sf",
+      "scope_line": "Apply a second coat of penetrating cure and seal.",
+      "scope_order": 50
+    },
+    {
+      "id": "polyurea_caulk",
+      "name": "Polyurea Caulk",
+      "class": "direct",
+      "unit": "tube",
+      "unit_cost": 55.0,
+      "rate": 0.0002,
+      "rate_basis": "area_sf",
+      "scope_line": "Fill and seal control joints and saw cuts with flexible polyurea joint filler.",
+      "scope_order": 20
+    },
+    {
+      "id": "quartz_double_broadcast",
+      "name": "Quartz (Double Broadcast)",
+      "class": "direct",
+      "unit": "pound",
+      "unit_cost": 1.0,
+      "rate": 1.0,
+      "rate_basis": "area_sf",
+      "scope_line": "Broadcast a second full coat of flake for complete coverage.",
+      "scope_order": 52
+    },
+    {
+      "id": "cups_10_quart",
+      "name": "10 Quart Cups",
+      "class": "consumable",
+      "unit": "each",
+      "unit_cost": 4.95,
+      "rate": 0.003,
+      "rate_basis": "area_sf"
+    },
+    {
+      "id": "cups_5_quart",
+      "name": "5 Quart Cups",
+      "class": "consumable",
+      "unit": "each",
+      "unit_cost": 4.7,
+      "rate": 0.003,
+      "rate_basis": "area_sf"
+    },
+    {
+      "id": "cups_2_5_quart",
+      "name": "2-1/2 Quart Cups",
+      "class": "consumable",
+      "unit": "each",
+      "unit_cost": 2.27,
+      "rate": 0.006,
+      "rate_basis": "area_sf"
+    },
+    {
+      "id": "cups_quart",
+      "name": "Quart Cups",
+      "class": "consumable",
+      "unit": "each",
+      "unit_cost": 0.5,
+      "rate": 0.01,
+      "rate_basis": "area_sf"
+    },
+    {
+      "id": "brushes",
+      "name": "Brushes",
+      "class": "consumable",
+      "unit": "each",
+      "unit_cost": 0.69,
+      "rate": 0.0064,
+      "rate_basis": "area_sf"
+    },
+    {
+      "id": "roller_covers",
+      "name": "Roller Covers",
+      "class": "consumable",
+      "unit": "each",
+      "unit_cost": 8.4,
+      "rate": 0.003,
+      "rate_basis": "area_sf"
+    },
+    {
+      "id": "trowles",
+      "name": "Trowles",
+      "class": "consumable",
+      "unit": "each",
+      "unit_cost": 32.99,
+      "rate": 0.002,
+      "rate_basis": "area_sf"
+    },
+    {
+      "id": "mini_roller_covers",
+      "name": "Mini roller covers",
+      "class": "consumable",
+      "unit": "each",
+      "unit_cost": 4.33,
+      "rate": 0.002,
+      "rate_basis": "area_sf"
+    },
+    {
+      "id": "rags",
+      "name": "Rags",
+      "class": "consumable",
+      "unit": "each",
+      "unit_cost": 13.82,
+      "rate": 0.001,
+      "rate_basis": "area_sf"
+    },
+    {
+      "id": "gloves",
+      "name": "Gloves",
+      "class": "consumable",
+      "unit": "each",
+      "unit_cost": 0.178,
+      "rate": 0.0192,
+      "rate_basis": "area_sf"
+    },
+    {
+      "id": "trash_bags",
+      "name": "Trash Bags",
+      "class": "consumable",
+      "unit": "each",
+      "unit_cost": 0.78,
+      "rate": 0.006,
+      "rate_basis": "area_sf"
+    }
   ],
-
   "grit_levels": [
-    { "key": "100",  "name": "100 grit",  "labor_multiplier": 1.0 },
-    { "key": "200",  "name": "200 grit",  "labor_multiplier": 1.0 },
-    { "key": "400",  "name": "400 grit",  "labor_multiplier": 1.0 },
-    { "key": "800",  "name": "800 grit",  "labor_multiplier": 1.0 },
-    { "key": "1200", "name": "1200 grit", "labor_multiplier": 1.0 },
-    { "key": "1500", "name": "1500 grit", "labor_multiplier": 1.0 },
-    { "key": "3000", "name": "3000 grit", "labor_multiplier": 1.0 }
+    {
+      "key": "100",
+      "name": "100 grit",
+      "labor_multiplier": 1.0
+    },
+    {
+      "key": "200",
+      "name": "200 grit",
+      "labor_multiplier": 1.0
+    },
+    {
+      "key": "400",
+      "name": "400 grit",
+      "labor_multiplier": 1.0
+    },
+    {
+      "key": "800",
+      "name": "800 grit",
+      "labor_multiplier": 1.0
+    },
+    {
+      "key": "1200",
+      "name": "1200 grit",
+      "labor_multiplier": 1.0
+    },
+    {
+      "key": "1500",
+      "name": "1500 grit",
+      "labor_multiplier": 1.0
+    },
+    {
+      "key": "3000",
+      "name": "3000 grit",
+      "labor_multiplier": 1.0
+    }
   ],
-
   "systems": [
     {
       "key": "seal",
       "name": "Seal",
       "confirmed": false,
       "standard_grit": "100",
-      "product_ids": ["cure_and_seal_first", "cure_and_seal_second", "polyurea_caulk"],
+      "product_ids": [
+        "cure_and_seal_first",
+        "cure_and_seal_second",
+        "polyurea_caulk"
+      ],
       "consumable_multipliers": {
-        "cups_10_quart":      0.0,
-        "cups_5_quart":       0.3333333333333333,
-        "cups_2_5_quart":     0.2,
-        "cups_quart":         0.0,
-        "brushes":            0.25,
-        "roller_covers":      0.3333333333333333,
-        "trowles":            0.0,
+        "cups_10_quart": 0.0,
+        "cups_5_quart": 0.3333333333333333,
+        "cups_2_5_quart": 0.2,
+        "cups_quart": 0.0,
+        "brushes": 0.25,
+        "roller_covers": 0.3333333333333333,
+        "trowles": 0.0,
         "mini_roller_covers": 0.0,
-        "rags":               0.125,
-        "gloves":             0.3333333333333333,
-        "trash_bags":         0.125
-      }
+        "rags": 0.125,
+        "gloves": 0.3333333333333333,
+        "trash_bags": 0.125
+      },
+      "scope_intro": [
+        "Mobilise crew, materials, and equipment to site and mask off adjacent surfaces.",
+        "Diamond grind the slab to remove existing coatings and open the surface profile, under HEPA dust containment."
+      ],
+      "scope_outro": [
+        "Clean the work area, remove all debris and packaging from site, and demobilise."
+      ]
     },
     {
       "key": "polish",
@@ -94,84 +458,134 @@
       "confirmed": false,
       "standard_grit": "400",
       "product_ids": [
-        "simihard_polishing", "cure_and_seal_first", "cure_and_seal_second",
-        "polyurea_caulk", "mender_part_a", "mender_part_b"
+        "simihard_polishing",
+        "cure_and_seal_first",
+        "cure_and_seal_second",
+        "polyurea_caulk",
+        "mender_part_a",
+        "mender_part_b"
       ],
       "consumable_multipliers": {
-        "cups_10_quart":      1.0,
-        "cups_5_quart":       1.0,
-        "cups_2_5_quart":     1.0,
-        "cups_quart":         1.0,
-        "brushes":            1.0,
-        "roller_covers":      1.0,
-        "trowles":            1.0,
+        "cups_10_quart": 1.0,
+        "cups_5_quart": 1.0,
+        "cups_2_5_quart": 1.0,
+        "cups_quart": 1.0,
+        "brushes": 1.0,
+        "roller_covers": 1.0,
+        "trowles": 1.0,
         "mini_roller_covers": 1.0,
-        "rags":               1.0,
-        "gloves":             1.0,
-        "trash_bags":         1.0
-      }
+        "rags": 1.0,
+        "gloves": 1.0,
+        "trash_bags": 1.0
+      },
+      "scope_intro": [
+        "Mobilise crew, materials, and equipment to site and mask off adjacent surfaces.",
+        "Diamond grind the slab to remove existing coatings and open the surface profile, under HEPA dust containment."
+      ],
+      "scope_outro": [
+        "Clean the work area, remove all debris and packaging from site, and demobilise."
+      ]
     },
     {
       "key": "epoxy",
       "name": "Epoxy",
       "confirmed": false,
       "product_ids": [
-        "haze_gray_epoxy", "clear_epoxy", "high_wear_urethane", "polyurea_caulk",
-        "sand", "shark_grip", "mender_part_a", "mender_part_b"
+        "haze_gray_epoxy",
+        "clear_epoxy",
+        "high_wear_urethane",
+        "polyurea_caulk",
+        "sand",
+        "shark_grip",
+        "mender_part_a",
+        "mender_part_b"
       ],
       "consumable_multipliers": {
-        "cups_10_quart":      1.0,
-        "cups_5_quart":       1.0,
-        "cups_2_5_quart":     1.0,
-        "cups_quart":         1.0,
-        "brushes":            1.0,
-        "roller_covers":      1.0,
-        "trowles":            1.0,
+        "cups_10_quart": 1.0,
+        "cups_5_quart": 1.0,
+        "cups_2_5_quart": 1.0,
+        "cups_quart": 1.0,
+        "brushes": 1.0,
+        "roller_covers": 1.0,
+        "trowles": 1.0,
         "mini_roller_covers": 1.0,
-        "rags":               1.0,
-        "gloves":             1.0,
-        "trash_bags":         1.0
-      }
+        "rags": 1.0,
+        "gloves": 1.0,
+        "trash_bags": 1.0
+      },
+      "scope_intro": [
+        "Mobilise crew, materials, and equipment to site and mask off adjacent surfaces.",
+        "Diamond grind the slab to remove existing coatings and open the surface profile, under HEPA dust containment."
+      ],
+      "scope_outro": [
+        "Clean the work area, remove all debris and packaging from site, and demobilise."
+      ]
     },
     {
       "key": "polyurea",
       "name": "Polyurea",
       "confirmed": false,
       "product_ids": [
-        "polyurea_base_paint_a", "polyurea_base_paint_b",
-        "flake_thrown", "flake_recovered",
-        "polyaspartic_clear_a", "polyaspartic_clear_b",
-        "second_top_coat_part_a", "second_top_coat_part_b",
-        "sand", "shark_grip", "mender_part_a", "mender_part_b"
+        "polyurea_base_paint_a",
+        "polyurea_base_paint_b",
+        "flake_thrown",
+        "flake_recovered",
+        "polyaspartic_clear_a",
+        "polyaspartic_clear_b",
+        "second_top_coat_part_a",
+        "second_top_coat_part_b",
+        "sand",
+        "shark_grip",
+        "mender_part_a",
+        "mender_part_b"
       ],
       "consumable_multipliers": {
-        "cups_10_quart":      1.0,
-        "cups_5_quart":       1.0,
-        "cups_2_5_quart":     1.0,
-        "cups_quart":         1.0,
-        "brushes":            1.0,
-        "roller_covers":      1.0,
-        "trowles":            1.0,
+        "cups_10_quart": 1.0,
+        "cups_5_quart": 1.0,
+        "cups_2_5_quart": 1.0,
+        "cups_quart": 1.0,
+        "brushes": 1.0,
+        "roller_covers": 1.0,
+        "trowles": 1.0,
         "mini_roller_covers": 1.0,
-        "rags":               1.0,
-        "gloves":             1.0,
-        "trash_bags":         1.0
-      }
+        "rags": 1.0,
+        "gloves": 1.0,
+        "trash_bags": 1.0
+      },
+      "scope_intro": [
+        "Mobilise crew, materials, and equipment to site and mask off adjacent surfaces.",
+        "Diamond grind the slab to remove existing coatings and open the surface profile, under HEPA dust containment."
+      ],
+      "scope_outro": [
+        "Clean the work area, remove all debris and packaging from site, and demobilise."
+      ]
     }
   ],
-
   "add_ons": [
     {
       "key": "double_broadcast",
       "name": "Double Broadcast",
-      "applies_to": ["polyurea"],
+      "applies_to": [
+        "polyurea"
+      ],
       "priority": 100,
       "effect": {
         "kind": "products",
         "ops": [
-          { "op": "replace", "product_id": "flake_thrown",    "with": "flake_thrown_double_broadcasted" },
-          { "op": "replace", "product_id": "flake_recovered", "with": "flake_recovered_double_broadcasted" },
-          { "op": "add",     "product_id": "quartz_double_broadcast" }
+          {
+            "op": "replace",
+            "product_id": "flake_thrown",
+            "with": "flake_thrown_double_broadcasted"
+          },
+          {
+            "op": "replace",
+            "product_id": "flake_recovered",
+            "with": "flake_recovered_double_broadcasted"
+          },
+          {
+            "op": "add",
+            "product_id": "quartz_double_broadcast"
+          }
         ]
       }
     },
@@ -182,7 +596,12 @@
       "priority": 10,
       "effect": {
         "kind": "products",
-        "ops": [{ "op": "add", "product_id": "h2_out" }]
+        "ops": [
+          {
+            "op": "add",
+            "product_id": "h2_out"
+          }
+        ]
       }
     },
     {
@@ -192,7 +611,12 @@
       "priority": 10,
       "effect": {
         "kind": "products",
-        "ops": [{ "op": "add", "product_id": "fast_cure_activator" }]
+        "ops": [
+          {
+            "op": "add",
+            "product_id": "fast_cure_activator"
+          }
+        ]
       }
     },
     {
@@ -206,11 +630,10 @@
       }
     }
   ],
-
   "labor": {
-    "standard_wage_per_hour": 27.50,
+    "standard_wage_per_hour": 27.5,
     "payroll_tax_rate": 0.0765,
-    "insurance_benefits_per_hour": 0.00,
+    "insurance_benefits_per_hour": 0.0,
     "overhead_per_man_hour": 52.99,
     "davis_bacon": null
   }

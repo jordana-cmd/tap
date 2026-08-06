@@ -1654,3 +1654,232 @@ fn a_grit_specified_on_only_some_members_is_mixed_too() {
         "one member specified and one not is a mixed specification"
     );
 }
+
+// ---------- scope of work ----------
+//
+// The narrative is built from the SAME resolved lines the price is. That is
+// the whole design: a scope kept in a separate list drifts from the quote it
+// describes the first time someone suppresses a line.
+
+fn scope_text(q: &engine_core::pricing::JobQuote, item: usize) -> Vec<String> {
+    q.bid_items[item]
+        .scope
+        .iter()
+        .map(|s| s.text.clone())
+        .collect()
+}
+
+#[test]
+fn the_scope_bookends_product_steps_with_the_systems_own_text() {
+    let c = card();
+    let q = price_job(&c, &job_with(vec![area_of("polish", 2000.0, 3.0, 9.0)], 0.35)).unwrap();
+    let steps = &q.bid_items[0].scope;
+    assert!(steps.len() > 4, "a real narrative, got {}", steps.len());
+
+    // Mobilisation and cleanup belong to no product -- they bookend, and they
+    // carry no product_ids, which is how a UI can tell them apart.
+    assert!(steps[0].text.contains("Mobilise"), "{:?}", steps[0].text);
+    assert!(steps[0].product_ids.is_empty(), "intro belongs to no product");
+    let last = steps.last().unwrap();
+    assert!(last.text.contains("demobilise"), "{:?}", last.text);
+    assert!(last.product_ids.is_empty(), "outro belongs to no product");
+
+    // Everything in between came from a product.
+    for s in &steps[1..steps.len() - 1] {
+        if s.text.contains("Diamond grind") {
+            continue; // the other intro line
+        }
+        assert!(!s.product_ids.is_empty(), "orphan step: {}", s.text);
+    }
+}
+
+#[test]
+fn suppressing_the_mender_drops_the_joint_repair_step() {
+    // THE requirement: delete mender on a new slab and the joint-repair
+    // sentence goes with it, with no second list to keep in sync.
+    let c = card();
+    let with = price_job(&c, &job_with(vec![area_of("polish", 2000.0, 3.0, 9.0)], 0.35)).unwrap();
+    assert!(
+        scope_text(&with, 0).iter().any(|t| t.contains("Repair spalls")),
+        "the mender step should be there to begin with: {:?}",
+        scope_text(&with, 0)
+    );
+
+    let mut a = area_of("polish", 2000.0, 3.0, 9.0);
+    a.quantity_overrides.insert("mender_part_a".into(), 0.0);
+    a.quantity_overrides.insert("mender_part_b".into(), 0.0);
+    let without = price_job(&c, &job_with(vec![a], 0.35)).unwrap();
+    assert!(
+        !scope_text(&without, 0).iter().any(|t| t.contains("Repair spalls")),
+        "suppressed lines must not narrate work nobody is doing: {:?}",
+        scope_text(&without, 0)
+    );
+    // And nothing else moved.
+    assert_eq!(
+        scope_text(&with, 0).len() - 1,
+        scope_text(&without, 0).len(),
+        "exactly one step should have gone"
+    );
+}
+
+#[test]
+fn a_two_part_product_collapses_into_one_step() {
+    // Mender Part A and Part B are two catalog lines and one thing a crew
+    // does. They share a sentence, so they share a step.
+    let c = card();
+    let q = price_job(&c, &job_with(vec![area_of("polish", 2000.0, 3.0, 9.0)], 0.35)).unwrap();
+    let repair: Vec<_> = q.bid_items[0]
+        .scope
+        .iter()
+        .filter(|s| s.text.contains("Repair spalls"))
+        .collect();
+    assert_eq!(repair.len(), 1, "one step, not two");
+    assert_eq!(
+        repair[0].product_ids,
+        vec!["mender_part_a", "mender_part_b"],
+        "and it names both lines it came from"
+    );
+}
+
+#[test]
+fn steps_follow_work_sequence_not_catalog_order() {
+    // The polish recipe lists the sealer BEFORE the mender. The narrative must
+    // not: joints are repaired before the floor is sealed.
+    let c = card();
+    let recipe = &c.system("polish").unwrap().product_ids;
+    let seal_first = recipe.iter().position(|p| p == "cure_and_seal_first").unwrap();
+    let mender_first = recipe.iter().position(|p| p == "mender_part_a").unwrap();
+    assert!(seal_first < mender_first, "premise: the recipe is in catalog order");
+
+    let q = price_job(&c, &job_with(vec![area_of("polish", 2000.0, 3.0, 9.0)], 0.35)).unwrap();
+    let texts = scope_text(&q, 0);
+    let at = |needle: &str| texts.iter().position(|t| t.contains(needle)).unwrap();
+    assert!(at("Repair spalls") < at("penetrating cure and seal"), "{texts:?}");
+    assert!(at("control joints") < at("lithium densifier"), "{texts:?}");
+    assert!(at("lithium densifier") < at("first coat"), "{texts:?}");
+    assert!(at("first coat") < at("second coat"), "{texts:?}");
+}
+
+#[test]
+fn consumables_never_appear_in_the_scope() {
+    // Brushes and rags are not work a customer is buying.
+    let c = card();
+    let q = price_job(&c, &job_with(vec![area_of("epoxy", 2000.0, 3.0, 9.0)], 0.35)).unwrap();
+    let ids: Vec<&str> = q.bid_items[0]
+        .scope
+        .iter()
+        .flat_map(|s| s.product_ids.iter().map(|s| s.as_str()))
+        .collect();
+    for consumable in ["brushes", "rags", "gloves", "roller_covers", "trash_bags"] {
+        assert!(!ids.contains(&consumable), "{consumable} is not scope");
+    }
+}
+
+#[test]
+fn an_add_on_contributes_its_own_step() {
+    let c = card();
+    let mut a = area_of("polyurea", 1000.0, 2.0, 8.0);
+    a.add_on_keys.push("double_broadcast".into());
+    let q = price_job(&c, &job_with(vec![a], 0.35)).unwrap();
+    assert!(
+        scope_text(&q, 0).iter().any(|t| t.contains("second full coat of flake")),
+        "the add-on's work must be described: {:?}",
+        scope_text(&q, 0)
+    );
+}
+
+#[test]
+fn a_bid_item_narrates_the_union_of_its_members_not_the_intersection() {
+    // One lump sum has to describe everything under it, including an add-on
+    // that only one member carries.
+    let c = card();
+    let plain = area_id(1, "polyurea", 800.0, 2.0, 6.0);
+    let mut fancy = area_id(2, "polyurea", 600.0, 2.0, 6.0);
+    fancy.add_on_keys.push("double_broadcast".into());
+
+    let q = price_job(
+        &c,
+        &job_grouped(
+            vec![plain, fancy],
+            vec![item(10, "Warehouse", &[1, 2], false)],
+            0.35,
+        ),
+    )
+    .unwrap();
+    let texts = scope_text(&q, 0);
+    assert!(texts.iter().any(|t| t.contains("polyurea base coat")), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t.contains("second full coat of flake")),
+        "the one member's add-on is still work under this lump sum: {texts:?}"
+    );
+    // Deduplicated across members: the base coat is described once, not twice.
+    assert_eq!(
+        texts.iter().filter(|t| t.contains("polyurea base coat")).count(),
+        1,
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn every_system_produces_a_narrative_and_an_alternate_gets_one_too() {
+    let c = card();
+    for system in ["polish", "seal", "epoxy", "polyurea"] {
+        let q = price_job(&c, &job_with(vec![area_of(system, 1000.0, 2.0, 8.0)], 0.35)).unwrap();
+        let steps = &q.bid_items[0].scope;
+        assert!(steps.len() >= 4, "{system}: only {} steps", steps.len());
+        assert!(
+            steps.iter().all(|s| !s.text.trim().is_empty()),
+            "{system}: an empty sentence would print as a blank bullet"
+        );
+    }
+    // An alternate is quoted work like any other; it needs its scope.
+    let q = price_job(
+        &c,
+        &job_grouped(
+            vec![area_id(1, "epoxy", 1000.0, 2.0, 8.0)],
+            vec![item(10, "Add: epoxy the office", &[1], true)],
+            0.35,
+        ),
+    )
+    .unwrap();
+    assert!(!q.bid_items[0].scope.is_empty(), "an alternate needs a scope too");
+}
+
+#[test]
+fn a_card_with_no_scope_text_yields_no_scope_rather_than_failing() {
+    // Every card written before scope existed. Pricing is unaffected; the
+    // narrative is simply empty and the UI has nothing to pre-fill.
+    let mut c = card();
+    for p in c.products.iter_mut() {
+        p.scope_line = None;
+    }
+    for s in c.systems.iter_mut() {
+        s.scope_intro.clear();
+        s.scope_outro.clear();
+    }
+    let bare = price_job(&c, &job_with(vec![area_of("polish", 2000.0, 3.0, 9.0)], 0.35)).unwrap();
+    let full = price_job(&card(), &job_with(vec![area_of("polish", 2000.0, 3.0, 9.0)], 0.35)).unwrap();
+    assert!(bare.bid_items[0].scope.is_empty());
+    assert_eq!(bare.price, full.price, "scope text is not priced");
+}
+
+#[test]
+fn a_step_survives_while_any_of_its_products_does() {
+    // Both mender parts share a sentence, so the step is present if EITHER is
+    // being applied. That is the right reading: the step describes work, and
+    // the work is happening while any product behind it is.
+    let c = card();
+    let mut a = area_of("polish", 2000.0, 3.0, 9.0);
+    a.quantity_overrides.insert("mender_part_a".into(), 0.0);
+    let half = price_job(&c, &job_with(vec![a], 0.35)).unwrap();
+    let step = half.bid_items[0]
+        .scope
+        .iter()
+        .find(|s| s.text.contains("Repair spalls"))
+        .expect("part B is still being applied, so the repair is still described");
+    assert_eq!(
+        step.product_ids,
+        vec!["mender_part_b"],
+        "and the step names only what actually survived"
+    );
+}

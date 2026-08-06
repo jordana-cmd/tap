@@ -68,7 +68,12 @@
      scale commands mean nothing on the quote route. */
   #appShell[data-route="quote"] #workArea,
   #appShell[data-route="quote"] #ribbonRow2,
-  #appShell[data-route="takeoff"] #quoteView { display: none; }
+  #appShell[data-route="proposal"] #workArea,
+  #appShell[data-route="proposal"] #ribbonRow2,
+  #appShell[data-route="takeoff"] #quoteView,
+  #appShell[data-route="proposal"] #quoteView,
+  #appShell[data-route="takeoff"] #proposalView,
+  #appShell[data-route="quote"] #proposalView { display: none; }
 
   /* ---------- ribbon ---------- */
   #ribbon {
@@ -313,6 +318,94 @@
     margin-top: 5px; font-size: 10.5px; font-weight: 600; color: var(--accent-text);
     text-transform: uppercase; letter-spacing: 0.5px;
   }
+
+  /* ---------- proposal route ---------- */
+  #proposalView { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding: 28px 32px; }
+  #proposalHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+  .propHeadBtns { display: flex; gap: 8px; }
+  #proposalTitle { font-size: 20px; font-weight: 600; }
+  #proposalNumber { color: var(--text-dim); font-size: 12.5px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  #proposalAlerts { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+  .propGrid { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 18px; }
+  .propCard {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 14px; flex: 1 1 320px; min-width: 280px;
+  }
+  .propCard h3 {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--text-dim); margin: 0 0 10px; font-weight: 600;
+  }
+  .propCard label {
+    display: flex; align-items: center; gap: 8px; font-size: 11.5px;
+    color: var(--text-dim); margin-bottom: 7px;
+  }
+  .propCard label.wide { align-items: flex-start; }
+  .propCard label input[type=text], .propCard label input[type=email],
+  .propCard label input[type=tel] { flex: 1 1 auto; }
+  .propCard label input[type=number] { width: 70px; }
+  .propCard textarea { flex: 1 1 auto; width: 100%; }
+  .propFrom { color: var(--text-faint); font-size: 11px; line-height: 1.6; margin-top: 10px; white-space: pre-line; }
+  .propSection { font-size: 13px; font-weight: 600; margin: 22px 0 8px; }
+  #propNotes, #setTerms {
+    width: 100%; max-width: 760px; background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 8px 10px; font: inherit; font-size: 12px; line-height: 1.6; resize: vertical;
+  }
+  #propTerms { color: var(--text-dim); font-size: 11.5px; max-width: 760px; line-height: 1.6; white-space: pre-line; }
+
+  /* One scope block per bid item — the line the customer sees priced. */
+  .propItem { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 12px; max-width: 900px; }
+  .propItem.alternate { border-style: dashed; }
+  .propItemHead {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 9px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border);
+  }
+  .propItemName { font-weight: 600; font-size: 13px; }
+  .propItemMeta { color: var(--text-dim); font-size: 11px; }
+  .propItemSum { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .propAltTag {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-dim); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px;
+  }
+  .propItemBody { padding: 10px 12px 12px; }
+  .propScope {
+    width: 100%; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 8px 10px; font: inherit; font-size: 12px; line-height: 1.7; resize: vertical;
+  }
+  .propScope:focus { border-color: var(--accent); outline: none; }
+  .propScopeFoot {
+    display: flex; align-items: center; gap: 10px; margin-top: 6px;
+    font-size: 10.5px; color: var(--text-faint);
+  }
+  /* An edited narrative no longer tracks the recipe. Say so plainly: it is
+     the one thing on this screen that stops updating when the quote changes. */
+  .propEdited { color: var(--accent-text); }
+  .propReset {
+    border: none; background: none; color: var(--text-dim); cursor: pointer;
+    font-size: 10.5px; text-decoration: underline dotted; padding: 0;
+  }
+  .propReset:hover { color: var(--text); }
+  #proposalExclusions { display: flex; flex-direction: column; gap: 6px; max-width: 760px; }
+  .propExcl { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+  .propExcl input { margin-top: 2px; }
+
+  /* Settings: global, so it is a panel rather than part of any one proposal. */
+  #settingsPanel {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 60;
+    display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 40px 16px;
+  }
+  #settingsPanel[hidden] { display: none; }
+  .settingsInner {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    width: min(720px, 100%); padding: 16px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .settingsHead { display: flex; align-items: center; justify-content: space-between; }
+  .settingsHead .iconToggle { display: inline-flex; }
+  .setHint { color: var(--text-faint); font-size: 11px; line-height: 1.5; margin-bottom: 8px; }
+  .setExclRow { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .setExclRow input[type=text] { flex: 1 1 auto; font-size: 11.5px; }
+  .setExclRow .delToggle { display: inline-flex; }
 
   /* ---------- bid items: the grouping layer above areas ---------- */
   #quoteGroupBar {
@@ -678,7 +771,10 @@
         <div id="quoteJobAddress"></div>
         <div id="quoteProvenance"></div>
       </div>
-      <button id="quoteBackBtn">← Back to Takeoff</button>
+      <span class="propHeadBtns">
+        <button id="quoteBackBtn">← Back to Takeoff</button>
+        <button id="proposalBtn" title="the customer-facing proposal content">Proposal →</button>
+      </span>
     </div>
 
     <!-- Rate-card / pricing failures. A blank price is recoverable; a
@@ -746,6 +842,87 @@
       </div>
     </div>
   </section>
+
+  <!-- Proposal route (#/proposal). The customer-facing CONTENT: who it is for,
+       what the work is, what it excludes. Every scope narrative here starts as
+       the engine's generated draft and becomes an edit only when someone
+       changes it -- there is always a job where the standard language is not
+       quite right. No rendering here; this is the content the PDF will use. -->
+  <section id="proposalView">
+    <div id="proposalHead">
+      <div>
+        <div id="proposalTitle">Proposal</div>
+        <div id="proposalNumber"></div>
+      </div>
+      <div class="propHeadBtns">
+        <button id="settingsBtn" title="company details, exclusions library, defaults">Settings</button>
+        <button id="proposalBackBtn">← Back to Quote</button>
+      </div>
+    </div>
+
+    <div id="proposalAlerts"></div>
+
+    <div class="propGrid">
+      <section class="propCard">
+        <h3>Client</h3>
+        <label>Company <input id="propClientName" type="text" placeholder="who the proposal is addressed to"></label>
+        <label>Contact <input id="propClientContact" type="text"></label>
+        <label>Email <input id="propClientEmail" type="email"></label>
+        <label>Phone <input id="propClientPhone" type="tel"></label>
+      </section>
+      <section class="propCard">
+        <h3>Document</h3>
+        <label>Number <input id="propNumber" type="text"></label>
+        <label>Date <input id="propDate" type="date"></label>
+        <label>Valid for <input id="propValidDays" type="number" min="0" step="5"> days</label>
+        <div class="propFrom" id="propFrom"></div>
+      </section>
+    </div>
+
+    <h3 class="propSection">Scope of work</h3>
+    <div id="proposalScope"></div>
+
+    <h3 class="propSection">Exclusions</h3>
+    <div id="proposalExclusions"></div>
+
+    <h3 class="propSection">Notes</h3>
+    <textarea id="propNotes" rows="3" placeholder="anything specific to this job"></textarea>
+
+    <h3 class="propSection">Terms</h3>
+    <div id="propTerms"></div>
+  </section>
+
+  <!-- Global settings: company details and the exclusions library. Not per
+       project -- the company address does not change per job. -->
+  <div id="settingsPanel" hidden>
+    <div class="settingsInner">
+      <div class="settingsHead">
+        <b>Settings</b>
+        <button id="settingsClose" class="iconToggle" type="button">✕</button>
+      </div>
+      <section class="propCard">
+        <h3>Company</h3>
+        <label>Name <input id="setCoName" type="text"></label>
+        <label>Address <input id="setCoAddress" type="text"></label>
+        <label>Phone <input id="setCoPhone" type="tel"></label>
+        <label>Email <input id="setCoEmail" type="email"></label>
+        <label>Licence <input id="setCoLicense" type="text"></label>
+      </section>
+      <section class="propCard">
+        <h3>Proposal defaults</h3>
+        <label>Number prefix <input id="setPrefix" type="text" size="6"></label>
+        <label>Valid for <input id="setValidDays" type="number" min="0" step="5"> days</label>
+        <label class="wide">Terms <textarea id="setTerms" rows="3"></textarea></label>
+      </section>
+      <section class="propCard">
+        <h3>Exclusions library</h3>
+        <div class="setHint">Ticked entries are pre-selected on a new proposal. Editing text here
+          does not rewrite proposals already written.</div>
+        <div id="setExclusions"></div>
+        <button id="setAddExclusion" type="button">+ Add exclusion</button>
+      </section>
+    </div>
+  </div>
 
   <footer id="statusBar">
     <div id="status">loading wasm…</div>
@@ -1682,6 +1859,7 @@ function exportJson() {
     measurements: measurements.map(toStored),
     pricing: { ...jobPricing },
     bidItems: bidItems.map(toStoredBidItem),
+    proposal: structuredClone(proposal),
     minWidthOverride,
   }, null, 2);
 }
@@ -1691,6 +1869,7 @@ function importJson(str) {
   measurements = (data.measurements ?? []).map(fromStored);
   jobPricing = { ...DEFAULT_PRICING, ...(data.pricing ?? {}) };
   loadBidItems(data.bidItems);
+  loadProposal(data.proposal);
   minWidthOverride = data.minWidthOverride ?? null;
   jobName = data.jobName ?? null; jobAddress = data.jobAddress ?? null;
   jobNameSource = data.jobNameSource ?? null; jobAddressSource = data.jobAddressSource ?? null;
@@ -1711,6 +1890,7 @@ function projectRecord() {
     measurements: measurements.map(toStored),
     pricing: { ...jobPricing },
     bidItems: bidItems.map(toStoredBidItem),
+    proposal: structuredClone(proposal),
     minWidthOverride, updatedAt: Date.now(),
   };
 }
@@ -2288,6 +2468,132 @@ function loadBidItems(stored) {
   selectedItems = new Set();
   groupError = null;
   normalizeBidItems();
+}
+
+// ---- proposal content ----
+//
+// Everything the customer-facing document says that is not a number. All of it
+// is INPUT — persisted, never derived — except the scope narrative, which is
+// generated by the engine and only persisted once someone edits it.
+
+/// Company details, the exclusions library, and proposal defaults. GLOBAL:
+/// the company address does not change per job, and retyping it per proposal
+/// is how one goes out with last year's phone number on it.
+const DEFAULT_SETTINGS = {
+  company: {
+    name: 'Motor City Floors and Coatings',
+    address: '', phone: '', email: '', license: '',
+  },
+  proposalPrefix: 'MCF',
+  defaultValidDays: 30,
+  terms: '50% deposit on acceptance, balance net 30 on completion. '
+    + 'Pricing holds for the validity period shown above.',
+  // Seeded from what a commercial coatings proposal normally carves out.
+  // Editable: this is a starting library, not a legal position.
+  exclusions: [
+    { key: 'moisture', text: 'Moisture vapour testing and mitigation, unless listed in the scope above.', defaultOn: true },
+    { key: 'removal', text: 'Removal or disposal of existing floor coverings, adhesives, or coatings beyond the preparation described.', defaultOn: true },
+    { key: 'structural', text: 'Structural slab repair, levelling, or replacement of unsound concrete.', defaultOn: true },
+    { key: 'fixtures', text: 'Moving or protection of racking, fixtures, equipment, or stored product.', defaultOn: true },
+    { key: 'utilities', text: 'Temporary heat, power, lighting, and water, to be provided by others.', defaultOn: true },
+    { key: 'permits', text: 'Permits, inspections, and municipal fees.', defaultOn: false },
+    { key: 'afterhours', text: 'Work outside normal business hours, unless listed above.', defaultOn: false },
+    { key: 'reflective', text: 'Reflective cracking originating in the existing slab.', defaultOn: true },
+  ],
+};
+let settings = structuredClone(DEFAULT_SETTINGS);
+
+const emptyProposal = () => ({
+  number: null,          // assigned once, then never regenerated
+  date: null,            // ISO yyyy-mm-dd; defaults to first visit
+  validDays: null,       // null = fall back to the settings default
+  client: { name: '', contact: '', email: '', phone: '' },
+  exclusions: null,      // null = "never chosen", so defaults apply
+  scopeOverrides: {},    // bidItemId -> edited narrative text
+  notes: '',
+});
+let proposal = emptyProposal();
+
+/// Restore the proposal block. A project saved before proposals existed has
+/// none and starts empty — the number and date are assigned on the first
+/// visit to the route, not retroactively invented for a job already quoted.
+function loadProposal(stored) {
+  const base = emptyProposal();
+  proposal = {
+    ...base,
+    ...(stored ?? {}),
+    client: { ...base.client, ...((stored ?? {}).client ?? {}) },
+    scopeOverrides: { ...((stored ?? {}).scopeOverrides ?? {}) },
+  };
+}
+
+/// A proposal number that cannot collide with one written on another device.
+///
+/// Deliberately NOT a sequence: a counter in local IndexedDB is exactly the
+/// thing that issues MCF-0042 twice when the same job is quoted from a laptop
+/// and a tablet. Date plus a random suffix is unique without coordination, and
+/// still sorts and reads sensibly.
+function makeProposalNumber() {
+  const d = new Date();
+  const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  const suffix = Array.from(crypto.getRandomValues(new Uint8Array(3)))
+    .map(b => b.toString(36).toUpperCase().padStart(2, '0')).join('').slice(0, 4);
+  const prefix = (settings.proposalPrefix || 'Q').trim() || 'Q';
+  return `${prefix}-${ymd}-${suffix}`;
+}
+
+/// Fill in what a proposal needs the first time it is opened. Assignment is
+/// STICKY — a number, once issued, identifies that document forever, so it is
+/// never regenerated on a later visit.
+function ensureProposalDefaults() {
+  let changed = false;
+  if (!proposal.number) { proposal.number = makeProposalNumber(); changed = true; }
+  if (!proposal.date) { proposal.date = new Date().toISOString().slice(0, 10); changed = true; }
+  if (proposal.exclusions === null) {
+    proposal.exclusions = settings.exclusions.filter(e => e.defaultOn).map(e => e.key);
+    changed = true;
+  }
+  if (changed) markDirty();
+}
+
+/// The narrative for a bid item: the estimator's edit if there is one, else
+/// the engine's generated draft. Never a blend of the two.
+function scopeTextFor(item, biq) {
+  const edited = proposal.scopeOverrides[item.id];
+  if (typeof edited === 'string') return edited;
+  return generatedScope(biq);
+}
+const generatedScope = biq =>
+  (biq && biq.scope ? biq.scope.map(s => s.text).join('\n') : '');
+const scopeIsEdited = item => typeof proposal.scopeOverrides[item.id] === 'string';
+
+/// Which sheets a bid item's work was measured on.
+///
+/// EVERY distinct sheet, not the first: an item spanning pages came from all
+/// of them, and naming one would quietly drop the rest. Pages are a harness
+/// concept — engine-core has no notion of a sheet — so this is resolved here.
+function sheetsFor(item) {
+  const pages = [...new Set(item.areaIds.map(id => areaById(id)?.page).filter(p => p != null))];
+  pages.sort((a, b) => a - b);
+  return pages.map(sheetLabelFor);
+}
+
+/// Synchronous sheet label from the title-block cache the takeoff already
+/// fills. Falls back to the page number rather than blocking a render on a
+/// text-extraction pass.
+const sheetLabelFor = p =>
+  (p === 0 ? 'Demo sheet' : (sheetTitleCache.get(p) || `Page ${p}`));
+
+/// Warm the title cache for every sheet the proposal will name, then redraw.
+/// Sheets the estimator never visited have no cached title, and "Page 22" on
+/// a proposal where every other line reads "A-201" looks like a defect.
+async function warmSheetTitles() {
+  if (!pdfDoc) return;
+  const pages = [...new Set(measurements.filter(m => m.kind === 'area').map(m => m.page))];
+  const missing = pages.filter(p => p > 0 && !sheetTitleCache.has(p));
+  if (!missing.length) return;
+  await Promise.all(missing.map(p => sheetTitleFor(p).catch(() => null)));
+  if (routeFromHash() === 'proposal') renderProposalView();
 }
 
 const bidItemOf = areaId => bidItems.find(it => it.areaIds.includes(areaId)) ?? null;
@@ -3151,12 +3457,307 @@ function renderJobLevel() {
   blended.dataset.productivity = lastQuote ? lastQuote.productivity : 'unknown';
 }
 
+// ---- proposal screen ----
+//
+// The customer-facing CONTENT. Numbers still come from the engine; what this
+// screen owns is the words around them, and the one editorial decision that
+// matters: a scope narrative is a GENERATED DRAFT until someone edits it, and
+// an edit is sticky.
+
+function renderProposalView() {
+  const active = document.activeElement;
+  const focusKey = active && active.dataset ? active.dataset.pkey : null;
+
+  $('proposalNumber').textContent = [
+    proposal.number,
+    proposal.date,
+    jobNameOrFallback(),
+  ].filter(Boolean).join(' · ');
+
+  bindProp('propClientName', () => proposal.client.name, v => { proposal.client.name = v; });
+  bindProp('propClientContact', () => proposal.client.contact, v => { proposal.client.contact = v; });
+  bindProp('propClientEmail', () => proposal.client.email, v => { proposal.client.email = v; });
+  bindProp('propClientPhone', () => proposal.client.phone, v => { proposal.client.phone = v; });
+  bindProp('propNumber', () => proposal.number ?? '', v => { proposal.number = v; });
+  bindProp('propDate', () => proposal.date ?? '', v => { proposal.date = v; });
+  bindProp('propValidDays', () => proposal.validDays ?? settings.defaultValidDays,
+    v => { proposal.validDays = v === '' ? null : Number(v); });
+  bindProp('propNotes', () => proposal.notes, v => { proposal.notes = v; });
+
+  const c = settings.company;
+  $('propFrom').textContent = [c.name, c.address, c.phone, c.email,
+    c.license ? `Licence ${c.license}` : ''].filter(Boolean).join('\n')
+    || 'No company details yet — add them in Settings.';
+  $('propTerms').textContent = settings.terms || '';
+
+  renderProposalAlerts();
+  renderProposalScope();
+  renderProposalExclusions();
+
+  if (focusKey) {
+    const el = $('proposalView').querySelector(`[data-pkey="${focusKey}"]`);
+    if (el) {
+      el.focus();
+      try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* date/number */ }
+    }
+  }
+}
+
+/// Wire a plain field once, then keep its value in sync. Wiring on every
+/// render would stack listeners and fire each edit N times.
+function bindProp(id, get, set) {
+  const el = $(id);
+  el.dataset.pkey = id;
+  if (document.activeElement !== el) el.value = get();
+  if (el.dataset.wired) return;
+  el.dataset.wired = '1';
+  el.addEventListener('input', () => { set(el.value); markDirty(); });
+}
+
+function renderProposalAlerts() {
+  const box = $('proposalAlerts');
+  box.textContent = '';
+  if (!settings.company.name || !settings.company.address) {
+    box.appendChild(alertBox('Company details are incomplete',
+      'A proposal without an address and phone number is not one you can send. Add them in Settings.',
+      true));
+  }
+  if (rateCardError) {
+    box.appendChild(alertBox('Rate card failed to load — this proposal has no prices',
+      `${rateCardError}.`));
+    return;
+  }
+  if (quoteError) {
+    box.appendChild(alertBox('The quote behind this proposal will not price', quoteError));
+  }
+  // A narrative that has been edited no longer follows the recipe. That is a
+  // legitimate choice, but it must not be a silent one.
+  const stale = bidItems.filter(it => scopeIsEdited(it)).map(it => it.name);
+  if (stale.length) {
+    box.appendChild(alertBox(`${stale.length} scope narrative(s) have been edited`,
+      `${stale.join(', ')} — these no longer update when the quote changes. `
+      + 'Reset one to go back to the generated text.', true));
+  }
+}
+
+function renderProposalScope() {
+  const wrap = $('proposalScope');
+  wrap.textContent = '';
+  const byId = new Map((lastQuote ? lastQuote.bid_items : []).map(b => [b.id, b]));
+  const items = orderedBidItems();
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.id = 'proposalEmpty';
+    empty.className = 'propFrom';
+    empty.textContent = 'Nothing to propose yet — measure an area and price it first.';
+    wrap.appendChild(empty);
+    return;
+  }
+  for (const it of items) wrap.appendChild(buildScopeBlock(it, byId.get(it.id)));
+}
+
+function buildScopeBlock(it, biq) {
+  const block = document.createElement('div');
+  block.className = 'propItem';
+  if (it.alternate) block.classList.add('alternate');
+  block.dataset.bidItemId = String(it.id);
+
+  const head = document.createElement('div');
+  head.className = 'propItemHead';
+  const name = document.createElement('span');
+  name.className = 'propItemName';
+  name.textContent = it.name;
+  head.appendChild(name);
+  if (it.alternate) {
+    const tag = document.createElement('span');
+    tag.className = 'propAltTag';
+    tag.textContent = 'Alternate';
+    head.appendChild(tag);
+  }
+  // EVERY sheet the work was measured on, not the first: an item spanning
+  // pages came from all of them, and naming one would quietly drop the rest.
+  const sheets = sheetsFor(it);
+  if (sheets.length) {
+    const meta = document.createElement('span');
+    meta.className = 'propItemMeta';
+    meta.textContent = sheets.length === 1 ? sheets[0] : `${sheets.length} sheets: ${sheets.join(', ')}`;
+    head.appendChild(meta);
+  }
+  const sum = document.createElement('span');
+  sum.className = 'propItemSum';
+  sum.textContent = biq ? (it.alternate ? `+${money(biq.price)}` : money(biq.price)) : '—';
+  head.appendChild(sum);
+  block.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'propItemBody';
+  const ta = document.createElement('textarea');
+  ta.className = 'propScope';
+  ta.dataset.pkey = `scope-${it.id}`;
+  ta.rows = Math.max(3, scopeTextFor(it, biq).split('\n').length + 1);
+  ta.value = scopeTextFor(it, biq);
+  ta.addEventListener('input', () => {
+    // Typing is what turns a draft into an edit. Storing the text verbatim
+    // (rather than a diff against the draft) is what makes it survive the
+    // recipe changing underneath it.
+    proposal.scopeOverrides[it.id] = ta.value;
+    markDirty();
+    $('proposalAlerts').replaceChildren();
+    renderProposalAlerts();
+    updateScopeFoot(it);
+  });
+  body.appendChild(ta);
+
+  const foot = document.createElement('div');
+  foot.className = 'propScopeFoot';
+  foot.dataset.scopeFoot = String(it.id);
+  body.appendChild(foot);
+  block.appendChild(body);
+  updateScopeFootIn(foot, it, biq);
+  return block;
+}
+
+const updateScopeFoot = it => {
+  const foot = $('proposalScope').querySelector(`[data-scope-foot="${it.id}"]`);
+  const biq = (lastQuote ? lastQuote.bid_items : []).find(b => b.id === it.id);
+  if (foot) updateScopeFootIn(foot, it, biq);
+};
+
+function updateScopeFootIn(foot, it, biq) {
+  foot.textContent = '';
+  const edited = scopeIsEdited(it);
+  const label = document.createElement('span');
+  label.className = edited ? 'propEdited' : '';
+  label.textContent = edited
+    ? 'Edited — no longer follows the recipe'
+    : 'Generated from the recipe — edits stick';
+  foot.appendChild(label);
+  if (!edited) return;
+  const reset = document.createElement('button');
+  reset.className = 'propReset';
+  reset.type = 'button';
+  reset.dataset.pkey = `reset-${it.id}`;
+  reset.textContent = 'Reset to generated';
+  reset.addEventListener('click', () => {
+    delete proposal.scopeOverrides[it.id];
+    markDirty();
+    renderProposalView();
+  });
+  foot.appendChild(reset);
+  if (biq && generatedScope(biq) === scopeTextFor(it, biq)) {
+    const same = document.createElement('span');
+    same.textContent = '(identical to the generated text)';
+    foot.appendChild(same);
+  }
+}
+
+function renderProposalExclusions() {
+  const box = $('proposalExclusions');
+  box.textContent = '';
+  const chosen = new Set(proposal.exclusions ?? []);
+  for (const e of settings.exclusions) {
+    const row = document.createElement('label');
+    row.className = 'propExcl';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = chosen.has(e.key);
+    cb.dataset.pkey = `excl-${e.key}`;
+    cb.addEventListener('change', () => {
+      const set = new Set(proposal.exclusions ?? []);
+      if (cb.checked) set.add(e.key); else set.delete(e.key);
+      proposal.exclusions = [...set];
+      markDirty();
+    });
+    row.append(cb, document.createTextNode(e.text));
+    box.appendChild(row);
+  }
+  if (!settings.exclusions.length) {
+    const none = document.createElement('div');
+    none.className = 'propFrom';
+    none.textContent = 'No exclusions in the library — add some in Settings.';
+    box.appendChild(none);
+  }
+}
+
+// ---- settings (global, not per project) ----
+
+async function loadSettings() {
+  try {
+    const stored = await store.getSettings();
+    if (stored) {
+      settings = {
+        ...structuredClone(DEFAULT_SETTINGS),
+        ...stored,
+        company: { ...DEFAULT_SETTINGS.company, ...(stored.company ?? {}) },
+        exclusions: stored.exclusions ?? structuredClone(DEFAULT_SETTINGS.exclusions),
+      };
+    }
+  } catch { /* read-only storage: the defaults are still usable */ }
+}
+const saveSettings = () => store.putSettings(structuredClone(settings)).catch(() => {});
+
+function openSettings() {
+  $('settingsPanel').hidden = false;
+  renderSettings();
+}
+
+function renderSettings() {
+  const bind = (id, get, set) => {
+    const el = $(id);
+    if (document.activeElement !== el) el.value = get();
+    if (el.dataset.wired) return;
+    el.dataset.wired = '1';
+    el.addEventListener('input', () => {
+      set(el.value);
+      saveSettings();
+      if (routeFromHash() === 'proposal') renderProposalView();
+    });
+  };
+  bind('setCoName', () => settings.company.name, v => { settings.company.name = v; });
+  bind('setCoAddress', () => settings.company.address, v => { settings.company.address = v; });
+  bind('setCoPhone', () => settings.company.phone, v => { settings.company.phone = v; });
+  bind('setCoEmail', () => settings.company.email, v => { settings.company.email = v; });
+  bind('setCoLicense', () => settings.company.license, v => { settings.company.license = v; });
+  bind('setPrefix', () => settings.proposalPrefix, v => { settings.proposalPrefix = v; });
+  bind('setValidDays', () => settings.defaultValidDays, v => { settings.defaultValidDays = Number(v) || 0; });
+  bind('setTerms', () => settings.terms, v => { settings.terms = v; });
+
+  const box = $('setExclusions');
+  box.textContent = '';
+  settings.exclusions.forEach((e, i) => {
+    const row = document.createElement('div');
+    row.className = 'setExclRow';
+    const on = document.createElement('input');
+    on.type = 'checkbox';
+    on.checked = e.defaultOn === true;
+    on.title = 'pre-selected on a new proposal';
+    on.addEventListener('change', () => { e.defaultOn = on.checked; saveSettings(); });
+    const text = document.createElement('input');
+    text.type = 'text';
+    text.value = e.text;
+    text.dataset.pkey = `setexcl-${e.key}`;
+    text.addEventListener('input', () => { e.text = text.value; saveSettings(); });
+    const del = document.createElement('button');
+    del.className = 'iconToggle delToggle';
+    del.type = 'button';
+    del.textContent = '✕';
+    del.title = 'remove from the library';
+    del.addEventListener('click', () => {
+      settings.exclusions.splice(i, 1);
+      saveSettings(); renderSettings();
+      if (routeFromHash() === 'proposal') renderProposalView();
+    });
+    row.append(on, text, del);
+    box.appendChild(row);
+  });
+}
+
 // ---- routing: hash-based view swap (#/takeoff | #/quote) ----
 // A route rather than a second HTML page: same tab, real back/forward, and
 // the wasm engine + live measurement state stay in memory (a separate page
 // would re-boot wasm and recompute every quantity just to render).
 
-const ROUTES = new Set(['takeoff', 'quote']);
+const ROUTES = new Set(['takeoff', 'quote', 'proposal']);
 let lastQuotePayload = null;   // most recent handoff (test hook / debugging)
 
 const routeFromHash = () => {
@@ -3169,6 +3770,19 @@ const routeFromHash = () => {
 /// so a half-finished polygon can't linger invisibly behind the quote view.
 function applyRoute() {
   const route = routeFromHash();
+  if (route === 'proposal') {
+    // The proposal rests on the quote, so the quote has to be current before
+    // a lump sum or a generated scope can be shown.
+    cancelTransients('opened proposal');
+    if (!rateCardText && !rateCardError) {
+      loadRateCard().then(() => { repriceQuote(); ensureProposalDefaults(); renderProposalView(); });
+    } else {
+      repriceQuote();
+    }
+    ensureProposalDefaults();
+    renderProposalView();
+    warmSheetTitles();
+  }
   if (route === 'quote') {
     cancelTransients('opened quote');
     lastQuotePayload = buildQuotePayload();
@@ -3189,6 +3803,12 @@ function applyRoute() {
 /// on both routes) can swap projects without leaving the quote view. A no-op
 /// on the takeoff route.
 function refreshQuoteIfActive() {
+  if (routeFromHash() === 'proposal') {
+    repriceQuote();
+    ensureProposalDefaults();
+    renderProposalView();
+    return;
+  }
   if (routeFromHash() !== 'quote') return;
   lastQuotePayload = buildQuotePayload();
   repriceQuote();
@@ -3778,6 +4398,7 @@ async function loadPdf(data, name) {
     // Legacy projects predate the pricing block; defaults, nothing assumed.
     jobPricing = { ...DEFAULT_PRICING, ...(proj.pricing ?? {}) };
     loadBidItems(proj.bidItems);
+    loadProposal(proj.proposal);
     collapsedAreas = new Set(); collapseDefaulted = false;
     minWidthOverride = proj.minWidthOverride ?? null;
     jobName = proj.jobName ?? null; jobAddress = proj.jobAddress ?? null;
@@ -3790,6 +4411,7 @@ async function loadPdf(data, name) {
     measurements = []; nextMeasId = 1;
     jobPricing = { ...DEFAULT_PRICING };
     loadBidItems(null);
+    loadProposal(null);
     collapsedAreas = new Set(); collapseDefaulted = false;
     measSeq = { Line: 0, Area: 0, 'Wall run': 0, Room: 0, Count: 0 };
     setSaveState('—'); // no project until the first mutation
@@ -3917,6 +4539,14 @@ $('downloadPdfBtn').addEventListener('click', () => downloadPdf());
 // and the back/forward buttons drive the exact same code path.
 $('quoteBtn').addEventListener('click', () => { location.hash = '#/quote'; });
 $('quoteBackBtn').addEventListener('click', () => { location.hash = '#/takeoff'; });
+$('proposalBtn').addEventListener('click', () => { location.hash = '#/proposal'; });
+$('proposalBackBtn').addEventListener('click', () => { location.hash = '#/quote'; });
+$('settingsBtn').addEventListener('click', openSettings);
+$('settingsClose').addEventListener('click', () => { $('settingsPanel').hidden = true; });
+$('setAddExclusion').addEventListener('click', () => {
+  settings.exclusions.push({ key: `x${Date.now().toString(36)}`, text: '', defaultOn: false });
+  saveSettings(); renderSettings();
+});
 window.addEventListener('hashchange', applyRoute);
 $('importJson').addEventListener('change', async ev => {
   const f = ev.target.files[0];
@@ -3974,6 +4604,17 @@ window.__harness = {
   productivityBand: () => productivity_band_json(),
   bidItems: () => bidItems,
   groupError: () => groupError,
+  proposal: () => proposal,
+  settings: () => settings,
+  scopeTextFor: id => {
+    const it = bidItems.find(b => b.id === id);
+    const biq = (lastQuote ? lastQuote.bid_items : []).find(b => b.id === id);
+    return it ? scopeTextFor(it, biq) : null;
+  },
+  sheetsFor: id => {
+    const it = bidItems.find(b => b.id === id);
+    return it ? sheetsFor(it) : null;
+  },
   jobPricing: () => jobPricing,
   loadRateCard: () => loadRateCard(),
   repriceQuote: () => { repriceQuote(); renderQuoteView(); },
@@ -3988,6 +4629,7 @@ await init();
 store.requestPersist(); // best-effort: keep our storage across eviction
 PRODUCTIVITY_BAND = JSON.parse(productivity_band_json());
 PRODUCTIVITY_TYPICAL = PRODUCTIVITY_BAND.typical;
+await loadSettings();
 for (const p of JSON.parse(scale_presets_json())) {
   const o = document.createElement('option');
   o.value = p.fpi; o.textContent = p.label;

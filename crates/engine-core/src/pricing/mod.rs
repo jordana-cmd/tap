@@ -40,7 +40,7 @@ pub use calc::{
     consumable_rate_per_sf, material_rate_per_sf, price_area, price_from_cost, price_job,
     rate_summary, resolve_bid_items, AreaInput, AreaQuote, BidItem, BidItemQuote, JobCosts,
     JobInput, JobQuote, LaborInput, LineSource, PricingContext, PricingError, Productivity,
-    QuoteLine, MARGIN_FLOOR, SF_PER_MAN_HOUR_MAX, SF_PER_MAN_HOUR_MIN, SF_PER_MAN_HOUR_TYPICAL,
+    QuoteLine, ScopeStep, MARGIN_FLOOR, SF_PER_MAN_HOUR_MAX, SF_PER_MAN_HOUR_MIN, SF_PER_MAN_HOUR_TYPICAL,
 };
 
 #[cfg(feature = "serde")]
@@ -117,6 +117,26 @@ pub struct Product {
     pub rate: f64,
     #[cfg_attr(feature = "serde", serde(default))]
     pub rate_basis: RateBasis,
+    /// One customer-facing sentence describing the WORK this product
+    /// represents — "Repair joints and spalls…", not "Mender-Part A".
+    ///
+    /// This is what makes a scope of work generate itself instead of being
+    /// retyped per proposal, and it is attached HERE, to the product, so the
+    /// narrative is derived from the same resolved recipe the price is. Delete
+    /// the mender line on a new slab and the joint-repair sentence goes with
+    /// it, because it was never a separate list to keep in sync.
+    ///
+    /// `None` = contributes no sentence. Two-part products (`_part_a` /
+    /// `_part_b`) carry the SAME sentence and collapse into one step; they are
+    /// two catalog lines but one thing a crew does.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub scope_line: Option<String>,
+    /// Where this step falls in the WORK sequence, which is not catalog order
+    /// and not recipe order. Lower runs first; ties keep first-appearance
+    /// order. Joints get repaired before the floor is sealed regardless of
+    /// where the two sit in the products array.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub scope_order: i32,
 }
 
 /// A named subset of the catalog. A system is a RECIPE, not a price — the same
@@ -157,6 +177,15 @@ pub struct SystemRecipe {
     /// double-counting the very passes the figures include.
     #[cfg_attr(feature = "serde", serde(default))]
     pub standard_grit: Option<String>,
+    /// Scope sentences that open the narrative for this system, before any
+    /// product step. Mobilization lives here: it bookends every job and
+    /// belongs to no product, so hanging it off one would make it vanish the
+    /// day that product is suppressed.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub scope_intro: Vec<String>,
+    /// Scope sentences that close it — cleanup, demobilization. Same reasoning.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub scope_outro: Vec<String>,
 }
 
 /// One grinding grit level the catalog knows about.

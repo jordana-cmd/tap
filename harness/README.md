@@ -158,6 +158,73 @@ keeps its own hours — but flagged, because one lump sum under one grit-bearing
 name would describe work that is not what was priced, and no number on the page
 reveals that.
 
+## The proposal route (`#/proposal`)
+
+The customer-facing **content**: who it is for, what the work is, what it
+excludes. No rendering here — this is what the PDF will consume.
+
+### The scope of work generates itself
+
+Each product in the rate card carries one customer-facing sentence
+(`scope_line`) and a `scope_order` giving its place in the **work sequence** —
+which is neither catalog order nor recipe order, since the polish recipe lists
+the sealer before the mender. Systems carry `scope_intro` / `scope_outro` for
+mobilisation, surface prep and cleanup, which belong to no product; hanging
+them off one would make them vanish the day that product is suppressed.
+
+The narrative is built from **the same resolved lines the price is**. Suppress
+the mender on a new slab and the joint-repair sentence goes with it, because it
+was never a separate list to keep in sync. Consumables never appear — brushes
+and rags are not work a customer buys.
+
+Sentences dedupe **by text**, which is what collapses a two-part product
+(Mender A and B, flake thrown and recovered) into one step: two catalog lines,
+one thing a crew does. Give two products the same sentence and they merge —
+that is the mechanism, not a coincidence. A step survives while *any* of its
+products does.
+
+Across a multi-area bid item the steps are the **union**, not the intersection:
+one lump sum has to describe everything under it, including an add-on only one
+member carries.
+
+### Generated draft, sticky edit
+
+The textarea is pre-filled with the engine's draft and stays live with the
+quote until someone types in it. From then on the edit is stored verbatim and
+**stops tracking the recipe** — which is the honest behaviour for hand-written
+language, but must not be silent, so the block says "Edited — no longer follows
+the recipe", a top-level alert lists them, and *Reset to generated* returns to
+the **current** draft rather than the one that was replaced.
+
+### The three open items, decided
+
+- **Proposal numbers** are `PREFIX-YYYYMMDD-XXXX` with a random suffix, not a
+  sequence. A counter in local IndexedDB is exactly the thing that issues the
+  same number twice when a job is quoted from a laptop and a tablet. Issued
+  once on first visit and never reissued — a number identifies that document
+  forever.
+- **A bid item spanning sheets names every sheet**, not the first. It came from
+  all of them, and picking one would quietly drop the rest. Sheet titles are a
+  harness concept (`engine-core` has no notion of a page), so this is resolved
+  here, and the title cache is warmed on entering the route so an unvisited
+  sheet does not read "Page 22" beside "A-201".
+- The **"INTERNAL — NOT FOR CUSTOMER"** treatment belongs to the cost-sheet
+  generator in the next session; nothing here renders a document yet.
+
+### Settings are global, the proposal is per project
+
+Company details, the exclusions library, proposal-number prefix, default
+validity and terms live in a `settings` object store (IndexedDB v2), shared
+across every project: the company address does not change per job, and retyping
+it per proposal is how one goes out with last year's phone number on it.
+Editing an exclusion's text does not rewrite proposals already written.
+
+Per project: client fields, number, date, validity, selected exclusions, notes,
+and any scope overrides — all inputs, persisted beside crew/hours. A project
+saved before proposals existed loads with an empty one; the number and date are
+assigned on first visit rather than retroactively invented for a job already
+quoted.
+
 ### The handoff payload
 
 `buildQuotePayload()` remains the takeoff → quoting handoff (and the shape an
