@@ -1816,6 +1816,29 @@ await run('proposal: an alternate carries its own scope and reads as an addition
   assert.ok(!blocks.find(b => !b.alternate).sum.startsWith('+'), 'base work is not');
 });
 
+await run('takeoff PDF: typographic characters survive the WinAnsi mapping', async page => {
+  // toPdfAscii maps the em dash to WinAnsi 0x97, but a Type1 font with no
+  // /Encoding falls back to StandardEncoding, where that code is undefined --
+  // so the character silently vanished from the printed page. The mapping and
+  // the font declaration have to agree, and nothing was checking that they do.
+  await drawArea(page);
+  const txt = await page.evaluate(() => window.__harness.takeoffPdfText());
+  assert.ok(txt.startsWith('%PDF-1.4'), 'still a valid PDF');
+  assert.ok(txt.trimEnd().endsWith('%%EOF'), 'still complete');
+
+  const fonts = txt.match(/\/BaseFont \/Helvetica[^>]*/g) || [];
+  assert.equal(fonts.length, 2, `expected both Base14 fonts, got ${fonts.length}`);
+  for (const f of fonts) {
+    assert.match(f, /\/Encoding \/WinAnsiEncoding/,
+      `a font that does not declare its encoding drops every mapped character: ${f}`);
+  }
+
+  // The measurement-group header is "Area — 100.0 SF", so the byte must be
+  // in the content stream as 0x97 rather than dropped or turned into '?'.
+  assert.ok(txt.includes('\x97'), 'the em dash did not reach the content stream');
+  assert.ok(!/\(\s*Area \?/.test(txt), 'and was not substituted with a question mark');
+});
+
 // ---- the two PDF outputs ----
 //
 // Separate generators, one letterhead. Content streams are written
