@@ -225,6 +225,36 @@ saved before proposals existed loads with an empty one; the number and date are
 assigned on first visit rather than retroactively invented for a job already
 quoted.
 
+### Two PDFs, one letterhead
+
+**Separate generators.** The takeoff PDF (ribbon → Download PDF) captures a
+marked-up plan page; these are multi-page text documents. Forcing one path to
+do both makes both worse, so they share the low-level writer
+(`writeTextPdf`) and `brandedHeader()` and nothing else. The takeoff generator
+still assembles its own objects because it embeds a JPEG XObject — folding it
+in is a later cleanup, not a requirement.
+
+**The customer proposal** carries the letterhead, client and project blocks,
+one scope-of-work section per base bid item with its lump sum, alternates under
+their own heading, exclusions, notes, terms, and a signature block. It contains
+**no cost, margin, profit, or man-hour figure** — asserted by the suite against
+the finished bytes, not left to review, because two PDFs generated from one
+screen is exactly how a margin sheet gets emailed to a GC.
+
+**The internal cost sheet** carries the buildup: materials, consumables,
+labour, overhead, cost, man-hours and SF/man-hour per line, job costs, then
+cost, price, profit and margin, plus the unconfirmed-recipe caveat. Every page
+opens with a red **INTERNAL — NOT FOR CUSTOMER** bar — a bar rather than a
+footnote, and on every page rather than the first, because a document leaving
+the building has to say what it is on whichever page someone is looking at. A
+job that will not price says so instead of printing zeroes.
+
+Both write uncompressed content streams, which is what lets the suite read the
+finished document rather than trusting the code that produced it. Text wraps
+using the browser's Helvetica metrics via `measureText` — metrically equivalent
+to the Base14 font the PDF draws in, and far less code than an AFM width table
+— and long scope narratives break onto further pages.
+
 ### The handoff payload
 
 `buildQuotePayload()` remains the takeoff → quoting handoff (and the shape an

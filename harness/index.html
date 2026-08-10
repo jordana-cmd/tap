@@ -855,6 +855,8 @@
         <div id="proposalNumber"></div>
       </div>
       <div class="propHeadBtns">
+        <button id="downloadProposalBtn" title="the customer-facing document">Proposal PDF</button>
+        <button id="downloadCostSheetBtn" title="internal — cost, margin, and profit">Cost sheet PDF</button>
         <button id="settingsBtn" title="company details, exclusions library, defaults">Settings</button>
         <button id="proposalBackBtn">← Back to Quote</button>
       </div>
@@ -4000,8 +4002,8 @@ function buildTakeoffPdfBytes() {
   writeBytes(jpeg);
   write('\nendstream\nendobj\n');
 
-  objStart(); write(`${fontRegId} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n`);
-  objStart(); write(`${fontBoldId} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n`);
+  objStart(); write(`${fontRegId} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n`);
+  objStart(); write(`${fontBoldId} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>\nendobj\n`);
 
   const xrefStart = byteLen;
   write(`xref\n0 ${fontBoldId + 1}\n0000000000 65535 f \n`);
@@ -4027,6 +4029,385 @@ function downloadPdf() {
   URL.revokeObjectURL(url);
   say('downloaded takeoff PDF');
 }
+
+// ---- document PDFs: customer proposal + internal cost sheet ----
+//
+// TWO GENERATORS, one branded header. The takeoff PDF above captures a
+// marked-up plan page; these are multi-page text documents. Forcing one path
+// to do both makes both worse, so they share the low-level writer and the
+// letterhead and nothing else.
+//
+// The customer proposal contains NO cost, margin, profit, or man-hour figure.
+// That is not a styling preference — two PDFs generated from one screen is
+// exactly how a margin sheet gets emailed to a GC — and it is asserted by the
+// interaction suite rather than left to review.
+
+const PT = { W: 612, H: 792, M: 54 };   // US Letter, points
+const INK = { rule: [0.80, 0.80, 0.80], dim: [0.42, 0.42, 0.45], red: [0.72, 0.11, 0.13], white: [1, 1, 1] };
+
+/// Helvetica text width, borrowed from the browser.
+///
+/// The PDF draws in Base14 Helvetica and the browser's Helvetica/Arial is
+/// metrically equivalent — accurate enough to wrap on and to right-align money
+/// against, and far less code than shipping an AFM width table.
+let measureCtx = null;
+function textWidth(t, bold, size) {
+  if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d');
+  measureCtx.font = `${bold ? 'bold ' : ''}${size}px Helvetica, Arial, sans-serif`;
+  return measureCtx.measureText(toPdfAscii(t)).width;
+}
+
+function wrapText(t, bold, size, maxW) {
+  const words = String(t ?? '').split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = '';
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w;
+    if (line && textWidth(next, bold, size) > maxW) { lines.push(line); line = w; }
+    else line = next;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+/// A cursor over a stack of pages: draw, advance, break when out of room.
+/// `onPage` re-draws whatever every page must carry — the letterhead on a
+/// proposal, the INTERNAL banner on a cost sheet.
+function textPdf(onPage) {
+  const pages = [];
+  let cs = '';
+  let y = 0;
+  const api = {
+    get y() { return y; },
+    set y(v) { y = v; },
+    newPage() {
+      if (cs) pages.push(cs);
+      cs = '';
+      y = PT.H - PT.M;
+      if (onPage) onPage(api);
+    },
+    /// Break BEFORE drawing something `h` tall, so a heading never lands as
+    /// the last thing on a page with its content overleaf.
+    need(h) { if (y - h < PT.M) api.newPage(); },
+    gap(dy) { y -= dy; },
+    text(t, opts = {}) {
+      const { bold = false, size = 10, align = 'left', color = null, dy = 0 } = opts;
+      if (dy) y -= dy;
+      const right = opts.rightAt ?? (PT.W - PT.M);
+      const x = align === 'right' ? right - textWidth(t, bold, size) : (opts.x ?? PT.M);
+      const set = color ? `${color.join(' ')} rg ` : '';
+      const reset = color ? ' 0 0 0 rg' : '';
+      cs += `${set}BT /${bold ? 'F2' : 'F1'} ${size} Tf ${x.toFixed(1)} ${y.toFixed(1)} Td (${escapePdfText(t)}) Tj ET${reset}\n`;
+      return api;
+    },
+    /// Wrapped body copy. Breaks pages line by line, so a long scope narrative
+    /// flows instead of running off the bottom.
+    para(t, opts = {}) {
+      const { bold = false, size = 9.5, indent = 0, lead = 13, dy = 0 } = opts;
+      if (dy) y -= dy;
+      const maxW = PT.W - 2 * PT.M - indent;
+      for (const line of wrapText(t, bold, size, maxW)) {
+        api.need(lead);
+        y -= lead;
+        api.text(line, { bold, size, x: PT.M + indent });
+      }
+      return api;
+    },
+    rect(x, yy, w, h, color) {
+      cs += `${color.join(' ')} rg ${x.toFixed(1)} ${yy.toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)} re f 0 0 0 rg\n`;
+      return api;
+    },
+    rule(dy = 8) {
+      y -= dy;
+      cs += `0.6 w ${INK.rule.join(' ')} RG ${PT.M} ${y.toFixed(1)} m ${PT.W - PT.M} ${y.toFixed(1)} l S 0 0 0 RG\n`;
+      return api;
+    },
+    end() { if (cs) pages.push(cs); return pages; },
+  };
+  api.newPage();
+  return api;
+}
+
+/// Objects, xref, trailer, and the two Base14 fonts. Text only: these
+/// documents embed no images, which is the one thing that separates them from
+/// buildTakeoffPdfBytes and the reason that one still assembles its own.
+function writeTextPdf(streams) {
+  const chunks = [];
+  let byteLen = 0;
+  const offsets = [];
+  const write = str => { const b = pdfBytes(str); chunks.push(b); byteLen += b.length; };
+  const writeBytes = b => { chunks.push(b); byteLen += b.length; };
+  const objStart = () => offsets.push(byteLen);
+
+  write('%PDF-1.4\n');
+  objStart(); write('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+  const pageIds = streams.map((_, i) => 3 + i * 2);
+  objStart();
+  write(`2 0 obj\n<< /Type /Pages /Kids [${pageIds.map(id => `${id} 0 R`).join(' ')}] /Count ${streams.length} >>\nendobj\n`);
+  const fontRegId = 3 + streams.length * 2, fontBoldId = fontRegId + 1;
+
+  streams.forEach((cs, i) => {
+    const pageId = pageIds[i], contentId = pageId + 1;
+    objStart();
+    write(`${pageId} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PT.W} ${PT.H}] `
+      + `/Resources << /Font << /F1 ${fontRegId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${contentId} 0 R >>\nendobj\n`);
+    objStart();
+    const b = pdfBytes(cs);
+    write(`${contentId} 0 obj\n<< /Length ${b.length} >>\nstream\n`);
+    writeBytes(b);
+    write('\nendstream\nendobj\n');
+  });
+
+  objStart(); write(`${fontRegId} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n`);
+  objStart(); write(`${fontBoldId} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>\nendobj\n`);
+
+  const xrefStart = byteLen;
+  write(`xref\n0 ${fontBoldId + 1}\n0000000000 65535 f \n`);
+  for (const off of offsets) write(`${String(off).padStart(10, '0')} 00000 n \n`);
+  write(`trailer\n<< /Size ${fontBoldId + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`);
+
+  const out = new Uint8Array(byteLen);
+  let pos = 0;
+  for (const c of chunks) { out.set(c, pos); pos += c.length; }
+  return out;
+}
+
+/// The letterhead both documents share.
+function brandedHeader(doc) {
+  const c = settings.company;
+  doc.text(c.name || 'Motor City Floors and Coatings', { bold: true, size: 13, dy: 12 });
+  const contact = [c.address, c.phone, c.email, c.license ? `Licence ${c.license}` : '']
+    .filter(Boolean).join('   ·   ');
+  if (contact) doc.text(contact, { size: 8.5, color: INK.dim, dy: 12 });
+  doc.rule(8);
+}
+
+/// The banner every page of the cost sheet carries. Not a footnote and not one
+/// title page: a document that leaves the building has to say what it is on
+/// whichever page someone is looking at.
+function internalBanner(doc) {
+  doc.rect(0, PT.H - 30, PT.W, 30, INK.red);
+  doc.y = PT.H - 21;   // baseline inside the bar
+  doc.text('INTERNAL — NOT FOR CUSTOMER', { bold: true, size: 12, color: INK.white });
+  doc.text('cost, margin, and profit', { size: 8.5, color: INK.white, align: 'right' });
+  doc.y = PT.H - 30 - 16;
+}
+
+const validUntil = () => {
+  const days = proposal.validDays ?? settings.defaultValidDays;
+  if (!proposal.date || !Number.isFinite(days)) return null;
+  const d = new Date(`${proposal.date}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+
+/// The customer proposal. Scope, lump sums, alternates, exclusions, terms.
+/// NOTHING about what any of it costs us.
+function buildProposalPdfBytes() {
+  const q = lastQuote;
+  const byId = new Map((q ? q.bid_items : []).map(b => [b.id, b]));
+  const items = orderedBidItems();
+  const base = items.filter(i => !i.alternate);
+  const alts = items.filter(i => i.alternate);
+
+  const doc = textPdf(brandedHeader);
+
+  doc.text('PROPOSAL', { bold: true, size: 17, dy: 22 });
+  const meta = [proposal.number, proposal.date && `Dated ${proposal.date}`,
+    validUntil() && `Valid until ${validUntil()}`].filter(Boolean).join('   ·   ');
+  doc.text(meta, { size: 9, color: INK.dim, dy: 13 });
+
+  doc.gap(8);
+  const cl = proposal.client;
+  doc.text('PREPARED FOR', { bold: true, size: 8, color: INK.dim, dy: 14 });
+  for (const line of [cl.name, cl.contact, [cl.email, cl.phone].filter(Boolean).join('   ')]) {
+    if (line) doc.text(line, { size: 10, dy: 12 });
+  }
+  doc.text('PROJECT', { bold: true, size: 8, color: INK.dim, dy: 16 });
+  doc.text(jobNameOrFallback(), { size: 10, dy: 12 });
+  if (jobAddressOrFallback()) doc.text(jobAddressOrFallback(), { size: 9.5, color: INK.dim, dy: 11 });
+  doc.rule(14);
+
+  doc.text('SCOPE OF WORK', { bold: true, size: 11, dy: 18 });
+  for (const it of base) {
+    const biq = byId.get(it.id);
+    doc.need(60);
+    doc.text(it.name, { bold: true, size: 11, dy: 18 });
+    doc.text(biq ? money(biq.price) : '—', { bold: true, size: 11, align: 'right' });
+    const sheets = sheetsFor(it);
+    if (sheets.length) doc.text(sheets.join(', '), { size: 8, color: INK.dim, dy: 10 });
+    for (const line of scopeTextFor(it, biq).split('\n').filter(t => t.trim())) {
+      doc.para(`•  ${line}`, { size: 9.5, indent: 10, lead: 12, dy: 1 });
+    }
+  }
+
+  doc.rule(16);
+  doc.text('BASE BID', { bold: true, size: 12, dy: 16 });
+  doc.text(q ? money(q.price) : '—', { bold: true, size: 12, align: 'right' });
+
+  if (alts.length) {
+    doc.need(80);
+    doc.text('ALTERNATES', { bold: true, size: 11, dy: 26 });
+    doc.para('Priced separately and NOT included in the base bid above. '
+      + 'Each may be accepted or declined on its own.', { size: 9, indent: 0, lead: 12, dy: 2 });
+    for (const it of alts) {
+      const biq = byId.get(it.id);
+      doc.need(50);
+      doc.text(it.name, { bold: true, size: 10.5, dy: 16 });
+      doc.text(biq ? `Add ${money(biq.price)}` : '—', { bold: true, size: 10.5, align: 'right' });
+      for (const line of scopeTextFor(it, biq).split('\n').filter(t => t.trim())) {
+        doc.para(`•  ${line}`, { size: 9.5, indent: 10, lead: 12, dy: 1 });
+      }
+    }
+  }
+
+  const chosen = settings.exclusions.filter(e => (proposal.exclusions ?? []).includes(e.key));
+  if (chosen.length) {
+    doc.need(60);
+    doc.text('EXCLUSIONS', { bold: true, size: 11, dy: 26 });
+    for (const e of chosen) doc.para(`•  ${e.text}`, { size: 9.5, indent: 10, lead: 12, dy: 1 });
+  }
+  if (proposal.notes && proposal.notes.trim()) {
+    doc.need(50);
+    doc.text('NOTES', { bold: true, size: 11, dy: 24 });
+    for (const line of proposal.notes.split('\n')) if (line.trim()) doc.para(line, { dy: 1 });
+  }
+  if (settings.terms && settings.terms.trim()) {
+    doc.need(50);
+    doc.text('TERMS', { bold: true, size: 11, dy: 24 });
+    doc.para(settings.terms, { size: 9.5, dy: 1 });
+  }
+
+  doc.need(70);
+  doc.rule(24);
+  doc.text('Accepted by', { size: 9, color: INK.dim, dy: 18 });
+  doc.text('Date', { size: 9, color: INK.dim, x: PT.W / 2 + 20 });
+  doc.gap(16);
+  doc.rule(0);
+  return writeTextPdf(doc.end());
+}
+
+/// The internal cost sheet. The buildup behind the price, and the margin it
+/// leaves. Every page banner-marked.
+function buildCostSheetPdfBytes() {
+  const q = lastQuote;
+  const doc = textPdf(d => { internalBanner(d); brandedHeader(d); });
+  const areaById = new Map((q ? q.areas : []).map(a => [a.area_id, a]));
+
+  doc.text('COST SHEET', { bold: true, size: 15, dy: 20 });
+  doc.text([proposal.number, jobNameOrFallback(), new Date().toLocaleDateString()]
+    .filter(Boolean).join('   ·   '), { size: 9, color: INK.dim, dy: 13 });
+
+  if (!q) {
+    doc.para('This job does not price yet, so there is no buildup to show. '
+      + (quoteError || rateCardError || 'Assign systems and enter crew and hours.'), { dy: 16 });
+    return writeTextPdf(doc.end());
+  }
+
+  const COLS = [
+    ['Materials', 250], ['Consum.', 310], ['Labor', 366], ['O/H', 418],
+    ['Cost', 478], ['MH', 520], ['SF/MH', 558],
+  ];
+  const row = (label, vals, { bold = false, size = 8.5, indent = 0 } = {}) => {
+    doc.need(13);
+    doc.gap(12);
+    doc.text(label, { bold, size, x: PT.M + indent });
+    vals.forEach((v, i) => doc.text(v, { bold, size, align: 'right', rightAt: COLS[i][1] }));
+  };
+
+  doc.gap(10);
+  doc.need(20);
+  doc.gap(12);
+  doc.text('BID ITEM / AREA', { bold: true, size: 8, color: INK.dim });
+  COLS.forEach(([name, x]) => doc.text(name, { bold: true, size: 8, color: INK.dim, align: 'right', rightAt: x }));
+  doc.rule(4);
+
+  for (const it of orderedBidItems()) {
+    const biq = q.bid_items.find(b => b.id === it.id);
+    if (!biq) continue;
+    const members = it.areaIds.map(id => areaById.get(id)).filter(Boolean);
+    const label = `${it.name}${it.alternate ? '  [ALTERNATE]' : ''}`;
+    const areaCols = a => [
+      money(a.materials), money(a.consumables), money(a.labor), money(a.overhead),
+      money(a.cost), qty(a.man_hours),
+      a.sf_per_man_hour == null ? '—' : qty(a.sf_per_man_hour),
+    ];
+    // A single-member item IS its area -- printing the name twice, once with
+    // empty columns, reads as a missing row rather than a heading.
+    if (members.length === 1) {
+      row(label, areaCols(members[0]), { bold: true, size: 9 });
+      continue;
+    }
+    row(label, ['', '', '', '', money(biq.cost), qty(biq.man_hours),
+      biq.man_hours > 0 ? qty(biq.area_sf / biq.man_hours) : '—'], { bold: true, size: 9 });
+    for (const a of members) row(a.name, areaCols(a), { indent: 12 });
+  }
+
+  doc.rule(10);
+  const money2 = (label, v, bold = false, size = 9) => {
+    doc.need(13);
+    doc.gap(13);
+    doc.text(label, { bold, size });
+    doc.text(money(v), { bold, size, align: 'right' });
+  };
+  money2('Base bid area cost', q.area_cost);
+  money2('Job costs (travel, permits, equipment, mobilisation)', q.job_costs.travel
+    + q.job_costs.permits + q.job_costs.equipment + q.job_costs.mobilization);
+  money2('TOTAL COST', q.cost, true, 10);
+  money2('PRICE', q.price, true, 10);
+  money2('PROFIT', q.profit, true, 10);
+  doc.need(13);
+  doc.gap(13);
+  doc.text(`MARGIN  ${(q.margin * 100).toFixed(1)}%`, { bold: true, size: 10 });
+  if (q.below_margin_floor) {
+    doc.text(`BELOW THE ${(MARGIN_FLOOR_PCT).toFixed(0)}% FLOOR`, { bold: true, size: 10, align: 'right', color: INK.red });
+  }
+  doc.need(13);
+  doc.gap(13);
+  doc.text(`Base bid man-hours ${qty(q.man_hours)}`
+    + (q.sf_per_man_hour == null ? '' : `   ·   ${qty(q.sf_per_man_hour)} SF per man-hour`
+      + `   ·   typical ~${PRODUCTIVITY_TYPICAL}`), { size: 9, color: INK.dim });
+
+  if (q.alternate_price) {
+    doc.rule(12);
+    doc.text('ALTERNATES (excluded from the base bid above)', { bold: true, size: 9.5, dy: 14 });
+    money2('Alternate cost', q.alternate_cost);
+    money2('Alternate price', q.alternate_price);
+    money2('Alternate profit', q.alternate_profit);
+  }
+  if (q.unconfirmed_systems && q.unconfirmed_systems.length) {
+    doc.need(40);
+    doc.gap(16);
+    doc.para(`UNCONFIRMED RECIPES: ${q.unconfirmed_systems.join(', ')}. Product membership was `
+      + 'inferred by comparing quote sheets and has not been signed off against a real job. '
+      + 'Treat these figures as provisional.', { bold: true, size: 8.5, lead: 11 });
+  }
+  return writeTextPdf(doc.end());
+}
+
+/// engine-core owns the floor; this only renders it.
+const MARGIN_FLOOR_PCT = 20;
+
+/// The bytes as a string, one char per byte. Content streams are written
+/// uncompressed, so this is greppable — which is how the suite asserts that no
+/// cost figure reaches the customer document.
+function pdfAsLatin1(bytes) {
+  let out = '';
+  for (const b of bytes) out += String.fromCharCode(b);
+  return out;
+}
+
+function downloadBytes(bytes, filename) {
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+const proposalFileBase = () =>
+  `${(proposal.number || 'proposal')}-${(jobNameOrFallback() || 'job').replace(/[^\w-]+/g, '-')}`
+    .replace(/-+$/, '');
 
 // ---- tool interaction ----
 function setTool(next) {
@@ -4541,6 +4922,14 @@ $('quoteBtn').addEventListener('click', () => { location.hash = '#/quote'; });
 $('quoteBackBtn').addEventListener('click', () => { location.hash = '#/takeoff'; });
 $('proposalBtn').addEventListener('click', () => { location.hash = '#/proposal'; });
 $('proposalBackBtn').addEventListener('click', () => { location.hash = '#/quote'; });
+$('downloadProposalBtn').addEventListener('click', () => {
+  downloadBytes(buildProposalPdfBytes(), `${proposalFileBase()}.pdf`);
+  say('downloaded proposal PDF');
+});
+$('downloadCostSheetBtn').addEventListener('click', () => {
+  downloadBytes(buildCostSheetPdfBytes(), `${proposalFileBase()}-INTERNAL-cost-sheet.pdf`);
+  say('downloaded internal cost sheet');
+});
 $('settingsBtn').addEventListener('click', openSettings);
 $('settingsClose').addEventListener('click', () => { $('settingsPanel').hidden = true; });
 $('setAddExclusion').addEventListener('click', () => {
@@ -4606,6 +4995,8 @@ window.__harness = {
   groupError: () => groupError,
   proposal: () => proposal,
   settings: () => settings,
+  proposalPdfText: () => pdfAsLatin1(buildProposalPdfBytes()),
+  costSheetPdfText: () => pdfAsLatin1(buildCostSheetPdfBytes()),
   scopeTextFor: id => {
     const it = bidItems.find(b => b.id === id);
     const biq = (lastQuote ? lastQuote.bid_items : []).find(b => b.id === id);

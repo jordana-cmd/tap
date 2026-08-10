@@ -1816,6 +1816,176 @@ await run('proposal: an alternate carries its own scope and reads as an addition
   assert.ok(!blocks.find(b => !b.alternate).sum.startsWith('+'), 'base work is not');
 });
 
+// ---- the two PDF outputs ----
+//
+// Separate generators, one letterhead. Content streams are written
+// uncompressed, so the suite can read the finished bytes rather than trusting
+// the code that produced them.
+
+const proposalPdf = page => page.evaluate(() => window.__harness.proposalPdfText());
+const costSheetPdf = page => page.evaluate(() => window.__harness.costSheetPdfText());
+/// Pages in a PDF whose objects this harness writes one per page.
+const pdfPageCount = txt => (txt.match(/\/Type \/Page[^s]/g) || []).length;
+
+await run('pdf: both documents are structurally valid PDFs', async page => {
+  await priceOneArea(page, 'polish');
+  await gotoProposal(page);
+  for (const [what, txt] of [['proposal', await proposalPdf(page)], ['cost sheet', await costSheetPdf(page)]]) {
+    assert.ok(txt.startsWith('%PDF-1.4'), `${what}: no PDF header`);
+    assert.ok(txt.trimEnd().endsWith('%%EOF'), `${what}: truncated`);
+    assert.ok(/\/Root 1 0 R/.test(txt), `${what}: no catalog`);
+    assert.ok(/startxref\n\d+/.test(txt), `${what}: no xref offset`);
+    assert.ok(pdfPageCount(txt) >= 1, `${what}: no pages`);
+    assert.ok(txt.length > 1200, `${what}: suspiciously empty (${txt.length} bytes)`);
+  }
+});
+
+await run('pdf: the customer proposal carries NO cost, margin, or profit figure', async page => {
+  // Two PDFs generated from one screen is exactly how a margin sheet gets
+  // emailed to a GC. This is the assertion that stops it.
+  await priceOneArea(page, 'polish');
+  await gotoProposal(page);
+  const txt = await proposalPdf(page);
+  const q = await page.evaluate(() => window.__harness.quote());
+  const usd = v => v.toLocaleString('en-US',
+    { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  assert.ok(txt.includes(usd(q.price)), 'the PRICE is the whole point of the document');
+  for (const [what, v] of [['cost', q.cost], ['profit', q.profit], ['area cost', q.area_cost]]) {
+    assert.ok(!txt.includes(usd(v)), `${what} ${usd(v)} must not appear in a customer document`);
+  }
+  for (const word of ['MARGIN', 'PROFIT', 'Overhead', 'man-hour', 'INTERNAL']) {
+    assert.ok(!txt.includes(word), `"${word}" must not appear in a customer document`);
+  }
+  assert.ok(!txt.includes(`${(q.margin * 100).toFixed(1)}%`), 'nor the margin rate');
+});
+
+await run('pdf: the cost sheet is banner-marked INTERNAL on every page', async page => {
+  await priceOneArea(page, 'polish');
+  await gotoProposal(page);
+  const txt = await costSheetPdf(page);
+  const pages = pdfPageCount(txt);
+  const marks = (txt.match(/INTERNAL/g) || []).length;
+  assert.ok(pages >= 1);
+  assert.ok(marks >= pages,
+    `every one of ${pages} page(s) must be marked, found ${marks} marks`);
+  assert.ok(txt.includes('NOT FOR CUSTOMER'), 'and say so in words');
+  // A red bar, not a footnote: a filled rectangle at the top of the page.
+  assert.ok(/0\.72 0\.11 0\.13 rg [\d.]+ [\d.]+ [\d.]+ [\d.]+ re f/.test(txt),
+    'the banner is drawn, not just written');
+});
+
+await run('pdf: the cost sheet carries the buildup the proposal hides', async page => {
+  await priceOneArea(page, 'polish');
+  await gotoProposal(page);
+  const txt = await costSheetPdf(page);
+  const q = await page.evaluate(() => window.__harness.quote());
+  const usd = v => v.toLocaleString('en-US',
+    { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  for (const [what, v] of [['cost', q.cost], ['price', q.price], ['profit', q.profit]]) {
+    assert.ok(txt.includes(usd(v)), `${what} belongs on the internal sheet`);
+  }
+  assert.ok(txt.includes(`${(q.margin * 100).toFixed(1)}%`), 'and the margin rate');
+  for (const col of ['Materials', 'Labor', 'MH', 'SF/MH']) {
+    assert.ok(txt.includes(col), `the ${col} column`);
+  }
+  // The recipes are still unconfirmed, and an internal sheet is exactly where
+  // that caveat has to be visible.
+  assert.ok(txt.includes('UNCONFIRMED RECIPES'), 'provisional figures say so');
+});
+
+await run('pdf: the proposal says what the work is, for whom, and what it excludes', async page => {
+  await priceOneArea(page, 'polish');
+  await gotoProposal(page);
+  await typeQuote(page, '#propClientName', 'Riverside Logistics');
+  await page.waitForFunction(() => window.__harness.proposal().client.name === 'Riverside Logistics',
+    { timeout: 5_000 });
+  await page.click('#settingsBtn');
+  await typeQuote(page, '#setCoAddress', '1400 Woodward Ave');
+  await page.waitForFunction(() => window.__harness.settings().company.address === '1400 Woodward Ave',
+    { timeout: 5_000 });
+  await page.click('#settingsClose');
+
+  const txt = await proposalPdf(page);
+  assert.ok(txt.includes('Riverside Logistics'), 'addressed to the client');
+  assert.ok(txt.includes('1400 Woodward Ave'), 'on the company letterhead');
+  assert.ok(txt.includes('PROPOSAL') && txt.includes('SCOPE OF WORK'), 'headed as a proposal');
+  assert.ok(txt.includes('BASE BID'), 'with the number being bid');
+  // Generated scope, verbatim from the recipe.
+  assert.ok(txt.includes('Repair spalls'), 'the recipe\'s own steps');
+  assert.ok(txt.includes('EXCLUSIONS') && txt.includes('Moisture vapour'), 'and the exclusions');
+  assert.ok(txt.includes('Accepted by'), 'and somewhere to sign');
+  const num = await page.evaluate(() => window.__harness.proposal().number);
+  assert.ok(txt.includes(num), 'carrying its proposal number');
+});
+
+await run('pdf: an edited scope is what prints, not the generated draft', async page => {
+  await priceOneArea(page, 'polish');
+  await gotoProposal(page);
+  await page.click('.propItem textarea.propScope');
+  await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
+  await page.keyboard.type('Bespoke wording for this one job.', { delay: 10 });
+  await page.waitForFunction(() => Object.keys(window.__harness.proposal().scopeOverrides).length === 1,
+    { timeout: 5_000 });
+
+  const txt = await proposalPdf(page);
+  assert.ok(txt.includes('Bespoke wording for this one job.'), 'the edit prints');
+  assert.ok(!txt.includes('Repair spalls'), 'and the draft it replaced does not');
+});
+
+await run('pdf: alternates print as additions, outside the base bid', async page => {
+  await twoPagesPriced(page, 'polish');
+  await clickNth(page, '.qBidItem input[data-qkey^="alt-"]', 1);
+  await page.waitForFunction(() => window.__harness.quote().alternate_price > 0, { timeout: 5_000 });
+  await gotoProposal(page);
+  const txt = await proposalPdf(page);
+  const q = await page.evaluate(() => window.__harness.quote());
+  const usd = v => v.toLocaleString('en-US',
+    { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  assert.ok(txt.includes('ALTERNATES'), 'listed under their own heading');
+  assert.ok(txt.includes('NOT included in the base bid'), 'and said plainly');
+  assert.ok(txt.includes(`Add ${usd(q.alternate_price)}`), 'priced as an addition');
+  assert.ok(txt.includes(usd(q.price)), 'the base bid is still the headline number');
+  assert.ok(!txt.includes(usd(q.price + q.alternate_price)), 'the two are never silently summed');
+});
+
+await run('pdf: a long scope wraps onto further pages instead of running off', async page => {
+  await priceOneArea(page, 'polish');
+  await gotoProposal(page);
+  const onePage = pdfPageCount(await proposalPdf(page));
+
+  // A narrative far longer than a page, as a real scope revision can be.
+  await page.click('.propItem textarea.propScope');
+  await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
+  await page.evaluate(() => {
+    const ta = document.querySelector('.propItem textarea.propScope');
+    const sentence = 'The crew will prepare, patch, and finish this area to the specification '
+      + 'agreed with the client before work begins, working around the occupied dock. ';
+    ta.value = sentence.repeat(40);
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForFunction(() => Object.keys(window.__harness.proposal().scopeOverrides).length === 1,
+    { timeout: 5_000 });
+
+  const txt = await proposalPdf(page);
+  assert.ok(pdfPageCount(txt) > onePage, 'it spilled onto another page rather than off this one');
+  assert.ok(txt.includes('Accepted by'), 'and the signature block survived to the end');
+  // Every drawn line starts inside the margins.
+  const xs = [...txt.matchAll(/Td \(/g)].length;
+  assert.ok(xs > 40, `a wrapped narrative is many lines, found ${xs}`);
+});
+
+await run('pdf: a job that will not price says so rather than printing zeroes', async page => {
+  await drawArea(page);
+  await pickSystem(page, 'polish');   // system but no crew/hours
+  await gotoQuote(page);
+  await gotoProposal(page);
+  const txt = await costSheetPdf(page);
+  assert.ok(txt.includes('does not price yet'), 'the cost sheet explains itself');
+  assert.ok(!/\$0\.00/.test(txt), 'a confident zero is worse than a blank');
+});
+
 await run('quote: entering the route cancels an in-progress draft', async page => {
   await setTool(page, 'area');
   await snapOff(page);
